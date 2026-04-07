@@ -4,6 +4,12 @@
 
 Zero-server, browser-to-browser file sharing. Drop files, share a link, transfer directly via WebRTC. The link dies when you close the tab.
 
+## Screenshots
+
+| Home | Sender | Receiver |
+|------|--------|----------|
+| ![Home](screenshots/Home.png) | ![Sender](screenshots/Sender%20Page.png) | ![Receiver](screenshots/Reciever%20Page.png) |
+
 ## How It Works
 
 1. **Drop your files** — Drag files into the portal zone, click to browse, or paste from clipboard (Ctrl+V). Any type, any number, no size limit.
