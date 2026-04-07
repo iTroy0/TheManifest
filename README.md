@@ -7,7 +7,7 @@ Zero-server, browser-to-browser file sharing. Drop files, share a link, transfer
 ## How It Works
 
 1. **Drop your files** — Drag files into the portal zone, click to browse, or paste from clipboard (Ctrl+V). Any type, any number, no size limit.
-2. **Share the link** — A unique portal link and QR code are generated instantly. Send it to your recipient.
+2. **Share the link** — A unique portal link and QR code are generated instantly. Send it to your recipient or use the native share button on mobile.
 3. **End-to-end encryption** — Both browsers perform an automatic ECDH key exchange. A shared AES-256-GCM key is derived. Both sides can verify the key fingerprint.
 4. **Recipient chooses** — The recipient sees the file list and downloads individual files or everything as a zip. No auto-downloads — full control.
 5. **Direct transfer** — Files stream browser-to-browser via WebRTC. Each chunk is encrypted before transmission. Progress, speed, and ETA shown in real time.
@@ -20,12 +20,20 @@ Zero-server, browser-to-browser file sharing. Drop files, share a link, transfer
 - **Per-file download control** — Recipient picks which files to download, one at a time. No forced bulk downloads.
 - **Download All as Zip** — Streams all files into a zip directly to disk. Zero RAM accumulation.
 - **No file size limit** — 256KB chunks with 4-byte indexing. StreamSaver writes directly to disk.
+- **Multiple recipients** — Multiple people can connect and download simultaneously. Each gets their own encrypted channel.
+- **Password-protected portals** — Optionally set a password. Recipients must enter it before seeing the file list.
+- **Live chat** — Encrypted bidirectional chat between sender and all recipients. Messages are relayed between recipients for group chat.
+- **Auto-generated nicknames** — Each recipient gets a random nickname (e.g. SwiftFox42) for identification in chat.
+- **Connection quality indicator** — Live RTT latency badge, color-coded: green (<100ms), yellow (100-300ms), red (>300ms).
+- **Drag to reorder** — Reorder files before sharing with smooth drag-and-drop (powered by dnd-kit).
+- **Mobile share API** — Native share button on mobile devices to send the portal link via any app.
 - **Peer-to-peer** — Files go directly from sender to receiver. No server in the middle.
 - **Ephemeral** — Close the tab and the portal is gone. No traces left behind.
 - **No accounts** — No sign-up, no login, no tracking, no analytics.
 - **Relay fallback** — If direct P2P fails (strict NATs/firewalls), the user can opt-in to an encrypted relay.
 - **Connection type badge** — Shows "Direct P2P" or "Relay" so the user always knows.
 - **Resume on disconnect** — If the connection drops mid-transfer, it auto-reconnects and resumes from the last chunk.
+- **Disconnect detection** — ICE state monitoring for fast disconnect detection. Chat notifications when someone joins or leaves.
 - **QR code sharing** — Scan with a phone to receive on mobile.
 - **Clipboard paste** — Ctrl+V to add files.
 - **Image previews** — Thumbnails for image files before sending.
@@ -41,6 +49,7 @@ Zero-server, browser-to-browser file sharing. Drop files, share a link, transfer
 - **Double encryption** — AES-256-GCM application layer + WebRTC DTLS transport layer. Two independent encryption layers.
 - **Key exchange** — ECDH P-256 keypair generated fresh for every session. Keys never leave the browser.
 - **Fingerprint verification** — Both sides display the same key fingerprint. Compare out-of-band to detect MITM attacks.
+- **Password protection** — Optional portal password adds an extra layer before file access.
 - **Zero knowledge** — No accounts. No logs. No analytics. No database. Files never touch a server.
 - **Ephemeral** — Close the tab and everything is gone. No traces left behind.
 - **Open source** — Every line of code is auditable. AGPL-3.0 licensed.
@@ -52,6 +61,7 @@ Zero-server, browser-to-browser file sharing. Drop files, share a link, transfer
 - **Web Crypto API** — ECDH key exchange + AES-256-GCM encryption
 - **StreamSaver.js** — Stream files directly to disk
 - **fflate** — Streaming zip creation
+- **dnd-kit** — Accessible drag-and-drop for file reordering
 - **Tailwind CSS v4** — Styling
 - **React Router v7** — Client-side routing
 - **qrcode.react** — QR code generation
@@ -111,7 +121,6 @@ npm run build
 
 ## Limitations
 
-- One recipient at a time per portal
 - Both sender and receiver must keep their tabs open during transfer
 - StreamSaver requires Chrome/Edge for direct-to-disk streaming. Other browsers fall back to in-memory blob download.
 - Relay fallback requires a self-hosted TURN server

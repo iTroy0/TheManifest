@@ -99,7 +99,7 @@ export function useReceiver(peerId) {
           clearTimeout(timeoutRef.current)
           reconnectCountRef.current = 0
 
-          // RTT polling
+          // RTT polling + ICE state monitoring for fast disconnect detection
           if (rttRef.current) clearInterval(rttRef.current)
           rttRef.current = setInterval(() => {
             const pc = conn.peerConnection
@@ -112,6 +112,24 @@ export function useReceiver(peerId) {
               })
             }).catch(() => {})
           }, 3000)
+
+          // Fast disconnect detection via ICE state
+          const pc = conn.peerConnection
+          if (pc) {
+            const prevHandler = pc.oniceconnectionstatechange
+            pc.oniceconnectionstatechange = () => {
+              if (prevHandler) prevHandler()
+              const s = pc.iceConnectionState
+              if ((s === 'disconnected' || s === 'failed' || s === 'closed') && !destroyedRef.current) {
+                if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
+                setRtt(null)
+                setMessages(prev => [...prev, { text: 'Sender disconnected', from: 'system', time: Date.now(), self: false }])
+                if (!wasTransferringRef.current) {
+                  setStatus('closed')
+                }
+              }
+            }
+          }
 
           if (isReconnect && wasTransferringRef.current) {
             setStatus('manifest-received')
@@ -253,6 +271,7 @@ export function useReceiver(peerId) {
           }
           Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
           setRtt(null)
+          setMessages(prev => [...prev, { text: 'Sender disconnected', from: 'system', time: Date.now(), self: false }])
           setStatus(prev => (prev === 'done' || prev === 'rejected') ? prev : 'closed')
         })
 

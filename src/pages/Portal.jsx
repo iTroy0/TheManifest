@@ -189,7 +189,7 @@ export default function Portal() {
                 <p className="font-mono text-lg text-text-bright font-bold">{manifest.files.length}</p>
                 <p className="text-xs text-muted">
                   file{manifest.files.length !== 1 ? 's' : ''} &middot; {formatBytes(manifest.totalSize)} total
-                  {completedCount > 0 && ` &middot; ${completedCount} saved`}
+                  {completedCount > 0 && <> &middot; {completedCount} saved</>}
                 </p>
               </div>
               {fingerprint && (

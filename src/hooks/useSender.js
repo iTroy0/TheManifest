@@ -114,6 +114,29 @@ export function useSender() {
           }, 3000)
         }
 
+        // Fast disconnect detection via ICE state
+        const pc = conn.peerConnection
+        if (pc) {
+          pc.oniceconnectionstatechange = () => {
+            const s = pc.iceConnectionState
+            if ((s === 'disconnected' || s === 'failed' || s === 'closed') && !destroyed) {
+              connState.abort.aborted = true
+              const name = connState.nickname || 'A recipient'
+              connectionsRef.current.delete(connId)
+              setRecipientCount(connectionsRef.current.size)
+              setMessages(prev => [...prev, { text: `${name} left`, from: 'system', time: Date.now(), self: false }])
+              connectionsRef.current.forEach(cs => {
+                try { cs.conn.send({ type: 'chat', text: `${name} left`, from: 'system', time: Date.now() }) } catch {}
+              })
+              if (connectionsRef.current.size === 0) {
+                if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
+                setRtt(null)
+                setStatus(prev => prev === 'done' ? prev : 'waiting')
+              }
+            }
+          }
+        }
+
         connState.keyPair = await generateKeyPair()
         const pubKeyBytes = await exportPublicKey(connState.keyPair.publicKey)
         conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
@@ -235,8 +258,14 @@ export function useSender() {
       conn.on('close', () => {
         if (destroyed) return
         connState.abort.aborted = true
+        const name = connState.nickname || 'A recipient'
         connectionsRef.current.delete(connId)
         setRecipientCount(connectionsRef.current.size)
+        setMessages(prev => [...prev, { text: `${name} left`, from: 'system', time: Date.now(), self: false }])
+        // Notify other receivers
+        connectionsRef.current.forEach(cs => {
+          try { cs.conn.send({ type: 'chat', text: `${name} left`, from: 'system', time: Date.now() }) } catch {}
+        })
         if (connectionsRef.current.size === 0) {
           if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
           setRtt(null)
