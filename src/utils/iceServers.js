@@ -1,9 +1,20 @@
 const TURN_URL = import.meta.env.VITE_TURN_URL
 const TURN_USER = import.meta.env.VITE_TURN_USER
 const TURN_PASS = import.meta.env.VITE_TURN_PASS
+const SIGNAL_HOST = import.meta.env.VITE_SIGNAL_HOST
+const SIGNAL_PATH = import.meta.env.VITE_SIGNAL_PATH || '/signal'
+
+// Self-hosted PeerJS signaling config (falls back to PeerJS cloud if not set)
+const signalConfig = SIGNAL_HOST ? {
+  host: SIGNAL_HOST,
+  port: 443,
+  secure: true,
+  path: SIGNAL_PATH,
+} : {}
 
 // Direct P2P only — no relay
 export const STUN_ONLY = {
+  ...signalConfig,
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
@@ -14,6 +25,7 @@ export const STUN_ONLY = {
 
 // With TURN relay fallback (only if configured)
 export const WITH_TURN = {
+  ...signalConfig,
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
