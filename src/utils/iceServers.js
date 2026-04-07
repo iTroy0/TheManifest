@@ -2,7 +2,7 @@ const TURN_URL = import.meta.env.VITE_TURN_URL
 const TURN_USER = import.meta.env.VITE_TURN_USER
 const TURN_PASS = import.meta.env.VITE_TURN_PASS
 const SIGNAL_HOST = import.meta.env.VITE_SIGNAL_HOST
-const SIGNAL_PATH = import.meta.env.VITE_SIGNAL_PATH || '/signal'
+const SIGNAL_PATH = import.meta.env.VITE_SIGNAL_PATH || '/'
 
 // Self-hosted PeerJS signaling config (falls back to PeerJS cloud if not set)
 const signalConfig = SIGNAL_HOST ? {
