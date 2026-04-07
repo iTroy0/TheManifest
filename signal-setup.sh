@@ -5,7 +5,13 @@
 
 set -e
 
-DOMAIN="signal.manifest-portal.com"
+echo "Enter your signaling domain (e.g. signal.yourdomain.com):"
+read -r DOMAIN
+if [ -z "$DOMAIN" ]; then
+  echo "Domain is required."
+  exit 1
+fi
+
 SIGNAL_PORT=9000
 
 echo "==> Installing Node.js 20..."
