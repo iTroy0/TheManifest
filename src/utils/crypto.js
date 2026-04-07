@@ -10,7 +10,7 @@ const IV_LENGTH = 12 // 96 bits for AES-GCM
 export async function generateKeyPair() {
   const keyPair = await crypto.subtle.generateKey(
     { name: 'ECDH', namedCurve: 'P-256' },
-    true, // extractable (need to export public key)
+    false, // private key stays in WebCrypto, public key exported separately
     ['deriveBits']
   )
   return keyPair
@@ -79,11 +79,22 @@ export async function decryptChunk(key, data) {
   return plaintext
 }
 
-// Generate a short fingerprint from the shared key for visual verification
-export async function getKeyFingerprint(publicKeyBytes) {
-  const hash = await crypto.subtle.digest('SHA-256', publicKeyBytes)
+// Generate a shared fingerprint from both public keys for visual verification
+// Both sides produce the same fingerprint by sorting keys before hashing
+export async function getKeyFingerprint(localPubBytes, remotePubBytes) {
+  const a = new Uint8Array(localPubBytes)
+  const b = new Uint8Array(remotePubBytes)
+  // Sort deterministically so both sides get the same order
+  let first = a, second = b
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] < b[i]) break
+    if (a[i] > b[i]) { first = b; second = a; break }
+  }
+  const combined = new Uint8Array(first.length + second.length)
+  combined.set(first, 0)
+  combined.set(second, first.length)
+  const hash = await crypto.subtle.digest('SHA-256', combined)
   const arr = new Uint8Array(hash)
-  // Take first 8 bytes, format as hex pairs
   return Array.from(arr.slice(0, 8))
     .map(b => b.toString(16).padStart(2, '0'))
     .join(' ')

@@ -1,7 +1,7 @@
 import Peer from 'peerjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { chunkFile, buildChunkPacket, waitForBufferDrain, CHUNK_SIZE } from '../utils/fileChunker'
-import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, getKeyFingerprint } from '../utils/crypto'
+import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint } from '../utils/crypto'
 import { STUN_ONLY } from '../utils/iceServers'
 
 export function useSender() {
@@ -148,7 +148,8 @@ export function useSender() {
         if (data.type === 'public-key') {
           const remotePubKey = await importPublicKey(new Uint8Array(data.key))
           connState.encryptKey = await deriveSharedKey(connState.keyPair.privateKey, remotePubKey)
-          const fp = await getKeyFingerprint(new Uint8Array(data.key))
+          const localPubBytes = await exportPublicKey(connState.keyPair.publicKey)
+          const fp = await getKeyFingerprint(localPubBytes, new Uint8Array(data.key))
           setFingerprint(fp)
 
           if (passwordRef.current) {
@@ -169,15 +170,26 @@ export function useSender() {
           return
         }
 
-        if (data.type === 'chat') {
-          const msg = { text: data.text, from: data.nickname || 'Anon', time: data.time, self: false }
+        if (data.type === 'chat-encrypted') {
+          // Decrypt incoming chat
+          let text = data.text
+          if (connState.encryptKey && data.data) {
+            try {
+              const decrypted = await decryptChunk(connState.encryptKey, new Uint8Array(data.data))
+              text = new TextDecoder().decode(decrypted)
+            } catch { return }
+          }
+          const msg = { text, from: data.nickname || 'Anon', time: data.time, self: false }
           setMessages(prev => [...prev, msg])
-          // Relay to all OTHER receivers
-          connectionsRef.current.forEach((cs, id) => {
-            if (id !== connId) {
-              try { cs.conn.send({ type: 'chat', text: data.text, from: data.nickname || 'Anon', time: data.time }) } catch {}
+          // Relay to all OTHER receivers (re-encrypt for each)
+          for (const [id, cs] of connectionsRef.current) {
+            if (id !== connId && cs.encryptKey) {
+              try {
+                const encrypted = await encryptChunk(cs.encryptKey, new TextEncoder().encode(text))
+                cs.conn.send({ type: 'chat-encrypted', data: Array.from(new Uint8Array(encrypted)), from: data.nickname || 'Anon', time: data.time })
+              } catch {}
             }
-          })
+          }
           return
         }
 
@@ -312,13 +324,18 @@ export function useSender() {
     }
   }, [sessionKey])
 
-  const sendMessage = useCallback((text) => {
+  const sendMessage = useCallback(async (text) => {
     if (!text.trim()) return
     const time = Date.now()
     setMessages(prev => [...prev, { text: text.trim(), from: 'You', time, self: true }])
-    connectionsRef.current.forEach(cs => {
-      try { cs.conn.send({ type: 'chat', text: text.trim(), from: 'Sender', time }) } catch {}
-    })
+    for (const cs of connectionsRef.current.values()) {
+      try {
+        if (cs.encryptKey) {
+          const encrypted = await encryptChunk(cs.encryptKey, new TextEncoder().encode(text.trim()))
+          cs.conn.send({ type: 'chat-encrypted', data: Array.from(new Uint8Array(encrypted)), from: 'Sender', time })
+        }
+      } catch {}
+    }
   }, [])
 
   const reset = useCallback(() => {

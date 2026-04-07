@@ -23,10 +23,18 @@ export function createStreamingZip(zipName = 'manifest-files.zip') {
 
     let currentEntry = null
 
+    function sanitizeName(name) {
+      // Strip path traversal and dangerous characters
+      name = name.replace(/^.*[\\/]/, '')
+      name = name.replace(/[<>:"|?*\x00-\x1f]/g, '_')
+      name = name.replace(/^[\s.]+|[\s.]+$/g, '')
+      return name || 'file'
+    }
+
     return {
       // Start a new file entry in the zip
       startFile(name, size) {
-        currentEntry = new ZipPassThrough(name)
+        currentEntry = new ZipPassThrough(sanitizeName(name))
         zip.add(currentEntry)
       },
 

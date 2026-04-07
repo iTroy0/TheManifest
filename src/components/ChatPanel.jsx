@@ -63,15 +63,16 @@ export default function ChatPanel({ messages, onSend, disabled, nickname }) {
                 <p className="text-center text-xs text-muted py-8 font-mono">No messages yet</p>
               )}
               {messages.map((msg, i) => {
+                const msgKey = `${msg.time}-${msg.from}-${i}`
                 if (msg.from === 'system') {
                   return (
-                    <div key={i} className="text-center">
+                    <div key={msgKey} className="text-center">
                       <span className="font-mono text-[10px] text-muted/60">{msg.text}</span>
                     </div>
                   )
                 }
                 return (
-                  <div key={i} className={`flex ${msg.self ? 'justify-end' : 'justify-start'}`}>
+                  <div key={msgKey} className={`flex ${msg.self ? 'justify-end' : 'justify-start'}`}>
                     <div className={`
                       max-w-[80%] rounded-xl px-3 py-2 space-y-0.5
                       ${msg.self

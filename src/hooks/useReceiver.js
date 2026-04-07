@@ -1,7 +1,7 @@
 import Peer from 'peerjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { parseChunkPacket } from '../utils/fileChunker'
-import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, decryptChunk, getKeyFingerprint } from '../utils/crypto'
+import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint } from '../utils/crypto'
 import { createFileStream } from '../utils/streamWriter'
 import { createStreamingZip } from '../utils/zipBuilder'
 import { STUN_ONLY, WITH_TURN } from '../utils/iceServers'
@@ -158,7 +158,7 @@ export function useReceiver(peerId) {
             conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
             const remotePubKey = await importPublicKey(new Uint8Array(data.key))
             decryptKeyRef.current = await deriveSharedKey(keyPairRef.current.privateKey, remotePubKey)
-            const fp = await getKeyFingerprint(new Uint8Array(data.key))
+            const fp = await getKeyFingerprint(pubKeyBytes, new Uint8Array(data.key))
             setFingerprint(fp)
             return
           }
@@ -180,8 +180,15 @@ export function useReceiver(peerId) {
             return
           }
 
-          if (data.type === 'chat') {
-            setMessages(prev => [...prev, { text: data.text, from: data.from || 'Sender', time: data.time, self: false }])
+          if (data.type === 'chat-encrypted') {
+            let text = ''
+            if (decryptKeyRef.current && data.data) {
+              try {
+                const decrypted = await decryptChunk(decryptKeyRef.current, new Uint8Array(data.data))
+                text = new TextDecoder().decode(decrypted)
+              } catch { return }
+            }
+            setMessages(prev => [...prev, { text, from: data.from || 'Sender', time: data.time, self: false }])
             return
           }
 
@@ -314,6 +321,8 @@ export function useReceiver(peerId) {
       destroyedRef.current = true
       clearTimeout(timeoutRef.current)
       if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
+      decryptKeyRef.current = null
+      keyPairRef.current = null
       Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
       if (zipWriterRef.current) { zipWriterRef.current.abort(); zipWriterRef.current = null }
       if (peerRef.current) peerRef.current.destroy()
@@ -329,13 +338,16 @@ export function useReceiver(peerId) {
     setTimeout(() => { startConnection(true) }, 500)
   }, [startConnection])
 
-  const sendMessage = useCallback((text) => {
+  const sendMessage = useCallback(async (text) => {
     if (!text.trim()) return
     const conn = connRef.current
-    if (!conn) return
+    if (!conn || !decryptKeyRef.current) return
     const time = Date.now()
     setMessages(prev => [...prev, { text: text.trim(), from: 'You', time, self: true }])
-    try { conn.send({ type: 'chat', text: text.trim(), nickname, time }) } catch {}
+    try {
+      const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(text.trim()))
+      conn.send({ type: 'chat-encrypted', data: Array.from(new Uint8Array(encrypted)), nickname, time })
+    } catch {}
   }, [nickname])
 
   const submitPassword = useCallback((password) => {
