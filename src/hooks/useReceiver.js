@@ -252,7 +252,8 @@ export function useReceiver(peerId) {
             return
           }
           Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
-          setStatus(prev => (prev === 'done' || prev === 'rejected' || prev === 'manifest-received') ? prev : 'closed')
+          setRtt(null)
+          setStatus(prev => (prev === 'done' || prev === 'rejected') ? prev : 'closed')
         })
 
         conn.on('error', () => {
