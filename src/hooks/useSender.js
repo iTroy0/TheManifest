@@ -16,10 +16,13 @@ export function useSender() {
   const [sessionKey, setSessionKey] = useState(0)
   const [fingerprint, setFingerprint] = useState(null)
   const [recipientCount, setRecipientCount] = useState(0)
+  const [messages, setMessages] = useState([])
+  const [rtt, setRtt] = useState(null)
   const peerRef = useRef(null)
   const filesRef = useRef([])
   const connectionsRef = useRef(new Map())
   const passwordRef = useRef(null)
+  const rttRef = useRef(null)
 
   const setFiles = useCallback((files) => {
     filesRef.current = files
@@ -95,6 +98,22 @@ export function useSender() {
         if (destroyed) return
         setStatus('connected')
 
+        // Start RTT polling
+        if (!rttRef.current) {
+          rttRef.current = setInterval(() => {
+            const conns = Array.from(connectionsRef.current.values())
+            const c = conns.find(cs => cs.conn?.peerConnection)
+            if (!c) return
+            c.conn.peerConnection.getStats().then(stats => {
+              stats.forEach(r => {
+                if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.currentRoundTripTime != null) {
+                  setRtt(Math.round(r.currentRoundTripTime * 1000))
+                }
+              })
+            }).catch(() => {})
+          }, 3000)
+        }
+
         connState.keyPair = await generateKeyPair()
         const pubKeyBytes = await exportPublicKey(connState.keyPair.publicKey)
         conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
@@ -124,6 +143,11 @@ export function useSender() {
           } else {
             conn.send({ type: 'password-wrong' })
           }
+          return
+        }
+
+        if (data.type === 'chat') {
+          setMessages(prev => [...prev, { text: data.text, from: 'receiver', time: data.time }])
           return
         }
 
@@ -195,6 +219,8 @@ export function useSender() {
         connectionsRef.current.delete(connId)
         setRecipientCount(connectionsRef.current.size)
         if (connectionsRef.current.size === 0) {
+          if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
+          setRtt(null)
           setStatus(prev => prev === 'done' ? prev : 'waiting')
         }
       })
@@ -231,13 +257,24 @@ export function useSender() {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility)
       destroyed = true
+      if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
       connectionsRef.current.forEach(cs => { cs.abort.aborted = true })
       connectionsRef.current.clear()
       peer.destroy()
     }
   }, [sessionKey])
 
+  const sendMessage = useCallback((text) => {
+    if (!text.trim()) return
+    const msg = { text: text.trim(), from: 'sender', time: Date.now() }
+    setMessages(prev => [...prev, msg])
+    connectionsRef.current.forEach(cs => {
+      try { cs.conn.send({ type: 'chat', text: msg.text, time: msg.time }) } catch {}
+    })
+  }, [])
+
   const reset = useCallback(() => {
+    if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
     connectionsRef.current.forEach(cs => { cs.abort.aborted = true })
     connectionsRef.current.clear()
     if (peerRef.current) peerRef.current.destroy()
@@ -253,10 +290,12 @@ export function useSender() {
     setTotalSent(0)
     setFingerprint(null)
     setRecipientCount(0)
+    setMessages([])
+    setRtt(null)
     setSessionKey(k => k + 1)
   }, [])
 
-  return { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword }
+  return { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, messages, sendMessage, rtt }
 }
 
 async function sendSingleFile(conn, files, index, startChunk, connState, encryptKey, aggregateUI) {

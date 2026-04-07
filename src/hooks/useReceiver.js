@@ -26,6 +26,8 @@ export function useReceiver(peerId) {
   const [fingerprint, setFingerprint] = useState(null)
   const [passwordRequired, setPasswordRequired] = useState(false)
   const [passwordError, setPasswordError] = useState(false)
+  const [messages, setMessages] = useState([])
+  const [rtt, setRtt] = useState(null)
 
   const streamsRef = useRef({})
   const chunksRef = useRef({}) // fallback only
@@ -49,6 +51,7 @@ export function useReceiver(peerId) {
   const wasTransferringRef = useRef(false)
   const reconnectCountRef = useRef(0)
   const useTurnRef = useRef(false)
+  const rttRef = useRef(null)
 
   const startConnection = useCallback((withTurn, isReconnect = false) => {
     destroyedRef.current = false
@@ -86,6 +89,20 @@ export function useReceiver(peerId) {
           if (destroyedRef.current) return
           clearTimeout(timeoutRef.current)
           reconnectCountRef.current = 0
+
+          // RTT polling
+          if (rttRef.current) clearInterval(rttRef.current)
+          rttRef.current = setInterval(() => {
+            const pc = conn.peerConnection
+            if (!pc) return
+            pc.getStats().then(stats => {
+              stats.forEach(r => {
+                if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.currentRoundTripTime != null) {
+                  setRtt(Math.round(r.currentRoundTripTime * 1000))
+                }
+              })
+            }).catch(() => {})
+          }, 3000)
 
           if (isReconnect && wasTransferringRef.current) {
             setStatus('manifest-received')
@@ -132,6 +149,11 @@ export function useReceiver(peerId) {
 
           if (data.type === 'password-wrong') {
             setPasswordError(true)
+            return
+          }
+
+          if (data.type === 'chat') {
+            setMessages(prev => [...prev, { text: data.text, from: 'sender', time: data.time }])
             return
           }
 
@@ -212,6 +234,7 @@ export function useReceiver(peerId) {
         conn.on('close', () => {
           if (destroyedRef.current) return
           clearTimeout(timeoutRef.current)
+          if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
           if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
             reconnectCountRef.current++
             peer.destroy()
@@ -260,6 +283,7 @@ export function useReceiver(peerId) {
     return () => {
       destroyedRef.current = true
       clearTimeout(timeoutRef.current)
+      if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
       Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
       if (zipWriterRef.current) { zipWriterRef.current.abort(); zipWriterRef.current = null }
       if (peerRef.current) peerRef.current.destroy()
@@ -274,6 +298,15 @@ export function useReceiver(peerId) {
     setUseRelay(true)
     setTimeout(() => { startConnection(true) }, 500)
   }, [startConnection])
+
+  const sendMessage = useCallback((text) => {
+    if (!text.trim()) return
+    const conn = connRef.current
+    if (!conn) return
+    const msg = { text: text.trim(), from: 'receiver', time: Date.now() }
+    setMessages(prev => [...prev, msg])
+    try { conn.send({ type: 'chat', text: msg.text, time: msg.time }) } catch {}
+  }, [])
 
   const submitPassword = useCallback((password) => {
     const conn = connRef.current
@@ -365,5 +398,6 @@ export function useReceiver(peerId) {
     pendingFiles, completedFiles, requestFile, requestAllAsZip,
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
     passwordRequired, passwordError, submitPassword,
+    messages, sendMessage, rtt,
   }
 }

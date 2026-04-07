@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, QrCode, Gauge, GripVertical } from 'lucide-react'
+import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, QrCode, Gauge, GripVertical, Wifi } from 'lucide-react'
 import { useSender } from '../hooks/useSender'
 import { formatSpeed, formatTime, formatBytes } from '../utils/formatBytes'
 import { usePageTitle } from '../hooks/usePageTitle'
@@ -12,11 +12,12 @@ import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import PortalRing from '../components/PortalRing'
 import ConnectionViz from '../components/ConnectionViz'
+import ChatPanel from '../components/ChatPanel'
 
 export default function Home() {
   const [files, setFilesState] = useState([])
   const [error, setError] = useState(null)
-  const { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword } = useSender()
+  const { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, messages, sendMessage, rtt } = useSender()
   const [passwordInput, setPasswordInput] = useState('')
 
   const hasFiles = files.length > 0
@@ -146,11 +147,19 @@ export default function Home() {
           </div>
         )}
 
-        {/* Recipient count */}
+        {/* Recipient count + RTT */}
         {recipientCount > 0 && (
-          <div className="flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-4 py-2 animate-fade-in-up">
-            <Users className="w-3.5 h-3.5 text-accent" />
-            <span className="font-mono text-xs text-accent">{recipientCount} recipient{recipientCount !== 1 ? 's' : ''} connected</span>
+          <div className="flex items-center gap-3 flex-wrap animate-fade-in-up">
+            <div className="flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-4 py-2">
+              <Users className="w-3.5 h-3.5 text-accent" />
+              <span className="font-mono text-xs text-accent">{recipientCount} recipient{recipientCount !== 1 ? 's' : ''} connected</span>
+            </div>
+            {rtt !== null && (
+              <div className={`flex items-center gap-1.5 rounded-xl px-3 py-2 border ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`}>
+                <Wifi className={`w-3 h-3 ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`} />
+                <span className={`font-mono text-[11px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -220,6 +229,11 @@ export default function Home() {
         {/* Portal link */}
         {peerId && hasFiles && !isFinished && (
           <PortalLink peerId={peerId} />
+        )}
+
+        {/* Chat */}
+        {hasFiles && recipientCount > 0 && !isFinished && (
+          <ChatPanel messages={messages} onSend={sendMessage} disabled={recipientCount === 0} />
         )}
 
         {/* Done / closed / error — show new session button */}

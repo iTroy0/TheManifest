@@ -7,6 +7,7 @@ import FileList from '../components/FileList'
 import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import ConnectionViz from '../components/ConnectionViz'
+import ChatPanel from '../components/ChatPanel'
 import { useState } from 'react'
 import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Plus, Wifi, Archive, Lock } from 'lucide-react'
 
@@ -17,6 +18,7 @@ export default function Portal() {
     pendingFiles, completedFiles, requestFile, requestAllAsZip,
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
     passwordRequired, passwordError, submitPassword,
+    messages, sendMessage, rtt,
   } = useReceiver(peerId)
   const [passwordInput, setPasswordInput] = useState('')
   usePageTitle(status, overallProgress)
@@ -63,6 +65,12 @@ export default function Portal() {
                 <div className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 border ${useRelay ? 'bg-warning/5 border-warning/20' : 'bg-accent/5 border-accent/20'}`}>
                   <Wifi className={`w-3 h-3 ${useRelay ? 'text-warning' : 'text-accent'}`} />
                   <span className={`font-mono text-[9px] ${useRelay ? 'text-warning' : 'text-accent'}`}>{useRelay ? 'Relay' : 'Direct P2P'}</span>
+                </div>
+              )}
+              {rtt !== null && (
+                <div className={`flex items-center gap-1 rounded-full px-2 py-1 border ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`}>
+                  <Wifi className={`w-3 h-3 ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`} />
+                  <span className={`font-mono text-[9px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
                 </div>
               )}
               <div className="flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1.5" title={fingerprint ? `Key: ${fingerprint}` : ''}>
@@ -262,6 +270,11 @@ export default function Portal() {
               </div>
             )}
           </div>
+        )}
+
+        {/* Chat */}
+        {showManifest && !isDead && (
+          <ChatPanel messages={messages} onSend={sendMessage} disabled={isDead} />
         )}
 
         {/* All done */}
