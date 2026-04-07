@@ -83,7 +83,7 @@ export default function Home() {
               </div>
             </div>
             <p className="font-mono text-xs text-muted-light mt-0.5 tracking-wide">
-              Zero-server file portal
+              Zero-server file sharing portal
             </p>
           </Link>
         </div>
