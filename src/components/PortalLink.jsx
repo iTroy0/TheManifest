@@ -11,7 +11,18 @@ export default function PortalLink({ peerId }) {
   const canShare = typeof navigator.share === 'function'
 
   async function handleCopy() {
-    await navigator.clipboard.writeText(url)
+    try {
+      await navigator.clipboard.writeText(url)
+    } catch {
+      // Fallback for mobile browsers
+      const ta = document.createElement('textarea')
+      ta.value = url
+      ta.style.cssText = 'position:fixed;opacity:0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
     setToast(true)
   }
 

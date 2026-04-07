@@ -350,11 +350,14 @@ export function useReceiver(peerId) {
     } catch {}
   }, [nickname])
 
-  const submitPassword = useCallback((password) => {
+  const submitPassword = useCallback(async (password) => {
     const conn = connRef.current
-    if (!conn) return
+    if (!conn || !decryptKeyRef.current) return
     setPasswordError(false)
-    conn.send({ type: 'password', password })
+    try {
+      const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(password))
+      conn.send({ type: 'password-encrypted', data: Array.from(new Uint8Array(encrypted)) })
+    } catch {}
   }, [])
 
   // Download a single file — streams directly to disk

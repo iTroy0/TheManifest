@@ -160,8 +160,15 @@ export function useSender() {
           return
         }
 
-        if (data.type === 'password') {
-          if (data.password === passwordRef.current) {
+        if (data.type === 'password-encrypted') {
+          let password = ''
+          if (connState.encryptKey && data.data) {
+            try {
+              const decrypted = await decryptChunk(connState.encryptKey, new Uint8Array(data.data))
+              password = new TextDecoder().decode(decrypted)
+            } catch { conn.send({ type: 'password-wrong' }); return }
+          }
+          if (password === passwordRef.current) {
             conn.send({ type: 'password-accepted' })
             sendManifest(conn)
           } else {
