@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, QrCode, Gauge, GripVertical, Wifi } from 'lucide-react'
+import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, QrCode, Gauge, GripVertical, Wifi, MessageCircle, UserPlus } from 'lucide-react'
 import { useSender } from '../hooks/useSender'
 import { formatSpeed, formatTime, formatBytes } from '../utils/formatBytes'
 import { usePageTitle } from '../hooks/usePageTitle'
@@ -10,7 +10,6 @@ import FileList from '../components/FileList'
 import PortalLink from '../components/PortalLink'
 import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
-import PortalRing from '../components/PortalRing'
 import ConnectionViz from '../components/ConnectionViz'
 import ChatPanel from '../components/ChatPanel'
 
@@ -106,134 +105,122 @@ export default function Home() {
           </div>
         )}
 
-        {/* Warning banner */}
-        {hasFiles && status !== 'done' && (
-          <div className="flex items-center gap-3 bg-warning/8 border border-warning/20 rounded-xl px-4 py-3 animate-fade-in-up">
-            <AlertTriangle className="w-4 h-4 text-warning shrink-0" />
-            <span className="font-mono text-[11px] text-warning">
-              Keep this tab open. Closing it destroys the portal and cancels all transfers.
-            </span>
-          </div>
+        {/* Drop zone — only before files or before recipients connect */}
+        {recipientCount === 0 && (
+          <DropZone onFiles={handleFiles} disabled={isTransferring || isFinished} />
         )}
 
+        {/* How it works — only when no files */}
+        {!hasFiles && <HowItWorks />}
 
-        {/* Status */}
-        {hasFiles && <StatusIndicator status={status} />}
-
-        {/* E2E fingerprint */}
-        {fingerprint && (
-          <div className="flex items-center gap-2 bg-surface border border-accent/20 rounded-xl px-4 py-2 animate-fade-in-up">
-            <Shield className="w-3 h-3 text-accent shrink-0" />
-            <span className="font-mono text-[10px] text-muted">E2E key:</span>
-            <code className="font-mono text-[10px] text-accent">{fingerprint}</code>
-          </div>
-        )}
-
-        {/* Password protection (optional) */}
-        {hasFiles && !isTransferring && !isFinished && (
-          <div className="glow-card p-4 space-y-3 animate-fade-in-up">
-            <div className="flex items-center gap-2">
-              <Lock className="w-3.5 h-3.5 text-accent" />
-              <span className="font-mono text-xs text-accent uppercase tracking-widest">Portal Password</span>
-              <span className="font-mono text-[10px] text-muted">(optional)</span>
+        {/* Feature cards — only when no files */}
+        {!hasFiles && (
+          <div className="animate-fade-in-up" style={{ animationDelay: '350ms' }}>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <InfoCard icon={Shield} title="E2E encrypted" desc="ECDH key exchange + AES-256-GCM on every chunk, on top of WebRTC DTLS." />
+              <InfoCard icon={EyeOff} title="Zero knowledge" desc="No accounts. No logs. No analytics. We never see your files." />
+              <InfoCard icon={Zap} title="Ephemeral" desc="Close the tab and the portal is gone. No traces left behind." />
+              <InfoCard icon={Users} title="Multiple recipients" desc="Share with many people at once. Each gets their own encrypted channel." />
+              <InfoCard icon={Lock} title="Password protect" desc="Optionally lock your portal. Recipients enter the password to access files." />
+              <InfoCard icon={MessageCircle} title="Live chat" desc="Built-in encrypted chat with auto-generated nicknames for group conversations." />
             </div>
-            <input
-              type="password"
-              placeholder="Set a password to protect this portal"
-              value={passwordInput}
-              onChange={(e) => { setPasswordInput(e.target.value); setPassword(e.target.value) }}
-              className="w-full bg-bg border border-border rounded-lg px-3 py-2 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/40 transition-colors"
-            />
           </div>
         )}
 
-        {/* Recipient count + RTT */}
-        {recipientCount > 0 && (
-          <div className="flex items-center gap-3 flex-wrap animate-fade-in-up">
-            <div className="flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-4 py-2">
-              <Users className="w-3.5 h-3.5 text-accent" />
-              <span className="font-mono text-xs text-accent">{recipientCount} recipient{recipientCount !== 1 ? 's' : ''} connected</span>
-            </div>
-            {rtt !== null && (
-              <div className={`flex items-center gap-1.5 rounded-xl px-3 py-2 border ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`}>
-                <Wifi className={`w-3 h-3 ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`} />
-                <span className={`font-mono text-[11px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
+        {/* ── Active session UI (only when files loaded) ── */}
+        {hasFiles && (
+          <>
+            {/* Warning banner */}
+            {status !== 'done' && (
+              <div className="flex items-center gap-3 bg-warning/8 border border-warning/20 rounded-xl px-4 py-3 animate-fade-in-up">
+                <AlertTriangle className="w-4 h-4 text-warning shrink-0" />
+                <span className="font-mono text-[11px] text-warning">
+                  Keep this tab open. Closing it destroys the portal and cancels all transfers.
+                </span>
               </div>
             )}
-          </div>
-        )}
 
-        {/* Portal ring animation */}
-        {hasFiles && (status === 'waiting' || status === 'connected' || status === 'transferring' || status === 'done') && (
-          <PortalRing status={status} />
-        )}
+            {/* Status */}
+            <StatusIndicator status={status} />
 
-        {/* Connection visualization */}
-        <ConnectionViz status={status} />
+            {/* File list */}
+            <FileList
+              files={files}
+              onRemove={isTransferring || isFinished ? null : removeFile}
+              onReorder={isTransferring || isFinished ? null : reorderFiles}
+              progress={showProgress ? progress : null}
+              currentFileIndex={isTransferring ? currentFileIndex : -1}
+            />
+
+            {/* Password (collapsible) */}
+            {!isTransferring && !isFinished && (
+              <PasswordSection password={passwordInput} onChange={(v) => { setPasswordInput(v); setPassword(v) }} />
+            )}
+
+            {/* Portal link */}
+            {peerId && !isFinished && (
+              <PortalLink peerId={peerId} />
+            )}
+
+            {/* Connection info bar */}
+            {(recipientCount > 0 || fingerprint) && (
+              <div className="flex items-center gap-3 flex-wrap animate-fade-in-up">
+                {recipientCount > 0 && (
+                  <div className="flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-4 py-2">
+                    <Users className="w-3.5 h-3.5 text-accent" />
+                    <span className="font-mono text-xs text-accent">{recipientCount} recipient{recipientCount !== 1 ? 's' : ''}</span>
+                  </div>
+                )}
+                {rtt !== null && (
+                  <div className={`flex items-center gap-1.5 rounded-xl px-3 py-2 border ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`}>
+                    <Wifi className={`w-3 h-3 ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`} />
+                    <span className={`font-mono text-[11px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
+                  </div>
+                )}
+                {fingerprint && (
+                  <div className="flex items-center gap-1.5 bg-surface border border-accent/20 rounded-xl px-3 py-2">
+                    <Shield className="w-3 h-3 text-accent shrink-0" />
+                    <code className="font-mono text-[10px] text-accent">{fingerprint}</code>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Connection visualization */}
+            <ConnectionViz status={status} />
+
+            {/* Transfer progress */}
+            {showProgress && (
+              <div className="glow-card p-5 space-y-4 animate-fade-in-up">
+                <ProgressBar percent={overallProgress} label="Overall progress" />
+                <div className="flex justify-between font-mono text-xs text-muted">
+                  <span>{formatSpeed(speed)}</span>
+                  <span>{status === 'done'
+                    ? `${formatBytes(totalSent)} sent in ${formatElapsed(elapsed)}`
+                    : `ETA: ${formatTime(eta)}`
+                  }</span>
+                </div>
+                {isTransferring && (
+                  <div className="flex justify-between font-mono text-[10px] text-muted/60">
+                    <span>{formatBytes(totalSent)} transferred</span>
+                    <span>Elapsed: {formatElapsed(elapsed)}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Chat */}
+            {recipientCount > 0 && !isFinished && (
+              <ChatPanel messages={messages} onSend={sendMessage} disabled={recipientCount === 0} />
+            )}
+          </>
+        )}
 
         {/* Error */}
         {error && (
           <div className="bg-danger/8 border border-danger/20 rounded-xl px-4 py-3 animate-fade-in-up">
             <p className="font-mono text-[11px] text-danger">{error}</p>
           </div>
-        )}
-
-        {/* Drop zone */}
-        <DropZone onFiles={handleFiles} disabled={isTransferring || isFinished} />
-
-        {/* How it works — only when no files */}
-        {!hasFiles && <HowItWorks />}
-
-        {/* Privacy notice — only when no files */}
-        {!hasFiles && (
-          <div className="animate-fade-in-up" style={{ animationDelay: '350ms' }}>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <InfoCard icon={Shield} title="End-to-end encrypted" desc="WebRTC DTLS encryption is mandatory by spec. Your data is protected in transit." />
-              <InfoCard icon={EyeOff} title="Zero knowledge" desc="No accounts. No logs. No analytics. We never see your files." />
-              <InfoCard icon={Zap} title="Ephemeral by design" desc="Close the tab and the portal is gone. No traces left behind." />
-            </div>
-          </div>
-        )}
-
-        {/* File list */}
-        {hasFiles && (
-          <FileList
-            files={files}
-            onRemove={isTransferring || isFinished ? null : removeFile}
-            onReorder={isTransferring || isFinished ? null : reorderFiles}
-            progress={showProgress ? progress : null}
-            currentFileIndex={isTransferring ? currentFileIndex : -1}
-          />
-        )}
-
-        {/* Transfer progress */}
-        {showProgress && (
-          <div className="glow-card p-5 space-y-4 animate-fade-in-up">
-            <ProgressBar percent={overallProgress} label="Overall progress" />
-            <div className="flex justify-between font-mono text-xs text-muted">
-              <span>{formatSpeed(speed)}</span>
-              <span>{status === 'done'
-                ? `${formatBytes(totalSent)} sent in ${formatElapsed(elapsed)}`
-                : `ETA: ${formatTime(eta)}`
-              }</span>
-            </div>
-            {isTransferring && (
-              <div className="flex justify-between font-mono text-[10px] text-muted/60">
-                <span>{formatBytes(totalSent)} transferred</span>
-                <span>Elapsed: {formatElapsed(elapsed)}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Portal link */}
-        {peerId && hasFiles && !isFinished && (
-          <PortalLink peerId={peerId} />
-        )}
-
-        {/* Chat */}
-        {hasFiles && recipientCount > 0 && !isFinished && (
-          <ChatPanel messages={messages} onSend={sendMessage} disabled={recipientCount === 0} />
         )}
 
         {/* Done / closed / error — show new session button */}
@@ -291,41 +278,38 @@ function HowItWorks() {
   const steps = [
     {
       num: '01', icon: Upload, title: 'Drop your files',
-      desc: 'Drag files into the portal zone above, click to browse your device, or paste from clipboard with Ctrl+V.',
+      desc: 'Drag files in, click to browse, or paste with Ctrl+V. Drag to reorder before sharing.',
       details: [
-        'Supports any file type — documents, images, videos, archives, code, and more.',
-        'Add multiple files at once. Drag to reorder them before sharing.',
-        'Files are held in your browser memory — nothing is uploaded anywhere.',
-        'No file size limit. No limit on number of files.',
+        'Any file type, any number of files, no size limit.',
+        'Set an optional password to protect your portal.',
+        'Files stay in your browser — nothing is uploaded anywhere.',
       ]
     },
     {
       num: '02', icon: LinkIcon, title: 'Share the link',
-      desc: 'A unique portal link and QR code are generated the moment you add files.',
+      desc: 'Copy the portal link, share via the native share menu, or let them scan the QR code.',
       details: [
-        'Copy the link and send it via any messaging app, email, or chat.',
-        'Or let the recipient scan the QR code with their phone camera.',
-        'The link is tied to your browser session — it only works while your tab is open.',
-        'Only one recipient can connect at a time for security.',
+        'Multiple recipients can connect simultaneously.',
+        'The link only works while your tab is open.',
+        'Use the built-in chat to coordinate with recipients.',
       ]
     },
     {
       num: '03', icon: Eye, title: 'Recipient reviews',
-      desc: 'Your recipient opens the link and sees the full file list before anything transfers.',
+      desc: 'Recipients see the full file list and choose what to download — individually or as a zip.',
       details: [
-        'They see file names, sizes, and total transfer size upfront.',
-        'Nothing downloads until they click "Accept & Start Download".',
-        'If the direct connection fails, they can opt-in to an encrypted relay.',
+        'Nothing downloads until they decide.',
+        'If direct P2P fails, they can opt-in to an encrypted relay.',
+        'Connection quality is shown in real time.',
       ]
     },
     {
       num: '04', icon: Send, title: 'Direct transfer',
-      desc: 'Files stream directly browser-to-browser via WebRTC with real-time progress.',
+      desc: 'Files stream browser-to-browser with double encryption and real-time progress.',
       details: [
-        'Data is encrypted with DTLS — mandatory by the WebRTC specification.',
-        'Transfer speed, ETA, and per-file progress are shown on both sides.',
-        'Backpressure control prevents memory overflow on large transfers.',
-        'Files are saved manually by the recipient — no auto-downloads.',
+        'ECDH key exchange + AES-256-GCM on every chunk, plus WebRTC DTLS.',
+        'StreamSaver writes directly to disk — no file size limit, no RAM bottleneck.',
+        'Auto-resume if the connection drops mid-transfer.',
       ]
     },
   ]
@@ -372,6 +356,42 @@ function HowItWorks() {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PasswordSection({ password, onChange }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="glow-card overflow-hidden animate-fade-in-up">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between p-4 text-left group"
+      >
+        <div className="flex items-center gap-2">
+          <Lock className="w-3.5 h-3.5 text-accent" />
+          <span className="font-mono text-xs text-accent uppercase tracking-widest">Password</span>
+          <span className="font-mono text-[10px] text-muted">(optional)</span>
+          {password && !open && (
+            <span className="font-mono text-[10px] text-accent/60">set</span>
+          )}
+        </div>
+        <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
+      </button>
+      <div className={`grid transition-all duration-400 ease-in-out ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+        <div className="overflow-hidden">
+          <div className="px-4 pb-4">
+            <input
+              type="password"
+              placeholder="Set a password to protect this portal"
+              value={password}
+              onChange={(e) => onChange(e.target.value)}
+              className="w-full bg-bg border border-border rounded-lg px-3 py-2.5 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/40 transition-colors"
+            />
           </div>
         </div>
       </div>

@@ -67,10 +67,10 @@ export default function DropZone({ onFiles, disabled }) {
           relative rounded-2xl text-center cursor-pointer
           transition-all duration-500 group mobile-full-drop
           ${disabled
-            ? 'border border-border/50 opacity-40 cursor-not-allowed p-10'
+            ? 'border border-border/50 opacity-40 cursor-not-allowed py-6 px-8'
             : dragging
-              ? 'border-2 border-accent bg-accent/5 p-10 scale-[1.02] animate-pulse-glow'
-              : 'border-2 border-dashed border-border hover:border-accent/40 p-10 hover:shadow-[0_0_30px_rgba(0,255,136,0.06)]'
+              ? 'border-2 border-accent bg-accent/5 py-6 px-8 scale-[1.02] animate-pulse-glow'
+              : 'border-2 border-dashed border-border hover:border-accent/40 py-6 px-8 hover:shadow-[0_0_30px_rgba(0,255,136,0.06)]'
           }
         `}
       >
@@ -80,10 +80,10 @@ export default function DropZone({ onFiles, disabled }) {
 
         <div className={`relative transition-transform duration-300 ${dragging ? 'scale-110' : ''}`}>
           <div className={`
-            w-16 h-16 mx-auto mb-5 rounded-2xl flex items-center justify-center transition-all duration-500
+            w-12 h-12 mx-auto mb-3 rounded-2xl flex items-center justify-center transition-all duration-500
             ${dragging ? 'bg-accent/15 text-accent' : disabled ? 'bg-surface-2 text-muted' : 'bg-surface-2 text-muted group-hover:text-accent group-hover:bg-accent/10'}
           `}>
-            <Upload className="w-7 h-7" strokeWidth={1.5} />
+            <Upload className="w-5 h-5" strokeWidth={1.5} />
           </div>
 
           {disabled ? (
@@ -104,7 +104,7 @@ export default function DropZone({ onFiles, disabled }) {
                   <p className="font-mono text-xs">Ctrl+V to paste</p>
                 </div>
               </div>
-              <p className="font-mono text-xs text-muted mt-4">
+              <p className="font-mono text-[11px] text-muted mt-2">
                 Any file type &middot; Multiple files &middot; No size limit
               </p>
             </>
