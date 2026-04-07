@@ -18,6 +18,7 @@ export default function Home() {
   const [error, setError] = useState(null)
   const { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, messages, sendMessage, rtt } = useSender()
   const [passwordInput, setPasswordInput] = useState('')
+  const [filesOpen, setFilesOpen] = useState(true)
 
   const hasFiles = files.length > 0
   const isTransferring = status === 'transferring'
@@ -70,19 +71,10 @@ export default function Home() {
       <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80 sticky top-0 z-10">
         <div className="max-w-[720px] mx-auto px-6 py-5 flex items-center justify-between">
           <Link to="/" className="group">
-            <div className="flex items-center gap-3">
-              <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
-                The Manifest
-              </h1>
-              <div className="flex items-center gap-1.5 bg-surface border border-border rounded-full px-2 py-0.5">
-                <span className="relative flex h-1.5 w-1.5">
-                  <span className="absolute inset-0 rounded-full bg-accent animate-ping opacity-50" />
-                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-accent" />
-                </span>
-                <span className="font-mono text-[9px] text-muted-light">P2P</span>
-              </div>
-            </div>
-            <p className="font-mono text-xs text-muted-light mt-0.5 tracking-wide">
+            <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
+              The Manifest
+            </h1>
+            <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide">
               Zero-server file sharing portal
             </p>
           </Link>
@@ -105,8 +97,8 @@ export default function Home() {
           </div>
         )}
 
-        {/* Drop zone — only before files or before recipients connect */}
-        {recipientCount === 0 && (
+        {/* Drop zone — only when no files loaded */}
+        {!hasFiles && (
           <DropZone onFiles={handleFiles} disabled={isTransferring || isFinished} />
         )}
 
@@ -130,12 +122,12 @@ export default function Home() {
         {/* ── Active session UI (only when files loaded) ── */}
         {hasFiles && (
           <>
-            {/* Warning banner */}
+            {/* Warning banner — compact */}
             {status !== 'done' && (
-              <div className="flex items-center gap-3 bg-warning/8 border border-warning/20 rounded-xl px-4 py-3 animate-fade-in-up">
-                <AlertTriangle className="w-4 h-4 text-warning shrink-0" />
-                <span className="font-mono text-[11px] text-warning">
-                  Keep this tab open. Closing it destroys the portal and cancels all transfers.
+              <div className="flex items-center gap-2 bg-warning/5 border border-warning/15 rounded-lg px-3 py-2 animate-fade-in-up">
+                <AlertTriangle className="w-3.5 h-3.5 text-warning/70 shrink-0" />
+                <span className="font-mono text-[10px] text-warning/70">
+                  Keep this tab open — closing it ends all transfers.
                 </span>
               </div>
             )}
@@ -143,17 +135,69 @@ export default function Home() {
             {/* Status */}
             <StatusIndicator status={status} />
 
-            {/* File list */}
-            <FileList
-              files={files}
-              onRemove={isTransferring || isFinished ? null : removeFile}
-              onReorder={isTransferring || isFinished ? null : reorderFiles}
-              progress={showProgress ? progress : null}
-              currentFileIndex={isTransferring ? currentFileIndex : -1}
-            />
+            {/* Connection info badges */}
+            {recipientCount > 0 && (
+              <div className="flex items-center gap-2 flex-wrap animate-fade-in-up">
+                <div
+                  className="flex items-center gap-1.5 bg-accent/5 border border-accent/20 rounded-xl px-3 py-2 cursor-default"
+                  title={`${recipientCount} recipient${recipientCount !== 1 ? 's' : ''} currently connected`}
+                >
+                  <Users className="w-3.5 h-3.5 text-accent" />
+                  <span className="font-mono text-[11px] text-accent">{recipientCount} recipient{recipientCount !== 1 ? 's' : ''}</span>
+                </div>
+                {rtt !== null && (
+                  <div
+                    className={`flex items-center gap-1.5 rounded-xl px-3 py-2 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`}
+                    title={`Round-trip latency: ${rtt}ms${rtt < 100 ? ' (excellent)' : rtt < 300 ? ' (good)' : ' (slow — transfer may be affected)'}`}
+                  >
+                    <span className={`font-mono text-[11px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms latency</span>
+                  </div>
+                )}
+                {fingerprint && (
+                  <div
+                    className="flex items-center gap-1.5 bg-accent/5 border border-accent/20 rounded-xl px-3 py-2 cursor-default"
+                    title={`E2E key fingerprint — verify this matches the recipient's: ${fingerprint}`}
+                  >
+                    <Shield className="w-3.5 h-3.5 text-accent" />
+                    <span className="font-mono text-[11px] text-accent">E2E</span>
+                    <code className="font-mono text-[10px] text-accent/60">{fingerprint}</code>
+                  </div>
+                )}
+              </div>
+            )}
 
-            {/* Password (collapsible) */}
-            {!isTransferring && !isFinished && (
+            {/* File list (collapsible) */}
+            <div className="glow-card overflow-hidden">
+              <button
+                onClick={() => setFilesOpen(o => !o)}
+                className="w-full flex items-center justify-between px-4 py-3 text-left group"
+              >
+                <div className="flex items-center gap-2">
+                  <Upload className="w-3.5 h-3.5 text-accent" />
+                  <span className="font-mono text-sm text-text-bright font-bold">{files.length}</span>
+                  <span className="text-xs text-muted">
+                    file{files.length !== 1 ? 's' : ''} &middot; {formatBytes(files.reduce((s, f) => s + f.size, 0))}
+                  </span>
+                </div>
+                <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesOpen ? 'rotate-180' : ''}`} />
+              </button>
+              <div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                <div className="overflow-hidden">
+                  <div className="px-4 pb-4">
+                    <FileList
+                      files={files}
+                      onRemove={isTransferring || isFinished ? null : removeFile}
+                      onReorder={isTransferring || isFinished ? null : reorderFiles}
+                      progress={showProgress ? progress : null}
+                      currentFileIndex={isTransferring ? currentFileIndex : -1}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Password (collapsible) — hide once recipients connect */}
+            {!isTransferring && !isFinished && recipientCount === 0 && (
               <PasswordSection password={passwordInput} onChange={(v) => { setPasswordInput(v); setPassword(v) }} />
             )}
 
@@ -162,32 +206,8 @@ export default function Home() {
               <PortalLink peerId={peerId} />
             )}
 
-            {/* Connection info bar */}
-            {(recipientCount > 0 || fingerprint) && (
-              <div className="flex items-center gap-3 flex-wrap animate-fade-in-up">
-                {recipientCount > 0 && (
-                  <div className="flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-4 py-2">
-                    <Users className="w-3.5 h-3.5 text-accent" />
-                    <span className="font-mono text-xs text-accent">{recipientCount} recipient{recipientCount !== 1 ? 's' : ''}</span>
-                  </div>
-                )}
-                {rtt !== null && (
-                  <div className={`flex items-center gap-1.5 rounded-xl px-3 py-2 border ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`}>
-                    <Wifi className={`w-3 h-3 ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`} />
-                    <span className={`font-mono text-[11px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
-                  </div>
-                )}
-                {fingerprint && (
-                  <div className="flex items-center gap-1.5 bg-surface border border-accent/20 rounded-xl px-3 py-2">
-                    <Shield className="w-3 h-3 text-accent shrink-0" />
-                    <code className="font-mono text-[10px] text-accent">{fingerprint}</code>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Connection visualization */}
-            <ConnectionViz status={status} />
+            {/* Connection visualization — only when recipients connected */}
+            {recipientCount > 0 && <ConnectionViz status={status} />}
 
             {/* Transfer progress */}
             {showProgress && (

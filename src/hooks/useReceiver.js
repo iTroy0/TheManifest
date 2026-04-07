@@ -250,11 +250,22 @@ export function useReceiver(peerId) {
             setCompletedFiles(prev => ({ ...prev, [data.index]: true }))
             setPendingFiles(prev => { const n = { ...prev }; delete n[data.index]; return n })
             wasTransferringRef.current = false
+
+            // Single file download — set 100% and go back to ready
+            if (!zipModeRef.current) {
+              setOverallProgress(100)
+              totalReceivedRef.current = transferTotalRef.current
+              setStatus('manifest-received')
+            }
           }
 
           if (data.type === 'done' || data.type === 'batch-done') {
             wasTransferringRef.current = false
             setPendingFiles({})
+            setOverallProgress(100)
+            setSpeed(0)
+            setEta(null)
+            setStatus('manifest-received')
 
             // Finalize the streaming zip
             if (zipModeRef.current && zipWriterRef.current) {
@@ -369,6 +380,7 @@ export function useReceiver(peerId) {
     totalReceivedRef.current = 0
     startTimeRef.current = Date.now()
     transferTotalRef.current = manifestRef.current.files[index]?.size || 0
+    setStatus('receiving')
     setProgress({}); setOverallProgress(0); setSpeed(0); setEta(null)
     conn.send({ type: 'request-file', index })
     setPendingFiles(prev => ({ ...prev, [index]: true }))
@@ -386,6 +398,7 @@ export function useReceiver(peerId) {
     wasTransferringRef.current = true
     zipModeRef.current = true
     setZipMode(true)
+    setStatus('receiving')
     totalReceivedRef.current = 0
     startTimeRef.current = Date.now()
     const indices = manifestRef.current.files.map((_, i) => i).filter(i => !completedFiles[i])
@@ -422,7 +435,7 @@ export function useReceiver(peerId) {
 
     const meta = fileMetaRef.current[fileIndex]
     if (meta) {
-      const pct = Math.min(99, Math.round(((chunkIndex + 1) / meta.totalChunks) * 100))
+      const pct = Math.round(((chunkIndex + 1) / meta.totalChunks) * 100)
       setProgress(prev => ({ ...prev, [meta.name]: pct }))
     }
 

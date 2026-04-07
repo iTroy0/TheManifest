@@ -9,7 +9,7 @@ import StatusIndicator from '../components/StatusIndicator'
 import ConnectionViz from '../components/ConnectionViz'
 import ChatPanel from '../components/ChatPanel'
 import { useState } from 'react'
-import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Plus, Wifi, Archive, Lock } from 'lucide-react'
+import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Plus, Wifi, Archive, Lock, ChevronDown } from 'lucide-react'
 
 export default function Portal() {
   const { peerId } = useParams()
@@ -21,6 +21,8 @@ export default function Portal() {
     messages, sendMessage, rtt, nickname,
   } = useReceiver(peerId)
   const [passwordInput, setPasswordInput] = useState('')
+  const [passwordLoading, setPasswordLoading] = useState(false)
+  const [filesOpen, setFilesOpen] = useState(true)
   usePageTitle(status, overallProgress)
 
   const hasPending = Object.keys(pendingFiles).length > 0
@@ -60,24 +62,6 @@ export default function Portal() {
                 <Download className="w-3 h-3" /> Incoming file portal
               </p>
             </Link>
-            <div className="flex items-center gap-2">
-              {showManifest && (
-                <div className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 border ${useRelay ? 'bg-warning/5 border-warning/20' : 'bg-accent/5 border-accent/20'}`}>
-                  <Wifi className={`w-3 h-3 ${useRelay ? 'text-warning' : 'text-accent'}`} />
-                  <span className={`font-mono text-[9px] ${useRelay ? 'text-warning' : 'text-accent'}`}>{useRelay ? 'Relay' : 'Direct P2P'}</span>
-                </div>
-              )}
-              {rtt !== null && (
-                <div className={`flex items-center gap-1 rounded-full px-2 py-1 border ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`}>
-                  <Wifi className={`w-3 h-3 ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`} />
-                  <span className={`font-mono text-[9px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
-                </div>
-              )}
-              <div className="flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1.5" title={fingerprint ? `Key: ${fingerprint}` : ''}>
-                <Shield className="w-3 h-3 text-accent" />
-                <span className="font-mono text-[10px] text-muted-light">E2E Encrypted</span>
-              </div>
-            </div>
           </div>
         </div>
       </header>
@@ -86,7 +70,37 @@ export default function Portal() {
       <main className="flex-1 max-w-[720px] w-full mx-auto px-6 py-8 space-y-6">
 
         <StatusIndicator status={status} />
-        <ConnectionViz status={hasPending ? 'transferring' : allDone ? 'done' : status} useRelay={useRelay} />
+
+        {/* Connection info badges */}
+        {showManifest && (
+          <div className="flex items-center gap-2 flex-wrap animate-fade-in-up">
+            <div
+              className={`flex items-center gap-1.5 rounded-xl px-3 py-2 border cursor-default ${useRelay ? 'bg-warning/5 border-warning/20' : 'bg-accent/5 border-accent/20'}`}
+              title={useRelay ? 'Files pass through an encrypted relay server' : 'Files transfer directly between browsers'}
+            >
+              <Wifi className={`w-3.5 h-3.5 ${useRelay ? 'text-warning' : 'text-accent'}`} />
+              <span className={`font-mono text-[11px] ${useRelay ? 'text-warning' : 'text-accent'}`}>{useRelay ? 'Relay' : 'Direct P2P'}</span>
+            </div>
+            {rtt !== null && (
+              <div
+                className={`flex items-center gap-1.5 rounded-xl px-3 py-2 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`}
+                title={`Round-trip latency: ${rtt}ms${rtt < 100 ? ' (excellent)' : rtt < 300 ? ' (good)' : ' (slow — transfer may be affected)'}`}
+              >
+                <span className={`font-mono text-[11px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms latency</span>
+              </div>
+            )}
+            <div
+              className="flex items-center gap-1.5 bg-accent/5 border border-accent/20 rounded-xl px-3 py-2 cursor-default"
+              title={fingerprint ? `Verify this matches the sender's fingerprint: ${fingerprint}` : 'End-to-end encrypted with AES-256-GCM'}
+            >
+              <Shield className="w-3.5 h-3.5 text-accent" />
+              <span className="font-mono text-[11px] text-accent">E2E</span>
+              {fingerprint && <code className="font-mono text-[10px] text-accent/60">{fingerprint}</code>}
+            </div>
+          </div>
+        )}
+
+        {showManifest && <ConnectionViz status={hasPending ? 'transferring' : allDone ? 'done' : status} useRelay={useRelay} />}
 
         {/* Dead states */}
         {status === 'closed' && !manifest && (
@@ -96,7 +110,7 @@ export default function Portal() {
           <ErrorBlock title="Portal closed." desc="The sender disconnected. Files already downloaded are saved." />
         )}
         {status === 'rejected' && (
-          <ErrorBlock title="Portal is already in use." desc="Another recipient is currently connected. Ask the sender to open a new portal for you." />
+          <ErrorBlock title="Connection rejected." desc="The sender rejected this connection. Ask them to share a new portal link." />
         )}
         {status === 'error' && (
           <ErrorBlock title="Connection error." desc="Could not establish a connection. Check your internet and try refreshing the page." />
@@ -127,20 +141,21 @@ export default function Portal() {
               <p className="font-mono text-sm text-text mb-2">This portal is password protected</p>
               <p className="text-xs text-muted max-w-sm mx-auto">Enter the password to access the files.</p>
             </div>
-            <form onSubmit={(e) => { e.preventDefault(); submitPassword(passwordInput) }} className="max-w-xs mx-auto space-y-3">
+            <form onSubmit={(e) => { e.preventDefault(); setPasswordLoading(true); submitPassword(passwordInput); setTimeout(() => setPasswordLoading(false), 2000) }} className="max-w-xs mx-auto space-y-3">
               <input
                 type="password"
                 value={passwordInput}
-                onChange={(e) => setPasswordInput(e.target.value)}
+                onChange={(e) => { setPasswordInput(e.target.value); setPasswordLoading(false) }}
                 placeholder="Enter password"
-                className="w-full bg-bg border border-border rounded-lg px-3 py-2 font-mono text-sm text-text text-center placeholder:text-muted/40 focus:outline-none focus:border-accent/40 transition-colors"
+                disabled={passwordLoading}
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2.5 font-mono text-sm text-text text-center placeholder:text-muted/40 focus:outline-none focus:border-accent/40 transition-colors min-h-[44px] disabled:opacity-40"
                 autoFocus
               />
-              {passwordError && (
+              {passwordError && !passwordLoading && (
                 <p className="font-mono text-xs text-danger">Wrong password. Try again.</p>
               )}
-              <button type="submit" className="w-full px-4 py-2.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim transition-colors">
-                Unlock Portal
+              <button type="submit" disabled={passwordLoading || !passwordInput} className="w-full px-4 py-2.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim transition-colors disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px]">
+                {passwordLoading ? 'Verifying...' : 'Unlock Portal'}
               </button>
             </form>
           </div>
@@ -180,78 +195,81 @@ export default function Portal() {
         {/* Manifest + file list */}
         {showManifest && manifest && (
           <div className="space-y-4 animate-fade-in-up">
-            <div className="glow-card p-5">
-              <div className="flex items-center gap-2 mb-3">
-                <Download className="w-3.5 h-3.5 text-accent" />
-                <span className="font-mono text-xs text-accent uppercase tracking-widest">Incoming Files</span>
-              </div>
-              <div className="flex items-baseline gap-3">
-                <p className="font-mono text-lg text-text-bright font-bold">{manifest.files.length}</p>
-                <p className="text-xs text-muted">
-                  file{manifest.files.length !== 1 ? 's' : ''} &middot; {formatBytes(manifest.totalSize)} total
-                  {completedCount > 0 && <> &middot; {completedCount} saved</>}
-                </p>
-              </div>
-              {fingerprint && (
-                <div className="flex items-center gap-2 mt-3 pt-3 border-t border-border">
-                  <Shield className="w-3 h-3 text-accent shrink-0" />
-                  <span className="font-mono text-[10px] text-muted">Key fingerprint:</span>
-                  <code className="font-mono text-[10px] text-accent">{fingerprint}</code>
+            <div className="glow-card overflow-hidden">
+              {/* Collapsible header */}
+              <button
+                onClick={() => setFilesOpen(o => !o)}
+                className="w-full flex items-center justify-between px-4 py-3 text-left group"
+              >
+                <div className="flex items-center gap-2">
+                  <Download className="w-3.5 h-3.5 text-accent" />
+                  <span className="font-mono text-sm text-text-bright font-bold">{manifest.files.length}</span>
+                  <span className="text-xs text-muted">
+                    file{manifest.files.length !== 1 ? 's' : ''} &middot; {formatBytes(manifest.totalSize)}
+                    {completedCount > 0 && <> &middot; {completedCount} saved</>}
+                  </span>
                 </div>
-              )}
+                <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {/* Collapsible body */}
+              <div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                <div className="overflow-hidden">
+                  <div className="px-4 pb-4 space-y-3">
+                    {/* Single file download */}
+                    {!allDone && !isDead && manifest.files.length === 1 && !completedFiles[0] && !pendingFiles[0] && (
+                      <button
+                        onClick={() => requestFile(0)}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs bg-accent text-bg font-medium hover:bg-accent-dim transition-colors"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        Download File
+                      </button>
+                    )}
+
+                    {/* Transfer info */}
+                    {hasPending && (
+                      <div className="flex items-start gap-2 bg-info/5 border border-info/15 rounded-lg px-3 py-2">
+                        <Info className="w-3.5 h-3.5 text-info shrink-0 mt-0.5" />
+                        <p className="font-mono text-[10px] text-info/80 leading-relaxed">
+                          {zipMode
+                            ? 'Downloading all files. A zip will be saved when complete.'
+                            : 'Downloading to your device. Keep this tab open.'}
+                        </p>
+                      </div>
+                    )}
+
+                    <FileList
+                      files={manifest.files}
+                      progress={progress}
+                      pendingFiles={pendingFiles}
+                      onRequest={isDead || hasPending ? null : requestFile}
+                      currentFileIndex={currentFileIndex}
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
 
-            {/* Bulk actions */}
-            {!allDone && !isDead && manifest.files.length > 1 && (
-              <div className="flex items-center gap-3 flex-wrap">
-                <button
-                  onClick={requestAllAsZip}
-                  disabled={hasPending}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs
-                    bg-accent text-bg font-medium hover:bg-accent-dim transition-colors
-                    disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <Archive className="w-3.5 h-3.5" />
-                  Download All as Zip
-                </button>
-                <p className="font-mono text-[10px] text-muted">
-                  or download individual files below
-                </p>
+            {/* Download all bar */}
+            {!allDone && !isDead && !hasPending && manifest.files.length > 1 && (
+              <div className="sticky bottom-4 z-10">
+                <div className="flex items-center justify-center gap-3 bg-surface/95 backdrop-blur-sm border border-border rounded-xl px-4 py-2.5 shadow-lg shadow-black/30">
+                  <button
+                    onClick={requestAllAsZip}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg font-mono text-xs bg-accent text-bg font-medium hover:bg-accent-dim transition-colors"
+                  >
+                    <Archive className="w-3.5 h-3.5" />
+                    Download All as Zip
+                  </button>
+                  {completedCount > 0 && (
+                    <span className="font-mono text-[10px] text-muted">
+                      {completedCount}/{manifest.files.length} saved
+                    </span>
+                  )}
+                </div>
               </div>
             )}
-
-            {/* Single file — just show download button, no bulk */}
-            {!allDone && !isDead && manifest.files.length === 1 && !completedFiles[0] && !pendingFiles[0] && (
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => requestFile(0)}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs bg-accent text-bg font-medium hover:bg-accent-dim transition-colors"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  Download File
-                </button>
-              </div>
-            )}
-
-            {/* Transfer info */}
-            {hasPending && (
-              <div className="flex items-start gap-3 bg-info/5 border border-info/15 rounded-xl px-4 py-3">
-                <Info className="w-4 h-4 text-info shrink-0 mt-0.5" />
-                <p className="font-mono text-[10px] text-info/80 leading-relaxed">
-                  {zipMode
-                    ? 'Downloading all files. A zip will be saved when complete.'
-                    : 'File is downloading directly to your device. Keep this tab open.'}
-                </p>
-              </div>
-            )}
-
-            <FileList
-              files={manifest.files}
-              progress={progress}
-              pendingFiles={pendingFiles}
-              onRequest={isDead || hasPending ? null : requestFile}
-              currentFileIndex={currentFileIndex}
-            />
           </div>
         )}
 

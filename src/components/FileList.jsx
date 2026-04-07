@@ -51,7 +51,7 @@ function ImageThumb({ file }) {
     return () => URL.revokeObjectURL(url)
   }, [file])
   if (!src) return null
-  return <img src={src} alt="" className="w-8 h-8 rounded-lg object-cover" />
+  return <img src={src} alt="" className="w-7 h-7 rounded-md object-cover" />
 }
 
 function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, showThumb, Icon, canDrag, onRequest, onRemove }) {
@@ -75,7 +75,7 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, s
       ref={setNodeRef}
       style={style}
       className={`
-        sortable-item flex items-center gap-3 rounded-xl px-4 py-3
+        sortable-item flex items-center gap-2.5 rounded-lg px-3 py-2
         border animate-fade-in-up
         ${isDone
           ? 'bg-accent/5 border-accent/20'
@@ -100,17 +100,17 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, s
         <ImageThumb file={file} />
       ) : (
         <div className={`
-          w-8 h-8 rounded-lg flex items-center justify-center shrink-0
+          w-7 h-7 rounded-md flex items-center justify-center shrink-0
           ${isDone ? 'bg-accent/15 text-accent' : isActive ? 'bg-info/15 text-info' : 'bg-surface-2 text-muted-light'}
         `}>
-          <Icon className="w-4 h-4" strokeWidth={1.5} />
+          <Icon className="w-3.5 h-3.5" strokeWidth={1.5} />
         </div>
       )}
 
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-mono truncate text-text">{file.name}</p>
+        <p className="text-xs font-mono truncate text-text">{file.name}</p>
         <div className="flex items-center gap-2">
-          <p className="text-[11px] text-muted font-mono">{formatBytes(file.size)}</p>
+          <p className="text-[10px] text-muted font-mono">{formatBytes(file.size)}</p>
           {isActive && <span className="font-mono text-[10px] text-info animate-pulse">transferring</span>}
           {isPending && !isActive && pct == null && <span className="font-mono text-[10px] text-info animate-pulse">queued</span>}
         </div>
