@@ -1,0 +1,244 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #050505;
+  --color-surface: #0c0c0c;
+  --color-surface-2: #131313;
+  --color-border: #1a1a1a;
+  --color-border-hover: #2a2a2a;
+  --color-accent: #00ff88;
+  --color-accent-dim: #00cc6a;
+  --color-accent-glow: rgba(0, 255, 136, 0.15);
+  --color-warning: #ff6b35;
+  --color-danger: #ff4444;
+  --color-info: #4a9eff;
+  --color-text: #e8e8e8;
+  --color-text-bright: #ffffff;
+  --color-muted: #555555;
+  --color-muted-light: #777777;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-sans: 'Inter', sans-serif;
+}
+
+/* ── Base ── */
+body {
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Ambient background ── */
+.bg-grid {
+  background-image:
+    linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.bg-radial-glow {
+  background: radial-gradient(
+    ellipse 600px 400px at 50% 0%,
+    rgba(0, 255, 136, 0.04),
+    transparent
+  );
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-border-hover); }
+
+/* ── Selection ── */
+::selection {
+  background: rgba(0, 255, 136, 0.25);
+  color: #fff;
+}
+
+/* ── Keyframes ── */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 6px rgba(0, 255, 136, 0.2), 0 0 20px rgba(0, 255, 136, 0.05); }
+  50% { box-shadow: 0 0 12px rgba(0, 255, 136, 0.4), 0 0 40px rgba(0, 255, 136, 0.1); }
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes scan {
+  0% { top: 0; opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { top: 100%; opacity: 0; }
+}
+
+@keyframes border-glow {
+  0%, 100% { border-color: rgba(0, 255, 136, 0.2); }
+  50% { border-color: rgba(0, 255, 136, 0.5); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ── Utility classes ── */
+.animate-pulse-glow {
+  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+.animate-breathe {
+  animation: breathe 3.5s ease-in-out infinite;
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  opacity: 0;
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+.animate-border-glow {
+  animation: border-glow 2.5s ease-in-out infinite;
+}
+
+.animate-spin-slow {
+  animation: spin-slow 3s linear infinite;
+}
+
+/* ── Portal ring animations ── */
+@keyframes portal-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes ripple {
+  0% { transform: scale(1); opacity: 0.4; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+/* ── Connection dot flow ── */
+.dot-flow {
+  position: absolute;
+  width: 100%;
+  height: 2px;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0px,
+    transparent 8px,
+    var(--color-accent) 8px,
+    var(--color-accent) 12px
+  );
+  background-size: 20px 2px;
+  animation: dot-move 0.8s linear infinite;
+  opacity: 0.6;
+}
+@keyframes dot-move {
+  0% { transform: translateX(-20px); }
+  100% { transform: translateX(0); }
+}
+
+/* ── Image thumbnail ── */
+.file-thumb {
+  object-fit: cover;
+  border-radius: 6px;
+}
+
+/* ── Drag reorder ── */
+.drag-over-top {
+  box-shadow: 0 -2px 0 0 var(--color-accent);
+}
+.drag-over-bottom {
+  box-shadow: 0 2px 0 0 var(--color-accent);
+}
+.dragging-item {
+  opacity: 0.4;
+}
+
+/* ── Full-screen mobile drop zone ── */
+@media (max-width: 640px) {
+  .mobile-full-drop {
+    min-height: 200px;
+  }
+}
+
+/* ── Progress bar shimmer ── */
+.shimmer-bar {
+  overflow: hidden;
+}
+.shimmer-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
+  animation: shimmer 2s ease-in-out infinite;
+}
+
+/* ── Glow card ── */
+.glow-card {
+  position: relative;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+.glow-card::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 13px;
+  background: linear-gradient(135deg, rgba(0,255,136,0.1), transparent 40%, transparent 60%, rgba(0,255,136,0.05));
+  z-index: -1;
+  opacity: 0;
+  transition: opacity 0.4s;
+}
+.glow-card:hover::before {
+  opacity: 1;
+}
+
+/* ── Title engraved effect ── */
+.title-engraved {
+  background: linear-gradient(180deg, #fff 0%, #999 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5));
+}
+
+/* ── Accent text glow ── */
+.text-glow {
+  text-shadow: 0 0 12px rgba(0, 255, 136, 0.4), 0 0 30px rgba(0, 255, 136, 0.1);
+}
+
+/* ── Scan line effect for portal active state ── */
+.scan-line::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--color-accent), transparent);
+  opacity: 0.3;
+  animation: scan 3s linear infinite;
+}
