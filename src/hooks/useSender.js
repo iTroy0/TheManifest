@@ -147,7 +147,26 @@ export function useSender() {
         }
 
         if (data.type === 'chat') {
-          setMessages(prev => [...prev, { text: data.text, from: 'receiver', time: data.time }])
+          const msg = { text: data.text, from: data.nickname || 'Anon', time: data.time, self: false }
+          setMessages(prev => [...prev, msg])
+          // Relay to all OTHER receivers
+          connectionsRef.current.forEach((cs, id) => {
+            if (id !== connId) {
+              try { cs.conn.send({ type: 'chat', text: data.text, from: data.nickname || 'Anon', time: data.time }) } catch {}
+            }
+          })
+          return
+        }
+
+        if (data.type === 'join') {
+          connState.nickname = data.nickname
+          setMessages(prev => [...prev, { text: `${data.nickname} joined`, from: 'system', time: Date.now(), self: false }])
+          // Notify other receivers
+          connectionsRef.current.forEach((cs, id) => {
+            if (id !== connId) {
+              try { cs.conn.send({ type: 'chat', text: `${data.nickname} joined`, from: 'system', time: Date.now() }) } catch {}
+            }
+          })
           return
         }
 
@@ -266,10 +285,10 @@ export function useSender() {
 
   const sendMessage = useCallback((text) => {
     if (!text.trim()) return
-    const msg = { text: text.trim(), from: 'sender', time: Date.now() }
-    setMessages(prev => [...prev, msg])
+    const time = Date.now()
+    setMessages(prev => [...prev, { text: text.trim(), from: 'You', time, self: true }])
     connectionsRef.current.forEach(cs => {
-      try { cs.conn.send({ type: 'chat', text: msg.text, time: msg.time }) } catch {}
+      try { cs.conn.send({ type: 'chat', text: text.trim(), from: 'Sender', time }) } catch {}
     })
   }, [])
 

@@ -6,6 +6,14 @@ import { createFileStream } from '../utils/streamWriter'
 import { createStreamingZip } from '../utils/zipBuilder'
 import { STUN_ONLY, WITH_TURN } from '../utils/iceServers'
 
+const ANIMALS = ['Fox', 'Wolf', 'Bear', 'Hawk', 'Lynx', 'Owl', 'Crow', 'Deer', 'Hare', 'Pike']
+const ADJECTIVES = ['Swift', 'Bold', 'Calm', 'Keen', 'Wild', 'Wise', 'Dark', 'Bright']
+function generateNickname() {
+  const a = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)]
+  const b = ANIMALS[Math.floor(Math.random() * ANIMALS.length)]
+  return `${a}${b}${Math.floor(Math.random() * 100)}`
+}
+
 const MAX_RETRIES = 2
 const TIMEOUT_MS = 10000
 const RECONNECT_DELAY = 2000
@@ -28,6 +36,7 @@ export function useReceiver(peerId) {
   const [passwordError, setPasswordError] = useState(false)
   const [messages, setMessages] = useState([])
   const [rtt, setRtt] = useState(null)
+  const [nickname] = useState(() => generateNickname())
 
   const streamsRef = useRef({})
   const chunksRef = useRef({}) // fallback only
@@ -111,6 +120,7 @@ export function useReceiver(peerId) {
           } else {
             setStatus('connected')
           }
+          conn.send({ type: 'join', nickname })
         })
 
         conn.on('data', async (data) => {
@@ -153,7 +163,7 @@ export function useReceiver(peerId) {
           }
 
           if (data.type === 'chat') {
-            setMessages(prev => [...prev, { text: data.text, from: 'sender', time: data.time }])
+            setMessages(prev => [...prev, { text: data.text, from: data.from || 'Sender', time: data.time, self: false }])
             return
           }
 
@@ -303,10 +313,10 @@ export function useReceiver(peerId) {
     if (!text.trim()) return
     const conn = connRef.current
     if (!conn) return
-    const msg = { text: text.trim(), from: 'receiver', time: Date.now() }
-    setMessages(prev => [...prev, msg])
-    try { conn.send({ type: 'chat', text: msg.text, time: msg.time }) } catch {}
-  }, [])
+    const time = Date.now()
+    setMessages(prev => [...prev, { text: text.trim(), from: 'You', time, self: true }])
+    try { conn.send({ type: 'chat', text: text.trim(), nickname, time }) } catch {}
+  }, [nickname])
 
   const submitPassword = useCallback((password) => {
     const conn = connRef.current
@@ -398,6 +408,6 @@ export function useReceiver(peerId) {
     pendingFiles, completedFiles, requestFile, requestAllAsZip,
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
     passwordRequired, passwordError, submitPassword,
-    messages, sendMessage, rtt,
+    messages, sendMessage, rtt, nickname,
   }
 }

@@ -18,7 +18,7 @@ export default function Portal() {
     pendingFiles, completedFiles, requestFile, requestAllAsZip,
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
     passwordRequired, passwordError, submitPassword,
-    messages, sendMessage, rtt,
+    messages, sendMessage, rtt, nickname,
   } = useReceiver(peerId)
   const [passwordInput, setPasswordInput] = useState('')
   usePageTitle(status, overallProgress)
@@ -274,7 +274,7 @@ export default function Portal() {
 
         {/* Chat */}
         {showManifest && !isDead && (
-          <ChatPanel messages={messages} onSend={sendMessage} disabled={isDead} />
+          <ChatPanel messages={messages} onSend={sendMessage} disabled={isDead} nickname={nickname} />
         )}
 
         {/* All done */}
