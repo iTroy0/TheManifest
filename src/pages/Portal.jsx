@@ -7,7 +7,8 @@ import FileList from '../components/FileList'
 import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import ConnectionViz from '../components/ConnectionViz'
-import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Plus, Wifi, Archive } from 'lucide-react'
+import { useState } from 'react'
+import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Plus, Wifi, Archive, Lock } from 'lucide-react'
 
 export default function Portal() {
   const { peerId } = useParams()
@@ -15,14 +16,16 @@ export default function Portal() {
     manifest, status, progress, overallProgress, speed, eta,
     pendingFiles, completedFiles, requestFile, requestAllAsZip,
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
+    passwordRequired, passwordError, submitPassword,
   } = useReceiver(peerId)
+  const [passwordInput, setPasswordInput] = useState('')
   usePageTitle(status, overallProgress)
 
   const hasPending = Object.keys(pendingFiles).length > 0
   const completedCount = Object.keys(completedFiles).length
   const isDead = status === 'closed' || status === 'error' || status === 'rejected'
   const isConnecting = status === 'connecting' || status === 'retrying' || status === 'reconnecting'
-  const showManifest = status === 'manifest-received' || (manifest && !isDead)
+  const showManifest = status === 'manifest-received' || (manifest && !isDead && status !== 'password-required')
   const allDone = manifest && completedCount === manifest.files.length
   const elapsed = useElapsedTime(hasPending)
 
@@ -103,6 +106,35 @@ export default function Portal() {
             <p className="text-xs text-muted max-w-xs mx-auto leading-relaxed">
               {status === 'reconnecting' ? 'Connection dropped. Resuming where it left off.' : 'Establishing a secure peer-to-peer connection.'}
             </p>
+          </div>
+        )}
+
+        {/* Password required */}
+        {status === 'password-required' && (
+          <div className="text-center py-10 animate-fade-in-up space-y-5">
+            <div className="w-16 h-16 rounded-2xl bg-accent/10 flex items-center justify-center mx-auto">
+              <Lock className="w-8 h-8 text-accent" strokeWidth={1.5} />
+            </div>
+            <div>
+              <p className="font-mono text-sm text-text mb-2">This portal is password protected</p>
+              <p className="text-xs text-muted max-w-sm mx-auto">Enter the password to access the files.</p>
+            </div>
+            <form onSubmit={(e) => { e.preventDefault(); submitPassword(passwordInput) }} className="max-w-xs mx-auto space-y-3">
+              <input
+                type="password"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                placeholder="Enter password"
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2 font-mono text-sm text-text text-center placeholder:text-muted/40 focus:outline-none focus:border-accent/40 transition-colors"
+                autoFocus
+              />
+              {passwordError && (
+                <p className="font-mono text-xs text-danger">Wrong password. Try again.</p>
+              )}
+              <button type="submit" className="w-full px-4 py-2.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim transition-colors">
+                Unlock Portal
+              </button>
+            </form>
           </div>
         )}
 

@@ -15,17 +15,18 @@ export function useSender() {
   const [totalSent, setTotalSent] = useState(0)
   const [sessionKey, setSessionKey] = useState(0)
   const [fingerprint, setFingerprint] = useState(null)
+  const [recipientCount, setRecipientCount] = useState(0)
   const peerRef = useRef(null)
-  const connRef = useRef(null)
   const filesRef = useRef([])
-  const hasRecipient = useRef(false)
-  const transferAbortRef = useRef(null)
-  const totalSentRef = useRef(0)
-  const startTimeRef = useRef(null)
-  const encryptKeyRef = useRef(null)
+  const connectionsRef = useRef(new Map())
+  const passwordRef = useRef(null)
 
   const setFiles = useCallback((files) => {
     filesRef.current = files
+  }, [])
+
+  const setPassword = useCallback((pwd) => {
+    passwordRef.current = pwd || null
   }, [])
 
   useEffect(() => {
@@ -42,115 +43,166 @@ export function useSender() {
     peer.on('connection', (conn) => {
       if (destroyed) return
 
-      if (hasRecipient.current) {
-        conn.on('open', () => {
-          conn.send({ type: 'rejected', reason: 'Another user is already connected to this portal.' })
-          setTimeout(() => conn.close(), 500)
-        })
-        return
+      const connId = conn.peer + '-' + Date.now()
+      const connState = {
+        conn, encryptKey: null, keyPair: null, abort: { aborted: false },
+        progress: {}, totalSent: 0, startTime: null, transferTotalSize: 0,
+        speed: 0, currentFileIndex: -1, transferring: false,
+      }
+      connectionsRef.current.set(connId, connState)
+      setRecipientCount(connectionsRef.current.size)
+
+      function aggregateUI() {
+        const conns = Array.from(connectionsRef.current.values())
+        const active = conns.filter(cs => cs.transferring)
+
+        // Only merge progress from currently active transfers
+        const merged = {}
+        for (const cs of active) {
+          for (const [name, pct] of Object.entries(cs.progress || {})) {
+            // Multiple recipients downloading same file: show the one furthest behind
+            if (merged[name] === undefined) merged[name] = pct
+            else merged[name] = Math.min(merged[name], pct)
+          }
+        }
+        setProgress(merged)
+
+        const activeWithFile = active.find(cs => cs.currentFileIndex >= 0)
+        setCurrentFileIndex(activeWithFile ? activeWithFile.currentFileIndex : -1)
+
+        if (active.length === 0) return
+
+        const sent = active.reduce((s, cs) => s + cs.totalSent, 0)
+        const total = active.reduce((s, cs) => s + cs.transferTotalSize, 0)
+        const spd = active.reduce((s, cs) => s + cs.speed, 0)
+        setTotalSent(sent)
+        setOverallProgress(total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : 0)
+        setSpeed(spd)
+        setEta(spd > 0 ? Math.max(0, (total - sent) / spd) : null)
       }
 
-      connRef.current = conn
-
-      const senderKeyPairRef = { current: null }
+      function sendManifest(c) {
+        const files = filesRef.current
+        c.send({
+          type: 'manifest',
+          files: files.map(f => ({ name: f.name, size: f.size, type: f.type })),
+          totalSize: files.reduce((sum, f) => sum + f.size, 0),
+          sentAt: new Date().toISOString(),
+        })
+      }
 
       conn.on('open', async () => {
         if (destroyed) return
-        hasRecipient.current = true
         setStatus('connected')
 
-        // Generate keypair and send public key
-        senderKeyPairRef.current = await generateKeyPair()
-        const pubKeyBytes = await exportPublicKey(senderKeyPairRef.current.publicKey)
+        connState.keyPair = await generateKeyPair()
+        const pubKeyBytes = await exportPublicKey(connState.keyPair.publicKey)
         conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
       })
 
       conn.on('data', async (data) => {
         if (destroyed) return
 
-        // Key exchange: receive receiver's public key, derive shared key, send manifest
         if (data.type === 'public-key') {
           const remotePubKey = await importPublicKey(new Uint8Array(data.key))
-          encryptKeyRef.current = await deriveSharedKey(senderKeyPairRef.current.privateKey, remotePubKey)
+          connState.encryptKey = await deriveSharedKey(connState.keyPair.privateKey, remotePubKey)
           const fp = await getKeyFingerprint(new Uint8Array(data.key))
           setFingerprint(fp)
 
-          // Now send manifest
-          const files = filesRef.current
-          conn.send({
-            type: 'manifest',
-            files: files.map(f => ({ name: f.name, size: f.size, type: f.type })),
-            totalSize: files.reduce((sum, f) => sum + f.size, 0),
-            sentAt: new Date().toISOString(),
-          })
+          if (passwordRef.current) {
+            conn.send({ type: 'password-required' })
+          } else {
+            sendManifest(conn)
+          }
           return
         }
 
-        // Single file request
+        if (data.type === 'password') {
+          if (data.password === passwordRef.current) {
+            conn.send({ type: 'password-accepted' })
+            sendManifest(conn)
+          } else {
+            conn.send({ type: 'password-wrong' })
+          }
+          return
+        }
+
+        function startTransfer(transferSize) {
+          connState.abort = { aborted: false }
+          connState.totalSent = 0
+          connState.startTime = Date.now()
+          connState.progress = {}
+          connState.speed = 0
+          connState.transferTotalSize = transferSize
+          connState.transferring = true
+          setStatus('transferring')
+        }
+
+        function endTransfer() {
+          connState.transferring = false
+          connState.currentFileIndex = -1
+          aggregateUI()
+          const anyActive = Array.from(connectionsRef.current.values()).some(cs => cs.transferring)
+          if (!anyActive) setStatus('connected')
+        }
+
         if (data.type === 'request-file') {
-          setStatus('transferring')
-          if (!startTimeRef.current) startTimeRef.current = Date.now()
-          const abort = { aborted: false }
-          transferAbortRef.current = abort
-          await sendSingleFile(conn, filesRef.current, data.index, data.resumeChunk || 0, abort, setProgress, setCurrentFileIndex, totalSentRef, setTotalSent, setSpeed, setOverallProgress, setEta, startTimeRef, encryptKeyRef.current)
-          setStatus('connected')
-          setCurrentFileIndex(-1)
+          const transferSize = filesRef.current[data.index]?.size || 0
+          startTransfer(transferSize)
+          await sendSingleFile(conn, filesRef.current, data.index, data.resumeChunk || 0, connState, connState.encryptKey, aggregateUI)
+          if (!connState.abort.aborted) endTransfer()
         }
 
-        // All files request
         if (data.type === 'request-all') {
-          setStatus('transferring')
-          startTimeRef.current = Date.now()
-          const abort = { aborted: false }
-          transferAbortRef.current = abort
           const indices = data.indices || filesRef.current.map((_, i) => i)
+          const transferSize = indices.reduce((sum, i) => sum + (filesRef.current[i]?.size || 0), 0)
+          startTransfer(transferSize)
           for (const idx of indices) {
-            if (abort.aborted) break
-            await sendSingleFile(conn, filesRef.current, idx, 0, abort, setProgress, setCurrentFileIndex, totalSentRef, setTotalSent, setSpeed, setOverallProgress, setEta, startTimeRef, encryptKeyRef.current)
+            if (connState.abort.aborted) break
+            await sendSingleFile(conn, filesRef.current, idx, 0, connState, connState.encryptKey, aggregateUI)
           }
-          if (!abort.aborted) {
+          if (!connState.abort.aborted) {
             conn.send({ type: 'batch-done' })
-            setStatus('connected')
-            setCurrentFileIndex(-1)
+            endTransfer()
           }
         }
 
-        // Legacy ready (backward compat)
         if (data.type === 'ready') {
-          setStatus('transferring')
-          startTimeRef.current = Date.now()
-          const abort = { aborted: false }
-          transferAbortRef.current = abort
+          const transferSize = filesRef.current.reduce((sum, f) => sum + f.size, 0)
+          startTransfer(transferSize)
           for (let i = 0; i < filesRef.current.length; i++) {
-            if (abort.aborted) break
-            await sendSingleFile(conn, filesRef.current, i, 0, abort, setProgress, setCurrentFileIndex, totalSentRef, setTotalSent, setSpeed, setOverallProgress, setEta, startTimeRef, encryptKeyRef.current)
+            if (connState.abort.aborted) break
+            await sendSingleFile(conn, filesRef.current, i, 0, connState, connState.encryptKey, aggregateUI)
           }
-          if (!abort.aborted) {
+          if (!connState.abort.aborted) {
             conn.send({ type: 'done' })
+            connState.transferring = false
             setStatus('done')
           }
         }
 
         if (data.type === 'resume') {
-          setStatus('transferring')
-          if (!startTimeRef.current) startTimeRef.current = Date.now()
-          const abort = { aborted: false }
-          transferAbortRef.current = abort
-          await sendSingleFile(conn, filesRef.current, data.fileIndex, data.chunkIndex, abort, setProgress, setCurrentFileIndex, totalSentRef, setTotalSent, setSpeed, setOverallProgress, setEta, startTimeRef, encryptKeyRef.current)
-          if (!abort.aborted) setStatus('connected')
+          const transferSize = filesRef.current[data.fileIndex]?.size || 0
+          startTransfer(transferSize)
+          await sendSingleFile(conn, filesRef.current, data.fileIndex, data.chunkIndex, connState, connState.encryptKey, aggregateUI)
+          if (!connState.abort.aborted) endTransfer()
         }
       })
 
       conn.on('close', () => {
         if (destroyed) return
-        if (transferAbortRef.current) transferAbortRef.current.aborted = true
-        hasRecipient.current = false
-        setStatus(prev => prev === 'done' ? prev : 'waiting')
+        connState.abort.aborted = true
+        connectionsRef.current.delete(connId)
+        setRecipientCount(connectionsRef.current.size)
+        if (connectionsRef.current.size === 0) {
+          setStatus(prev => prev === 'done' ? prev : 'waiting')
+        }
       })
       conn.on('error', () => {
         if (destroyed) return
-        if (transferAbortRef.current) transferAbortRef.current.aborted = true
-        setStatus('error')
+        connState.abort.aborted = true
+        connectionsRef.current.delete(connId)
+        setRecipientCount(connectionsRef.current.size)
       })
     })
 
@@ -179,19 +231,18 @@ export function useSender() {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility)
       destroyed = true
-      if (transferAbortRef.current) transferAbortRef.current.aborted = true
+      connectionsRef.current.forEach(cs => { cs.abort.aborted = true })
+      connectionsRef.current.clear()
       peer.destroy()
     }
   }, [sessionKey])
 
   const reset = useCallback(() => {
-    if (transferAbortRef.current) transferAbortRef.current.aborted = true
+    connectionsRef.current.forEach(cs => { cs.abort.aborted = true })
+    connectionsRef.current.clear()
     if (peerRef.current) peerRef.current.destroy()
-    hasRecipient.current = false
-    connRef.current = null
     filesRef.current = []
-    totalSentRef.current = 0
-    startTimeRef.current = null
+    passwordRef.current = null
     setPeerId(null)
     setStatus('initializing')
     setProgress({})
@@ -201,34 +252,32 @@ export function useSender() {
     setCurrentFileIndex(-1)
     setTotalSent(0)
     setFingerprint(null)
-    encryptKeyRef.current = null
+    setRecipientCount(0)
     setSessionKey(k => k + 1)
   }, [])
 
-  return { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint }
+  return { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword }
 }
 
-async function sendSingleFile(conn, files, index, startChunk, abort, setProgress, setCurrentFileIndex, totalSentRef, setTotalSent, setSpeed, setOverallProgress, setEta, startTimeRef, encryptKey) {
+async function sendSingleFile(conn, files, index, startChunk, connState, encryptKey, aggregateUI) {
   const file = files[index]
   if (!file) return
-  const totalSize = files.reduce((sum, f) => sum + f.size, 0)
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
 
-  setCurrentFileIndex(index)
+  connState.currentFileIndex = index
   conn.send({ type: 'file-start', name: file.name, size: file.size, index, totalChunks, resumeFrom: startChunk })
 
   let chunkIndex = 0
   let fileSent = startChunk * CHUNK_SIZE
 
   for await (const chunkData of chunkFile(file)) {
-    if (abort.aborted) return
+    if (connState.abort.aborted) return
 
     if (chunkIndex < startChunk) {
       chunkIndex++
       continue
     }
 
-    // Encrypt the chunk data before wrapping in the packet
     const dataToSend = encryptKey
       ? await encryptChunk(encryptKey, chunkData)
       : chunkData
@@ -239,24 +288,20 @@ async function sendSingleFile(conn, files, index, startChunk, abort, setProgress
 
     chunkIndex++
     fileSent += chunkData.byteLength
-    totalSentRef.current += chunkData.byteLength
-    setTotalSent(totalSentRef.current)
+    connState.totalSent += chunkData.byteLength
+    connState.progress[file.name] = Math.round((fileSent / file.size) * 100)
 
-    const filePercent = Math.round((fileSent / file.size) * 100)
-    setProgress(prev => ({ ...prev, [file.name]: filePercent }))
-
-    setOverallProgress(Math.round((totalSentRef.current / totalSize) * 100))
-
-    const elapsed = (Date.now() - startTimeRef.current) / 1000
+    const elapsed = (Date.now() - connState.startTime) / 1000
     if (elapsed > 0.5) {
-      const currentSpeed = totalSentRef.current / elapsed
-      setSpeed(currentSpeed)
-      setEta((totalSize - totalSentRef.current) / currentSpeed)
+      connState.speed = connState.totalSent / elapsed
     }
+
+    aggregateUI()
   }
 
-  if (!abort.aborted) {
+  if (!connState.abort.aborted) {
     conn.send({ type: 'file-end', index })
-    setProgress(prev => ({ ...prev, [file.name]: 100 }))
+    connState.progress[file.name] = 100
+    aggregateUI()
   }
 }

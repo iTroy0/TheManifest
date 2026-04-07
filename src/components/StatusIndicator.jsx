@@ -4,6 +4,7 @@ const statusConfig = {
   connecting:   { color: 'bg-yellow-400',  ring: 'ring-yellow-400/30', text: 'Connecting to portal...', pulse: true },
   retrying:         { color: 'bg-yellow-400',  ring: 'ring-yellow-400/30', text: 'Retrying connection...', pulse: true },
   reconnecting:     { color: 'bg-yellow-400',  ring: 'ring-yellow-400/30', text: 'Reconnecting \u2014 transfer will resume...', pulse: true },
+  'password-required': { color: 'bg-yellow-400', ring: 'ring-yellow-400/30', text: 'Password required', pulse: true },
   'direct-failed':  { color: 'bg-warning',     ring: 'ring-warning/30',    text: 'Direct connection failed', pulse: false },
   connected:            { color: 'bg-accent',      ring: 'ring-accent/30',     text: 'Recipient connected', pulse: false },
   'manifest-received':  { color: 'bg-accent',      ring: 'ring-accent/30',     text: 'Ready \u2014 waiting for you to accept', pulse: true },

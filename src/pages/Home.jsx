@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, QrCode, Gauge } from 'lucide-react'
+import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, QrCode, Gauge, GripVertical } from 'lucide-react'
 import { useSender } from '../hooks/useSender'
 import { formatSpeed, formatTime, formatBytes } from '../utils/formatBytes'
 import { usePageTitle } from '../hooks/usePageTitle'
@@ -16,7 +16,8 @@ import ConnectionViz from '../components/ConnectionViz'
 export default function Home() {
   const [files, setFilesState] = useState([])
   const [error, setError] = useState(null)
-  const { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint } = useSender()
+  const { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword } = useSender()
+  const [passwordInput, setPasswordInput] = useState('')
 
   const hasFiles = files.length > 0
   const isTransferring = status === 'transferring'
@@ -46,9 +47,19 @@ export default function Home() {
     setFilesState(prev => prev.filter((_, i) => i !== index))
   }, [])
 
+  const reorderFiles = useCallback((fromIndex, toIndex) => {
+    setFilesState(prev => {
+      const next = [...prev]
+      const [moved] = next.splice(fromIndex, 1)
+      next.splice(toIndex, 0, moved)
+      return next
+    })
+  }, [])
+
   const handleNewSession = useCallback(() => {
     setFilesState([])
     setError(null)
+    setPasswordInput('')
     reset()
   }, [reset])
 
@@ -117,6 +128,32 @@ export default function Home() {
           </div>
         )}
 
+        {/* Password protection (optional) */}
+        {hasFiles && !isTransferring && !isFinished && (
+          <div className="glow-card p-4 space-y-3 animate-fade-in-up">
+            <div className="flex items-center gap-2">
+              <Lock className="w-3.5 h-3.5 text-accent" />
+              <span className="font-mono text-xs text-accent uppercase tracking-widest">Portal Password</span>
+              <span className="font-mono text-[10px] text-muted">(optional)</span>
+            </div>
+            <input
+              type="password"
+              placeholder="Set a password to protect this portal"
+              value={passwordInput}
+              onChange={(e) => { setPasswordInput(e.target.value); setPassword(e.target.value) }}
+              className="w-full bg-bg border border-border rounded-lg px-3 py-2 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/40 transition-colors"
+            />
+          </div>
+        )}
+
+        {/* Recipient count */}
+        {recipientCount > 0 && (
+          <div className="flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-4 py-2 animate-fade-in-up">
+            <Users className="w-3.5 h-3.5 text-accent" />
+            <span className="font-mono text-xs text-accent">{recipientCount} recipient{recipientCount !== 1 ? 's' : ''} connected</span>
+          </div>
+        )}
+
         {/* Portal ring animation */}
         {hasFiles && (status === 'waiting' || status === 'connected' || status === 'transferring' || status === 'done') && (
           <PortalRing status={status} />
@@ -154,6 +191,7 @@ export default function Home() {
           <FileList
             files={files}
             onRemove={isTransferring || isFinished ? null : removeFile}
+            onReorder={isTransferring || isFinished ? null : reorderFiles}
             progress={showProgress ? progress : null}
             currentFileIndex={isTransferring ? currentFileIndex : -1}
           />

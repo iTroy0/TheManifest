@@ -24,6 +24,8 @@ export function useReceiver(peerId) {
   const [useRelay, setUseRelay] = useState(false)
   const [zipMode, setZipMode] = useState(false)
   const [fingerprint, setFingerprint] = useState(null)
+  const [passwordRequired, setPasswordRequired] = useState(false)
+  const [passwordError, setPasswordError] = useState(false)
 
   const streamsRef = useRef({})
   const chunksRef = useRef({}) // fallback only
@@ -41,6 +43,7 @@ export function useReceiver(peerId) {
   const attemptRef = useRef(0)
   const zipModeRef = useRef(false)
 
+  const transferTotalRef = useRef(0)
   const lastFileIndexRef = useRef(0)
   const lastChunkIndexRef = useRef(0)
   const wasTransferringRef = useRef(false)
@@ -112,6 +115,23 @@ export function useReceiver(peerId) {
             decryptKeyRef.current = await deriveSharedKey(keyPairRef.current.privateKey, remotePubKey)
             const fp = await getKeyFingerprint(new Uint8Array(data.key))
             setFingerprint(fp)
+            return
+          }
+
+          if (data.type === 'password-required') {
+            setPasswordRequired(true)
+            setStatus('password-required')
+            return
+          }
+
+          if (data.type === 'password-accepted') {
+            setPasswordRequired(false)
+            setPasswordError(false)
+            return
+          }
+
+          if (data.type === 'password-wrong') {
+            setPasswordError(true)
             return
           }
 
@@ -255,13 +275,23 @@ export function useReceiver(peerId) {
     setTimeout(() => { startConnection(true) }, 500)
   }, [startConnection])
 
+  const submitPassword = useCallback((password) => {
+    const conn = connRef.current
+    if (!conn) return
+    setPasswordError(false)
+    conn.send({ type: 'password', password })
+  }, [])
+
   // Download a single file — streams directly to disk
   const requestFile = useCallback((index) => {
     const conn = connRef.current
-    if (!conn) return
+    if (!conn || !manifestRef.current) return
     wasTransferringRef.current = true
     zipModeRef.current = false
-    if (!startTimeRef.current) startTimeRef.current = Date.now()
+    totalReceivedRef.current = 0
+    startTimeRef.current = Date.now()
+    transferTotalRef.current = manifestRef.current.files[index]?.size || 0
+    setProgress({}); setOverallProgress(0); setSpeed(0); setEta(null)
     conn.send({ type: 'request-file', index })
     setPendingFiles(prev => ({ ...prev, [index]: true }))
   }, [])
@@ -271,16 +301,18 @@ export function useReceiver(peerId) {
     const conn = connRef.current
     if (!conn || !manifestRef.current) return
 
-    // Create the streaming zip writer
     const zipWriter = createStreamingZip('manifest-files.zip')
-    if (!zipWriter) return // StreamSaver not supported
+    if (!zipWriter) return
 
     zipWriterRef.current = zipWriter
     wasTransferringRef.current = true
     zipModeRef.current = true
     setZipMode(true)
+    totalReceivedRef.current = 0
     startTimeRef.current = Date.now()
     const indices = manifestRef.current.files.map((_, i) => i).filter(i => !completedFiles[i])
+    transferTotalRef.current = indices.reduce((sum, i) => sum + (manifestRef.current.files[i]?.size || 0), 0)
+    setProgress({}); setOverallProgress(0); setSpeed(0); setEta(null)
     conn.send({ type: 'request-all', indices })
     const pending = {}
     indices.forEach(i => { pending[i] = true })
@@ -316,14 +348,14 @@ export function useReceiver(peerId) {
       setProgress(prev => ({ ...prev, [meta.name]: pct }))
     }
 
-    const totalSize = manifestRef.current?.totalSize || 0
+    const totalSize = transferTotalRef.current || manifestRef.current?.totalSize || 0
     if (totalSize > 0) {
-      setOverallProgress(Math.round((totalReceivedRef.current / totalSize) * 100))
+      setOverallProgress(Math.min(100, Math.round((totalReceivedRef.current / totalSize) * 100)))
       const elapsed = (Date.now() - startTimeRef.current) / 1000
       if (elapsed > 0.5) {
         const currentSpeed = totalReceivedRef.current / elapsed
         setSpeed(currentSpeed)
-        setEta((totalSize - totalReceivedRef.current) / currentSpeed)
+        setEta(Math.max(0, (totalSize - totalReceivedRef.current) / currentSpeed))
       }
     }
   }
@@ -332,5 +364,6 @@ export function useReceiver(peerId) {
     manifest, status, progress, overallProgress, speed, eta,
     pendingFiles, completedFiles, requestFile, requestAllAsZip,
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
+    passwordRequired, passwordError, submitPassword,
   }
 }

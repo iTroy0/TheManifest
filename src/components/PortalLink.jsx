@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { Copy, Link as LinkIcon } from 'lucide-react'
+import { Copy, Link as LinkIcon, Share2 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import Toast from './Toast'
 
@@ -7,9 +7,17 @@ export default function PortalLink({ peerId }) {
   const [toast, setToast] = useState(false)
   const url = `${window.location.origin}/portal/${peerId}`
 
+  const canShare = typeof navigator.share === 'function'
+
   async function handleCopy() {
     await navigator.clipboard.writeText(url)
     setToast(true)
+  }
+
+  async function handleShare() {
+    try {
+      await navigator.share({ title: 'The Manifest', text: 'Receive files from me', url })
+    } catch { /* user cancelled */ }
   }
 
   const hideToast = useCallback(() => setToast(false), [])
@@ -40,6 +48,17 @@ export default function PortalLink({ peerId }) {
                 <Copy className="w-3.5 h-3.5" /> Copy
               </span>
             </button>
+            {canShare && (
+              <button
+                onClick={handleShare}
+                className="shrink-0 px-3 py-1.5 rounded-lg font-mono text-xs transition-all duration-300
+                  bg-accent/10 text-accent hover:bg-accent/20"
+              >
+                <span className="flex items-center gap-1.5">
+                  <Share2 className="w-3.5 h-3.5" /> Share
+                </span>
+              </button>
+            )}
           </div>
 
           {/* Instruction */}

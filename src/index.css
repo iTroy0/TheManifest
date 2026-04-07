@@ -164,14 +164,19 @@ body {
 }
 
 /* ── Drag reorder ── */
-.drag-over-top {
-  box-shadow: 0 -2px 0 0 var(--color-accent);
+.sortable-item {
+  transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
 }
-.drag-over-bottom {
-  box-shadow: 0 2px 0 0 var(--color-accent);
+.sortable-placeholder {
+  opacity: 0.2;
+  border-style: dashed !important;
+  border-color: var(--color-accent) !important;
+  background: rgba(0, 255, 136, 0.02) !important;
 }
-.dragging-item {
-  opacity: 0.4;
+.sortable-overlay {
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(0, 255, 136, 0.2), 0 0 24px rgba(0, 255, 136, 0.06);
+  transform: scale(1.02);
+  cursor: grabbing;
 }
 
 /* ── Full-screen mobile drop zone ── */
