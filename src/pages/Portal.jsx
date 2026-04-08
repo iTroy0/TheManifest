@@ -18,7 +18,7 @@ export default function Portal() {
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
     passwordRequired, passwordError, submitPassword,
     messages, sendMessage, rtt, nickname, changeNickname, onlineCount,
-    typingUsers, sendTyping, sendReaction,
+    typingUsers, sendTyping, sendReaction, cancelFile, pauseFile, resumeFile, pausedFiles,
   } = useReceiver(peerId)
   const [passwordInput, setPasswordInput] = useState('')
   const [passwordLoading, setPasswordLoading] = useState(false)
@@ -243,7 +243,11 @@ export default function Portal() {
                       files={manifest.files}
                       progress={progress}
                       pendingFiles={pendingFiles}
+                      pausedFiles={pausedFiles}
                       onRequest={isDead || hasPending ? null : requestFile}
+                      onCancel={hasPending ? cancelFile : null}
+                      onPause={hasPending ? pauseFile : null}
+                      onResume={resumeFile}
                       currentFileIndex={currentFileIndex}
                     />
                   </div>

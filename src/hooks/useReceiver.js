@@ -39,6 +39,7 @@ export function useReceiver(peerId) {
   const [nickname, setNickname] = useState(() => generateNickname())
   const [onlineCount, setOnlineCount] = useState(0)
   const [typingUsers, setTypingUsers] = useState([])
+  const [pausedFiles, setPausedFiles] = useState({})
   const typingTimeouts = useRef({})
 
   const streamsRef = useRef({})
@@ -233,7 +234,18 @@ export function useReceiver(peerId) {
           if (data.type === 'manifest') {
             setManifest(data)
             manifestRef.current = data
+            setStatus(prev => (prev === 'receiving') ? prev : 'manifest-received')
+          }
+
+          if (data.type === 'file-cancelled') {
+            if (streamsRef.current[data.index]) {
+              streamsRef.current[data.index].abort()
+              streamsRef.current[data.index] = null
+            }
+            setPendingFiles(prev => { const n = { ...prev }; delete n[data.index]; return n })
+            wasTransferringRef.current = false
             setStatus('manifest-received')
+            return
           }
 
           if (data.type === 'rejected') setStatus('rejected')
@@ -387,6 +399,38 @@ export function useReceiver(peerId) {
     setTimeout(() => { startConnection(true) }, 500)
   }, [startConnection])
 
+  const cancelFile = useCallback((index) => {
+    const conn = connRef.current
+    if (!conn) return
+    conn.send({ type: 'cancel-file', index })
+    if (streamsRef.current[index]) {
+      streamsRef.current[index].abort()
+      streamsRef.current[index] = null
+    }
+    if (chunksRef.current[index]) chunksRef.current[index] = null
+    delete fileMetaRef.current[index]
+    const name = manifestRef.current?.files[index]?.name
+    if (name) setProgress(prev => { const n = { ...prev }; delete n[name]; return n })
+    setPendingFiles(prev => { const n = { ...prev }; delete n[index]; return n })
+    setPausedFiles(prev => { const n = { ...prev }; delete n[index]; return n })
+    wasTransferringRef.current = false
+    setStatus('manifest-received')
+  }, [])
+
+  const pauseFile = useCallback((index) => {
+    const conn = connRef.current
+    if (!conn) return
+    conn.send({ type: 'pause-file', index })
+    setPausedFiles(prev => ({ ...prev, [index]: true }))
+  }, [])
+
+  const resumeFile = useCallback((index) => {
+    const conn = connRef.current
+    if (!conn) return
+    conn.send({ type: 'resume-file', index })
+    setPausedFiles(prev => { const n = { ...prev }; delete n[index]; return n })
+  }, [])
+
   const sendTyping = useCallback(() => {
     const conn = connRef.current
     if (conn) try { conn.send({ type: 'typing', nickname }) } catch {}
@@ -523,6 +567,6 @@ export function useReceiver(peerId) {
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
     passwordRequired, passwordError, submitPassword,
     messages, sendMessage, rtt, nickname, changeNickname, onlineCount,
-    typingUsers, sendTyping, sendReaction,
+    typingUsers, sendTyping, sendReaction, cancelFile, pauseFile, resumeFile, pausedFiles,
   }
 }

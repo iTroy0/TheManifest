@@ -15,6 +15,9 @@ Encrypted P2P file sharing and chat. No servers, no accounts, no trace.
 - **End-to-end encrypted** — ECDH key exchange + AES-256-GCM on every chunk, on top of WebRTC DTLS
 - **No file size limit** — StreamSaver writes directly to disk, zero RAM bottleneck
 - **Per-file or bulk zip download** — recipient chooses what to download
+- **Pause, resume, cancel** — full transfer control per file, re-download after cancel
+- **Live file sharing** — add files while recipients are already connected
+- **File previews** — image thumbnails shown on receiver before downloading
 - **Multiple recipients** — unlimited simultaneous connections, each with their own encrypted channel
 - **Password-protected portals** — optional password gate with encrypted transmission
 - **Encrypted chat rooms** — standalone group chat with typing indicators, emoji reactions, replies, and image sharing

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { FileText, Image, FileCode, Film, Music, Archive, File, X, Download, GripVertical } from 'lucide-react'
+import { FileText, Image, FileCode, Film, Music, Archive, File, X, Download, GripVertical, Pause, Play } from 'lucide-react'
 import { formatBytes } from '../utils/formatBytes'
 import {
   DndContext,
@@ -54,7 +54,7 @@ function ImageThumb({ file }) {
   return <img src={src} alt="" className="w-7 h-7 rounded-md object-cover" />
 }
 
-function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, showThumb, Icon, canDrag, onRequest, onRemove }) {
+function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, isPaused, showThumb, Icon, canDrag, onRequest, onRemove, onCancel, onPause, onResume }) {
   const {
     attributes,
     listeners,
@@ -98,6 +98,8 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, s
 
       {showThumb ? (
         <ImageThumb file={file} />
+      ) : file.thumbnail ? (
+        <img src={file.thumbnail} alt="" className="w-7 h-7 rounded-md object-cover shrink-0" />
       ) : (
         <div className={`
           w-7 h-7 rounded-md flex items-center justify-center shrink-0
@@ -111,8 +113,9 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, s
         <p className="text-xs font-mono truncate text-text">{file.name}</p>
         <div className="flex items-center gap-2">
           <p className="text-[10px] text-muted font-mono">{formatBytes(file.size)}</p>
-          {isActive && <span className="font-mono text-[10px] text-info animate-pulse">transferring</span>}
-          {isPending && !isActive && pct == null && <span className="font-mono text-[10px] text-info animate-pulse">queued</span>}
+          {isActive && !isPaused && <span className="font-mono text-[10px] text-info animate-pulse">transferring</span>}
+          {isPaused && <span className="font-mono text-[10px] text-yellow-400">paused</span>}
+          {isPending && !isActive && !isPaused && pct == null && <span className="font-mono text-[10px] text-info animate-pulse">queued</span>}
         </div>
       </div>
 
@@ -128,6 +131,38 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, s
         >
           <Download className="w-3.5 h-3.5" />
           Download
+        </button>
+      )}
+
+      {/* Pause/Resume buttons */}
+      {onPause && isPending && isActive && !isPaused && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onPause(index) }}
+          className="p-1.5 rounded-lg text-yellow-400 bg-yellow-400/10 hover:bg-yellow-400/20 transition-colors"
+          title="Pause"
+        >
+          <Pause className="w-3 h-3" />
+        </button>
+      )}
+      {onResume && isPaused && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onResume(index) }}
+          className="p-1.5 rounded-lg text-accent bg-accent/10 hover:bg-accent/20 transition-colors"
+          title="Resume"
+        >
+          <Play className="w-3 h-3" />
+        </button>
+      )}
+
+      {/* Cancel button — for pending/active downloads */}
+      {onCancel && isPending && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onCancel(index) }}
+          className="flex items-center gap-1 px-2 py-1 rounded-lg font-mono text-[10px]
+            bg-danger/10 text-danger hover:bg-danger/20 transition-colors"
+        >
+          <X className="w-3 h-3" />
+          Cancel
         </button>
       )}
 
@@ -165,7 +200,7 @@ function FileItemContent({ file, Icon, showThumb }) {
   )
 }
 
-export default function FileList({ files, onRemove, onReorder, progress, pendingFiles, onRequest, onSave, currentFileIndex }) {
+export default function FileList({ files, onRemove, onReorder, progress, pendingFiles, pausedFiles, onRequest, onCancel, onPause, onResume, onSave, currentFileIndex }) {
   const totalSize = files.reduce((sum, f) => sum + f.size, 0)
   const canDrag = !!onReorder && files.length > 1
   const [activeId, setActiveId] = useState(null)
@@ -205,6 +240,7 @@ export default function FileList({ files, onRemove, onReorder, progress, pending
     const pct = progress?.[file.name]
     const isDone = pct === 100
     const isPending = pendingFiles && pendingFiles[i]
+    const isPaused = pausedFiles && pausedFiles[i]
     const isActive = currentFileIndex === i && pct != null && !isDone
     const showThumb = isImageType(file.type) && file instanceof window.File
 
@@ -221,8 +257,12 @@ export default function FileList({ files, onRemove, onReorder, progress, pending
         showThumb={showThumb}
         Icon={Icon}
         canDrag={canDrag}
+        isPaused={isPaused}
         onRequest={onRequest}
         onRemove={onRemove}
+        onCancel={onCancel}
+        onPause={onPause}
+        onResume={onResume}
       />
     )
   })

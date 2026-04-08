@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, MessageCircle, MessagesSquare } from 'lucide-react'
+import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, MessageCircle, MessagesSquare, Plus } from 'lucide-react'
 import { useSender } from '../hooks/useSender'
 import { formatSpeed, formatTime, formatBytes } from '../utils/formatBytes'
 import { usePageTitle } from '../hooks/usePageTitle'
@@ -15,7 +15,8 @@ import ChatPanel from '../components/ChatPanel'
 export default function Home() {
   const [files, setFilesState] = useState([])
   const [error, setError] = useState(null)
-  const { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, setChatOnly, messages, sendMessage, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction } = useSender()
+  const { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, setChatOnly, broadcastManifest, messages, sendMessage, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction } = useSender()
+  const addInputRef = useRef(null)
   const [passwordInput, setPasswordInput] = useState('')
   const [filesOpen, setFilesOpen] = useState(true)
   const [chatMode, setChatMode] = useState(false)
@@ -29,9 +30,15 @@ export default function Home() {
   usePageTitle(isActive ? status : null, overallProgress)
   const elapsed = useElapsedTime(isTransferring)
 
+  const prevFilesLen = useRef(files.length)
   useEffect(() => {
     setFiles(files)
-  }, [files, setFiles])
+    // Broadcast updated manifest when files change while connected
+    if (files.length !== prevFilesLen.current && recipientCount > 0) {
+      broadcastManifest()
+    }
+    prevFilesLen.current = files.length
+  }, [files, setFiles, recipientCount, broadcastManifest])
 
   useEffect(() => {
     if (!isActive) return
@@ -184,6 +191,9 @@ export default function Home() {
               )}
             </StatusIndicator>
 
+            {/* Hidden file input for adding more files */}
+            <input ref={addInputRef} type="file" multiple onChange={(e) => { handleFiles(Array.from(e.target.files)); e.target.value = '' }} className="hidden" />
+
             {/* File list (collapsible) — only when files exist */}
             {hasFiles && <div className="glow-card overflow-hidden">
               <button
@@ -197,7 +207,18 @@ export default function Home() {
                     file{files.length !== 1 ? 's' : ''} &middot; {formatBytes(files.reduce((s, f) => s + f.size, 0))}
                   </span>
                 </div>
-                <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesOpen ? 'rotate-180' : ''}`} />
+                <div className="flex items-center gap-1">
+                  {!isTransferring && !isFinished && (
+                    <div
+                      onClick={(e) => { e.stopPropagation(); addInputRef.current?.click() }}
+                      className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
+                      title="Add more files"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </div>
+                  )}
+                  <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesOpen ? 'rotate-180' : ''}`} />
+                </div>
               </button>
               <div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                 <div className="overflow-hidden">

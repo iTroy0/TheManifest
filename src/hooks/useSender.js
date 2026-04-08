@@ -4,6 +4,44 @@ import { chunkFile, buildChunkPacket, waitForBufferDrain, CHUNK_SIZE } from '../
 import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { STUN_ONLY } from '../utils/iceServers'
 
+function generateThumbnail(file, maxDim = 80) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    img.onload = () => {
+      let { width, height } = img
+      const ratio = Math.min(maxDim / width, maxDim / height, 1)
+      width = Math.round(width * ratio)
+      height = Math.round(height * ratio)
+      const canvas = document.createElement('canvas')
+      canvas.width = width
+      canvas.height = height
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height)
+      URL.revokeObjectURL(url)
+      resolve(canvas.toDataURL('image/jpeg', 0.5))
+    }
+    img.onerror = () => { URL.revokeObjectURL(url); reject() }
+    img.src = url
+  })
+}
+
+async function buildManifestData(files, chatOnly) {
+  const fileEntries = await Promise.all(files.map(async f => {
+    const entry = { name: f.name, size: f.size, type: f.type }
+    if (f.type?.startsWith('image/') && f instanceof File) {
+      try { entry.thumbnail = await generateThumbnail(f) } catch {}
+    }
+    return entry
+  }))
+  return {
+    type: 'manifest',
+    chatOnly,
+    files: fileEntries,
+    totalSize: files.reduce((sum, f) => sum + f.size, 0),
+    sentAt: new Date().toISOString(),
+  }
+}
+
 export function useSender() {
   const [peerId, setPeerId] = useState(null)
   const [status, setStatus] = useState('initializing')
@@ -92,15 +130,9 @@ export function useSender() {
         setEta(spd > 0 ? Math.max(0, (total - sent) / spd) : null)
       }
 
-      function sendManifest(c) {
-        const files = filesRef.current
-        c.send({
-          type: 'manifest',
-          chatOnly: chatOnlyRef.current,
-          files: files.map(f => ({ name: f.name, size: f.size, type: f.type })),
-          totalSize: files.reduce((sum, f) => sum + f.size, 0),
-          sentAt: new Date().toISOString(),
-        })
+      async function sendManifest(c) {
+        const manifest = await buildManifestData(filesRef.current, chatOnlyRef.current)
+        c.send(manifest)
       }
 
       conn.on('open', async () => {
@@ -168,7 +200,7 @@ export function useSender() {
           if (passwordRef.current) {
             conn.send({ type: 'password-required' })
           } else {
-            sendManifest(conn)
+            await sendManifest(conn)
           }
           return
         }
@@ -183,7 +215,7 @@ export function useSender() {
           }
           if (password === passwordRef.current) {
             conn.send({ type: 'password-accepted' })
-            sendManifest(conn)
+            await sendManifest(conn)
           } else {
             conn.send({ type: 'password-wrong' })
           }
@@ -267,6 +299,30 @@ export function useSender() {
               try { cs.conn.send({ type: 'system-msg', text: msg, time: Date.now() }) } catch {}
             }
           })
+          return
+        }
+
+        if (data.type === 'cancel-file') {
+          if (!connState.cancelledFiles) connState.cancelledFiles = new Set()
+          connState.cancelledFiles.add(data.index)
+          connState.pausedFiles?.delete(data.index)
+          if (connState.pauseResolvers?.[data.index]) {
+            connState.pauseResolvers[data.index]()
+          }
+          return
+        }
+
+        if (data.type === 'pause-file') {
+          if (!connState.pausedFiles) connState.pausedFiles = new Set()
+          connState.pausedFiles.add(data.index)
+          return
+        }
+
+        if (data.type === 'resume-file') {
+          connState.pausedFiles?.delete(data.index)
+          if (connState.pauseResolvers?.[data.index]) {
+            connState.pauseResolvers[data.index]()
+          }
           return
         }
 
@@ -440,6 +496,14 @@ export function useSender() {
     })
   }, [senderName])
 
+  const broadcastManifest = useCallback(async () => {
+    if (filesRef.current.length === 0 || connectionsRef.current.size === 0) return
+    const manifest = await buildManifestData(filesRef.current, chatOnlyRef.current)
+    connectionsRef.current.forEach(cs => {
+      try { cs.conn.send(manifest) } catch {}
+    })
+  }, [])
+
   const reset = useCallback(() => {
     if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
     connectionsRef.current.forEach(cs => { cs.abort.aborted = true })
@@ -465,7 +529,7 @@ export function useSender() {
     setSessionKey(k => k + 1)
   }, [])
 
-  return { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, setChatOnly, messages, sendMessage, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction }
+  return { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, setChatOnly, broadcastManifest, messages, sendMessage, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction }
 }
 
 async function sendSingleFile(conn, files, index, startChunk, connState, encryptKey, aggregateUI) {
@@ -481,6 +545,23 @@ async function sendSingleFile(conn, files, index, startChunk, connState, encrypt
 
   for await (const chunkData of chunkFile(file)) {
     if (connState.abort.aborted) return
+    if (connState.cancelledFiles?.has(index)) {
+      conn.send({ type: 'file-cancelled', index })
+      connState.cancelledFiles.delete(index)
+      return
+    }
+    // Pause — await until resumed or cancelled
+    if (connState.pausedFiles?.has(index)) {
+      if (!connState.pauseResolvers) connState.pauseResolvers = {}
+      await new Promise(r => { connState.pauseResolvers[index] = r })
+      delete connState.pauseResolvers[index]
+      if (connState.abort.aborted) return
+      if (connState.cancelledFiles?.has(index)) {
+        conn.send({ type: 'file-cancelled', index })
+        connState.cancelledFiles.delete(index)
+        return
+      }
+    }
 
     if (chunkIndex < startChunk) {
       chunkIndex++
