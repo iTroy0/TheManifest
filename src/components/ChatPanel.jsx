@@ -366,7 +366,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
   )
 }
 
-async function compressImage(file, maxSize = 500 * 1024) {
+async function compressImage(file) {
   return new Promise((resolve) => {
     const img = new Image()
     const reader = new FileReader()
@@ -374,7 +374,7 @@ async function compressImage(file, maxSize = 500 * 1024) {
       img.onload = () => {
         const canvas = document.createElement('canvas')
         let { width, height } = img
-        const maxDim = 1200
+        const maxDim = 2000
         if (width > maxDim || height > maxDim) {
           const ratio = Math.min(maxDim / width, maxDim / height)
           width = Math.round(width * ratio)
@@ -383,13 +383,7 @@ async function compressImage(file, maxSize = 500 * 1024) {
         canvas.width = width
         canvas.height = height
         canvas.getContext('2d').drawImage(img, 0, 0, width, height)
-        let quality = 0.7
-        let result = canvas.toDataURL('image/jpeg', quality)
-        while (result.length > maxSize * 1.37 && quality > 0.1) {
-          quality -= 0.1
-          result = canvas.toDataURL('image/jpeg', quality)
-        }
-        resolve(result)
+        resolve(canvas.toDataURL('image/jpeg', 0.92))
       }
       img.src = reader.result
     }
