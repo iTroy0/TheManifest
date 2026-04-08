@@ -6,10 +6,9 @@ import { useElapsedTime, formatElapsed } from '../hooks/useElapsedTime'
 import FileList from '../components/FileList'
 import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
-import ConnectionViz from '../components/ConnectionViz'
 import ChatPanel from '../components/ChatPanel'
 import { useState } from 'react'
-import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Plus, Wifi, Archive, Lock, ChevronDown } from 'lucide-react'
+import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Wifi, Archive, Lock, ChevronDown, MessagesSquare } from 'lucide-react'
 
 export default function Portal() {
   const { peerId } = useParams()
@@ -18,7 +17,8 @@ export default function Portal() {
     pendingFiles, completedFiles, requestFile, requestAllAsZip,
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
     passwordRequired, passwordError, submitPassword,
-    messages, sendMessage, rtt, nickname,
+    messages, sendMessage, rtt, nickname, changeNickname, onlineCount,
+    typingUsers, sendTyping, sendReaction,
   } = useReceiver(peerId)
   const [passwordInput, setPasswordInput] = useState('')
   const [passwordLoading, setPasswordLoading] = useState(false)
@@ -30,7 +30,8 @@ export default function Portal() {
   const isDead = status === 'closed' || status === 'error' || status === 'rejected'
   const isConnecting = status === 'connecting' || status === 'retrying' || status === 'reconnecting'
   const showManifest = status === 'manifest-received' || (manifest && !isDead && status !== 'password-required')
-  const allDone = manifest && completedCount === manifest.files.length
+  const isChatOnly = manifest?.chatOnly
+  const allDone = manifest && !manifest.chatOnly && completedCount === manifest.files.length
   const elapsed = useElapsedTime(hasPending)
 
   const currentFileIndex = manifest ? manifest.files.findIndex(f => {
@@ -59,7 +60,10 @@ export default function Portal() {
                 The Manifest
               </h1>
               <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide flex items-center gap-1.5">
-                <Download className="w-3 h-3" /> Incoming file portal
+                {isChatOnly
+                  ? <><MessagesSquare className="w-3 h-3" /> Chat room</>
+                  : <><Download className="w-3 h-3" /> Incoming file portal</>
+                }
               </p>
             </Link>
           </div>
@@ -69,38 +73,26 @@ export default function Portal() {
       {/* Main */}
       <main className="flex-1 max-w-[720px] w-full mx-auto px-6 py-8 space-y-6">
 
-        <StatusIndicator status={status} />
-
-        {/* Connection info badges */}
-        {showManifest && (
-          <div className="flex items-center gap-2 flex-wrap animate-fade-in-up">
-            <div
-              className={`flex items-center gap-1.5 rounded-xl px-3 py-2 border cursor-default ${useRelay ? 'bg-warning/5 border-warning/20' : 'bg-accent/5 border-accent/20'}`}
-              title={useRelay ? 'Files pass through an encrypted relay server' : 'Files transfer directly between browsers'}
-            >
-              <Wifi className={`w-3.5 h-3.5 ${useRelay ? 'text-warning' : 'text-accent'}`} />
-              <span className={`font-mono text-[11px] ${useRelay ? 'text-warning' : 'text-accent'}`}>{useRelay ? 'Relay' : 'Direct P2P'}</span>
-            </div>
-            {rtt !== null && (
-              <div
-                className={`flex items-center gap-1.5 rounded-xl px-3 py-2 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`}
-                title={`Round-trip latency: ${rtt}ms${rtt < 100 ? ' (excellent)' : rtt < 300 ? ' (good)' : ' (slow — transfer may be affected)'}`}
-              >
-                <span className={`font-mono text-[11px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms latency</span>
+        <StatusIndicator status={isChatOnly && status === 'manifest-received' ? 'connected' : status}>
+          {showManifest && (
+            <>
+              <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${useRelay ? 'bg-warning/5 border-warning/20' : 'bg-accent/5 border-accent/20'}`} title={useRelay ? 'Files pass through an encrypted relay server' : 'Files transfer directly between browsers'}>
+                <Wifi className={`w-3 h-3 ${useRelay ? 'text-warning' : 'text-accent'}`} />
+                <span className={`font-mono text-[10px] ${useRelay ? 'text-warning' : 'text-accent'}`}>{useRelay ? 'Relay' : 'P2P'}</span>
               </div>
-            )}
-            <div
-              className="flex items-center gap-1.5 bg-accent/5 border border-accent/20 rounded-xl px-3 py-2 cursor-default"
-              title={fingerprint ? `Verify this matches the sender's fingerprint: ${fingerprint}` : 'End-to-end encrypted with AES-256-GCM'}
-            >
-              <Shield className="w-3.5 h-3.5 text-accent" />
-              <span className="font-mono text-[11px] text-accent">E2E</span>
-              {fingerprint && <code className="font-mono text-[10px] text-accent/60">{fingerprint}</code>}
-            </div>
-          </div>
-        )}
-
-        {showManifest && <ConnectionViz status={hasPending ? 'transferring' : allDone ? 'done' : status} useRelay={useRelay} />}
+              {rtt !== null && (
+                <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`} title={`Round-trip latency: ${rtt}ms${rtt < 100 ? ' (excellent)' : rtt < 300 ? ' (good)' : ' (slow)'}`}>
+                  <span className={`font-mono text-[10px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
+                </div>
+              )}
+              <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5 cursor-default" title={fingerprint ? `Verify fingerprint: ${fingerprint}` : 'E2E encrypted'}>
+                <Shield className="w-3 h-3 text-accent" />
+                <span className="font-mono text-[10px] text-accent">E2E</span>
+                {fingerprint && <code className="font-mono text-[9px] text-accent/50 hidden sm:inline">{fingerprint}</code>}
+              </div>
+            </>
+          )}
+        </StatusIndicator>
 
         {/* Dead states */}
         {status === 'closed' && !manifest && (
@@ -188,12 +180,20 @@ export default function Portal() {
         {/* Connected waiting for manifest */}
         {status === 'connected' && !manifest && (
           <div className="text-center py-10 animate-fade-in-up">
-            <p className="font-mono text-sm text-text mb-2">Connected. Waiting for file list...</p>
+            <p className="font-mono text-sm text-text mb-2">Connected. Setting up...</p>
           </div>
         )}
 
-        {/* Manifest + file list */}
-        {showManifest && manifest && (
+        {/* Chat room label */}
+        {showManifest && isChatOnly && (
+          <div className="flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-4 py-3 animate-fade-in-up">
+            <MessagesSquare className="w-4 h-4 text-accent" />
+            <span className="font-mono text-sm text-accent font-medium">Chat Room</span>
+          </div>
+        )}
+
+        {/* Manifest + file list — hidden in chat-only mode */}
+        {showManifest && manifest && !isChatOnly && (
           <div className="space-y-4 animate-fade-in-up">
             <div className="glow-card overflow-hidden">
               {/* Collapsible header */}
@@ -249,6 +249,24 @@ export default function Portal() {
                   </div>
                 </div>
               </div>
+              {/* Progress bar — attached to file list */}
+              {(hasPending || completedCount > 0) && (
+                <div className="px-4 pb-3 space-y-2 border-t border-border">
+                  <div className="pt-3">
+                    <ProgressBar percent={overallProgress} label="Overall progress" />
+                  </div>
+                  <div className="flex justify-between font-mono text-[10px] text-muted">
+                    <span>{formatSpeed(speed)}</span>
+                    <span>{allDone ? `${formatBytes(totalReceived)} in ${formatElapsed(elapsed)}` : `ETA: ${formatTime(eta)}`}</span>
+                  </div>
+                  {hasPending && (
+                    <div className="flex justify-between font-mono text-[9px] text-muted/60">
+                      <span>{formatBytes(totalReceived)} received</span>
+                      <span>Elapsed: {formatElapsed(elapsed)}</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Download all bar */}
@@ -273,43 +291,11 @@ export default function Portal() {
           </div>
         )}
 
-        {/* Progress bar */}
-        {(hasPending || completedCount > 0) && manifest && (
-          <div className="glow-card p-5 space-y-4 animate-fade-in-up">
-            <ProgressBar percent={overallProgress} label="Overall progress" />
-            <div className="flex justify-between font-mono text-xs text-muted">
-              <span>{formatSpeed(speed)}</span>
-              <span>{allDone ? `${formatBytes(totalReceived)} in ${formatElapsed(elapsed)}` : `ETA: ${formatTime(eta)}`}</span>
-            </div>
-            {hasPending && (
-              <div className="flex justify-between font-mono text-[10px] text-muted/60">
-                <span>{formatBytes(totalReceived)} received</span>
-                <span>Elapsed: {formatElapsed(elapsed)}</span>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Chat */}
         {showManifest && !isDead && (
-          <ChatPanel messages={messages} onSend={sendMessage} disabled={isDead} nickname={nickname} />
+          <ChatPanel messages={messages} onSend={sendMessage} disabled={isDead} nickname={nickname} onNicknameChange={changeNickname} onlineCount={onlineCount} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
         )}
 
-        {/* All done */}
-        {allDone && (
-          <div className="text-center py-8 animate-fade-in-up space-y-4">
-            <div className="w-14 h-14 rounded-2xl bg-accent/15 flex items-center justify-center mx-auto">
-              <svg className="w-7 h-7 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            </div>
-            <p className="font-mono text-sm text-accent text-glow">All files downloaded</p>
-            <p className="font-mono text-xs text-muted">Files have been saved to your device.</p>
-            <Link to="/" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-text hover:border-accent/40 hover:text-accent transition-colors">
-              <Plus className="w-4 h-4" /> Send Your Own Files
-            </Link>
-          </div>
-        )}
       </main>
 
       {/* Footer */}

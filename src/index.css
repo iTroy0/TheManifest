@@ -12,10 +12,10 @@
   --color-warning: #ff6b35;
   --color-danger: #ff4444;
   --color-info: #4a9eff;
-  --color-text: #e8e8e8;
+  --color-text: #ffffff;
   --color-text-bright: #ffffff;
-  --color-muted: #555555;
-  --color-muted-light: #777777;
+  --color-muted: #999999;
+  --color-muted-light: #bbbbbb;
   --font-mono: 'JetBrains Mono', monospace;
   --font-sans: 'Inter', sans-serif;
 }

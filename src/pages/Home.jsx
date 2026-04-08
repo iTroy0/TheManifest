@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, Wifi, MessageCircle } from 'lucide-react'
+import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, MessageCircle, MessagesSquare } from 'lucide-react'
 import { useSender } from '../hooks/useSender'
 import { formatSpeed, formatTime, formatBytes } from '../utils/formatBytes'
 import { usePageTitle } from '../hooks/usePageTitle'
@@ -10,22 +10,23 @@ import FileList from '../components/FileList'
 import PortalLink from '../components/PortalLink'
 import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
-import ConnectionViz from '../components/ConnectionViz'
 import ChatPanel from '../components/ChatPanel'
 
 export default function Home() {
   const [files, setFilesState] = useState([])
   const [error, setError] = useState(null)
-  const { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, messages, sendMessage, rtt } = useSender()
+  const { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, setChatOnly, messages, sendMessage, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction } = useSender()
   const [passwordInput, setPasswordInput] = useState('')
   const [filesOpen, setFilesOpen] = useState(true)
+  const [chatMode, setChatMode] = useState(false)
 
   const hasFiles = files.length > 0
+  const isActive = hasFiles || chatMode
   const isTransferring = status === 'transferring'
   const showProgress = status === 'transferring' || status === 'done'
   const isFinished = status === 'done' || status === 'closed' || status === 'error'
 
-  usePageTitle(hasFiles ? status : null, overallProgress)
+  usePageTitle(isActive ? status : null, overallProgress)
   const elapsed = useElapsedTime(isTransferring)
 
   useEffect(() => {
@@ -33,11 +34,11 @@ export default function Home() {
   }, [files, setFiles])
 
   useEffect(() => {
-    if (files.length === 0) return
+    if (!isActive) return
     const handler = (e) => { e.preventDefault(); e.returnValue = '' }
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
-  }, [files.length])
+  }, [isActive])
 
   const handleFiles = useCallback((newFiles) => {
     setError(null)
@@ -57,10 +58,16 @@ export default function Home() {
     })
   }, [])
 
+  const startChatRoom = useCallback(() => {
+    setChatMode(true)
+    setChatOnly(true)
+  }, [setChatOnly])
+
   const handleNewSession = useCallback(() => {
     setFilesState([])
     setError(null)
     setPasswordInput('')
+    setChatMode(false)
     reset()
   }, [reset])
 
@@ -75,7 +82,7 @@ export default function Home() {
               The Manifest
             </h1>
             <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide">
-              Zero-server file sharing portal
+              Encrypted file sharing & chat
             </p>
           </Link>
         </div>
@@ -84,90 +91,101 @@ export default function Home() {
       {/* ── Main ── */}
       <main className="flex-1 max-w-[720px] w-full mx-auto px-6 py-8 space-y-6">
 
-        {/* Hero — only when no files yet */}
-        {!hasFiles && (
+        {/* Hero — only on landing */}
+        {!isActive && (
           <div className="text-center py-4 animate-fade-in-up">
             <p className="font-mono text-xl font-bold text-text-bright mb-2 tracking-tight">
-              Share files. No servers. No trace.
+              Share files & chat. No servers. No trace.
             </p>
             <p className="text-xs text-muted-light max-w-sm mx-auto leading-relaxed">
-              Files stream directly from your browser to theirs via WebRTC.
-              Nothing is uploaded. The link dies when you close the tab.
+              Files and messages stream directly browser-to-browser via WebRTC.
+              End-to-end encrypted. Close the tab and it's gone.
             </p>
           </div>
         )}
 
-        {/* Drop zone — only when no files loaded */}
-        {!hasFiles && (
-          <DropZone onFiles={handleFiles} disabled={isTransferring || isFinished} />
+        {/* Drop zone + chat room button — only on landing */}
+        {!isActive && (
+          <>
+            <DropZone onFiles={handleFiles} disabled={isTransferring || isFinished} />
+            <div className="text-center">
+              <button
+                onClick={startChatRoom}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs
+                  bg-surface border border-border text-muted-light hover:border-accent/40 hover:text-accent transition-colors"
+              >
+                <MessagesSquare className="w-3.5 h-3.5" />
+                Or start a chat room
+              </button>
+            </div>
+          </>
         )}
 
-        {/* How it works — only when no files */}
-        {!hasFiles && <HowItWorks />}
+        {/* How it works — only on landing */}
+        {!isActive && <HowItWorks />}
 
-        {/* Feature cards — only when no files */}
-        {!hasFiles && (
+        {/* Feature cards — only on landing */}
+        {!isActive && (
           <div className="animate-fade-in-up" style={{ animationDelay: '350ms' }}>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <InfoCard icon={Shield} title="E2E encrypted" desc="ECDH key exchange + AES-256-GCM on every chunk, on top of WebRTC DTLS." />
-              <InfoCard icon={EyeOff} title="Zero knowledge" desc="No accounts. No logs. No analytics. We never see your files." />
-              <InfoCard icon={Zap} title="Ephemeral" desc="Close the tab and the portal is gone. No traces left behind." />
-              <InfoCard icon={Users} title="Multiple recipients" desc="Share with many people at once. Each gets their own encrypted channel." />
-              <InfoCard icon={Lock} title="Password protect" desc="Optionally lock your portal. Recipients enter the password to access files." />
-              <InfoCard icon={MessageCircle} title="Live chat" desc="Built-in encrypted chat with auto-generated nicknames for group conversations." />
+              <InfoCard icon={Shield} title="E2E encrypted" desc="Double encryption — AES-256-GCM + WebRTC DTLS. Even relays can't see your data." />
+              <InfoCard icon={EyeOff} title="Zero knowledge" desc="No accounts. No logs. No analytics. Self-hosted signaling for full privacy." />
+              <InfoCard icon={Zap} title="Ephemeral" desc="Close the tab and it's gone. No traces left behind." />
+              <InfoCard icon={Users} title="Multi-recipient" desc="Unlimited simultaneous connections. Each gets their own encrypted channel." />
+              <InfoCard icon={Lock} title="Password protect" desc="Lock your portal or chat room with an encrypted password." />
+              <InfoCard icon={MessagesSquare} title="Chat rooms" desc="Encrypted group chat with reactions, replies, image sharing, and typing indicators." />
             </div>
           </div>
         )}
 
-        {/* ── Active session UI (only when files loaded) ── */}
-        {hasFiles && (
+        {/* ── Active session UI ── */}
+        {isActive && (
           <>
             {/* Warning banner — compact */}
             {status !== 'done' && (
               <div className="flex items-center gap-2 bg-warning/5 border border-warning/15 rounded-lg px-3 py-2 animate-fade-in-up">
                 <AlertTriangle className="w-3.5 h-3.5 text-warning/70 shrink-0" />
                 <span className="font-mono text-[10px] text-warning/70">
-                  Keep this tab open — closing it ends all transfers.
+                  Keep this tab open — closing it ends {chatMode ? 'the chat room' : 'all transfers'}.
                 </span>
               </div>
             )}
 
-            {/* Status */}
-            <StatusIndicator status={status} />
-
-            {/* Connection info badges */}
-            {recipientCount > 0 && (
-              <div className="flex items-center gap-2 flex-wrap animate-fade-in-up">
-                <div
-                  className="flex items-center gap-1.5 bg-accent/5 border border-accent/20 rounded-xl px-3 py-2 cursor-default"
-                  title={`${recipientCount} recipient${recipientCount !== 1 ? 's' : ''} currently connected`}
-                >
-                  <Users className="w-3.5 h-3.5 text-accent" />
-                  <span className="font-mono text-[11px] text-accent">{recipientCount} recipient{recipientCount !== 1 ? 's' : ''}</span>
-                </div>
-                {rtt !== null && (
-                  <div
-                    className={`flex items-center gap-1.5 rounded-xl px-3 py-2 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`}
-                    title={`Round-trip latency: ${rtt}ms${rtt < 100 ? ' (excellent)' : rtt < 300 ? ' (good)' : ' (slow — transfer may be affected)'}`}
-                  >
-                    <span className={`font-mono text-[11px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms latency</span>
-                  </div>
-                )}
-                {fingerprint && (
-                  <div
-                    className="flex items-center gap-1.5 bg-accent/5 border border-accent/20 rounded-xl px-3 py-2 cursor-default"
-                    title={`E2E key fingerprint — verify this matches the recipient's: ${fingerprint}`}
-                  >
-                    <Shield className="w-3.5 h-3.5 text-accent" />
-                    <span className="font-mono text-[11px] text-accent">E2E</span>
-                    <code className="font-mono text-[10px] text-accent/60">{fingerprint}</code>
-                  </div>
-                )}
+            {/* Chat room label */}
+            {chatMode && (
+              <div className="flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-4 py-3 animate-fade-in-up">
+                <MessagesSquare className="w-4 h-4 text-accent" />
+                <span className="font-mono text-sm text-accent font-medium">Chat Room</span>
+                <span className="font-mono text-xs text-muted">— share the link to invite people</span>
               </div>
             )}
 
-            {/* File list (collapsible) */}
-            <div className="glow-card overflow-hidden">
+            {/* Status + badges */}
+            <StatusIndicator status={status}>
+              {recipientCount > 0 && (
+                <>
+                  <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5 cursor-default" title={`${recipientCount} connected`}>
+                    <Users className="w-3 h-3 text-accent" />
+                    <span className="font-mono text-[10px] text-accent">{recipientCount}</span>
+                  </div>
+                  {rtt !== null && (
+                    <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`} title={`Latency: ${rtt}ms`}>
+                      <span className={`font-mono text-[10px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
+                    </div>
+                  )}
+                  {fingerprint && (
+                    <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5 cursor-default" title={`Verify fingerprint: ${fingerprint}`}>
+                      <Shield className="w-3 h-3 text-accent" />
+                      <span className="font-mono text-[10px] text-accent">E2E</span>
+                      <code className="font-mono text-[9px] text-accent/50 hidden sm:inline">{fingerprint}</code>
+                    </div>
+                  )}
+                </>
+              )}
+            </StatusIndicator>
+
+            {/* File list (collapsible) — only when files exist */}
+            {hasFiles && <div className="glow-card overflow-hidden">
               <button
                 onClick={() => setFilesOpen(o => !o)}
                 className="w-full flex items-center justify-between px-4 py-3 text-left group"
@@ -183,7 +201,7 @@ export default function Home() {
               </button>
               <div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                 <div className="overflow-hidden">
-                  <div className="px-4 pb-4">
+                  <div className="px-4 pb-3">
                     <FileList
                       files={files}
                       onRemove={isTransferring || isFinished ? null : removeFile}
@@ -194,7 +212,28 @@ export default function Home() {
                   </div>
                 </div>
               </div>
-            </div>
+              {/* Progress bar — attached to file list */}
+              {(isTransferring || overallProgress > 0) && (
+                <div className="px-4 pb-3 space-y-2 border-t border-border">
+                  <div className="pt-3">
+                    <ProgressBar percent={overallProgress} label="Overall progress" />
+                  </div>
+                  <div className="flex justify-between font-mono text-[10px] text-muted">
+                    <span>{formatSpeed(speed)}</span>
+                    <span>{!isTransferring
+                      ? `${formatBytes(totalSent)} sent in ${formatElapsed(elapsed)}`
+                      : `ETA: ${formatTime(eta)}`
+                    }</span>
+                  </div>
+                  {isTransferring && (
+                    <div className="flex justify-between font-mono text-[9px] text-muted/60">
+                      <span>{formatBytes(totalSent)} transferred</span>
+                      <span>Elapsed: {formatElapsed(elapsed)}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>}
 
             {/* Password (collapsible) — hide once recipients connect */}
             {!isTransferring && !isFinished && recipientCount === 0 && (
@@ -206,32 +245,9 @@ export default function Home() {
               <PortalLink peerId={peerId} />
             )}
 
-            {/* Connection visualization — only when recipients connected */}
-            {recipientCount > 0 && <ConnectionViz status={status} />}
-
-            {/* Transfer progress */}
-            {showProgress && (
-              <div className="glow-card p-5 space-y-4 animate-fade-in-up">
-                <ProgressBar percent={overallProgress} label="Overall progress" />
-                <div className="flex justify-between font-mono text-xs text-muted">
-                  <span>{formatSpeed(speed)}</span>
-                  <span>{status === 'done'
-                    ? `${formatBytes(totalSent)} sent in ${formatElapsed(elapsed)}`
-                    : `ETA: ${formatTime(eta)}`
-                  }</span>
-                </div>
-                {isTransferring && (
-                  <div className="flex justify-between font-mono text-[10px] text-muted/60">
-                    <span>{formatBytes(totalSent)} transferred</span>
-                    <span>Elapsed: {formatElapsed(elapsed)}</span>
-                  </div>
-                )}
-              </div>
-            )}
-
             {/* Chat */}
-            {recipientCount > 0 && !isFinished && (
-              <ChatPanel messages={messages} onSend={sendMessage} disabled={recipientCount === 0} />
+            {(recipientCount > 0 || chatMode) && !isFinished && (
+              <ChatPanel messages={messages} onSend={sendMessage} disabled={recipientCount === 0} onlineCount={recipientCount + 1} nickname={senderName} onNicknameChange={changeSenderName} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
             )}
           </>
         )}
@@ -297,39 +313,39 @@ function HowItWorks() {
 
   const steps = [
     {
-      num: '01', icon: Upload, title: 'Drop your files',
-      desc: 'Drag files in, click to browse, or paste with Ctrl+V. Drag to reorder before sharing.',
+      num: '1', icon: Upload, title: 'Drop files or start a chat',
+      desc: 'Drag files in, browse, or paste. Or start an encrypted chat room — no files needed.',
       details: [
         'Any file type, any number of files, no size limit.',
-        'Set an optional password to protect your portal.',
-        'Files stay in your browser — nothing is uploaded anywhere.',
+        'Set an optional password to protect access.',
+        'Everything stays in your browser — nothing is uploaded.',
       ]
     },
     {
-      num: '02', icon: LinkIcon, title: 'Share the link',
-      desc: 'Copy the portal link, share via the native share menu, or let them scan the QR code.',
+      num: '2', icon: LinkIcon, title: 'Share the link',
+      desc: 'Copy the portal link, share natively on mobile, or let them scan the QR code.',
       details: [
-        'Multiple recipients can connect simultaneously.',
+        'Unlimited recipients can connect simultaneously.',
         'The link only works while your tab is open.',
-        'Use the built-in chat to coordinate with recipients.',
+        'Built-in group chat with reactions, replies, and image sharing.',
       ]
     },
     {
-      num: '03', icon: Eye, title: 'Recipient reviews',
-      desc: 'Recipients see the full file list and choose what to download — individually or as a zip.',
+      num: '3', icon: Eye, title: 'Recipient chooses',
+      desc: 'Recipients see files upfront and download individually or as a streaming zip.',
       details: [
         'Nothing downloads until they decide.',
-        'If direct P2P fails, they can opt-in to an encrypted relay.',
-        'Connection quality is shown in real time.',
+        'Relay fallback for strict NATs — still encrypted.',
+        'Live connection quality and typing indicators.',
       ]
     },
     {
-      num: '04', icon: Send, title: 'Direct transfer',
-      desc: 'Files stream browser-to-browser with double encryption and real-time progress.',
+      num: '4', icon: Send, title: 'Direct & encrypted',
+      desc: 'Everything streams browser-to-browser with double encryption.',
       details: [
-        'ECDH key exchange + AES-256-GCM on every chunk, plus WebRTC DTLS.',
-        'StreamSaver writes directly to disk — no file size limit, no RAM bottleneck.',
-        'Auto-resume if the connection drops mid-transfer.',
+        'ECDH key exchange + AES-256-GCM, plus WebRTC DTLS.',
+        'StreamSaver writes to disk — no size limit, no RAM bottleneck.',
+        'Auto-resume on disconnect. Self-hosted signaling for full privacy.',
       ]
     },
   ]

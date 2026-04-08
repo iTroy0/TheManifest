@@ -1,7 +1,7 @@
 import Peer from 'peerjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { chunkFile, buildChunkPacket, waitForBufferDrain, CHUNK_SIZE } from '../utils/fileChunker'
-import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint } from '../utils/crypto'
+import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { STUN_ONLY } from '../utils/iceServers'
 
 export function useSender() {
@@ -18,10 +18,14 @@ export function useSender() {
   const [recipientCount, setRecipientCount] = useState(0)
   const [messages, setMessages] = useState([])
   const [rtt, setRtt] = useState(null)
+  const [senderName, setSenderName] = useState('Host')
+  const [typingUsers, setTypingUsers] = useState([])
+  const typingTimeouts = useRef({})
   const peerRef = useRef(null)
   const filesRef = useRef([])
   const connectionsRef = useRef(new Map())
   const passwordRef = useRef(null)
+  const chatOnlyRef = useRef(false)
   const rttRef = useRef(null)
 
   const setFiles = useCallback((files) => {
@@ -30,6 +34,10 @@ export function useSender() {
 
   const setPassword = useCallback((pwd) => {
     passwordRef.current = pwd || null
+  }, [])
+
+  const setChatOnly = useCallback((val) => {
+    chatOnlyRef.current = val
   }, [])
 
   useEffect(() => {
@@ -88,6 +96,7 @@ export function useSender() {
         const files = filesRef.current
         c.send({
           type: 'manifest',
+          chatOnly: chatOnlyRef.current,
           files: files.map(f => ({ name: f.name, size: f.size, type: f.type })),
           totalSize: files.reduce((sum, f) => sum + f.size, 0),
           sentAt: new Date().toISOString(),
@@ -125,8 +134,12 @@ export function useSender() {
               connectionsRef.current.delete(connId)
               setRecipientCount(connectionsRef.current.size)
               setMessages(prev => [...prev, { text: `${name} left`, from: 'system', time: Date.now(), self: false }])
+              const count = connectionsRef.current.size + 1
               connectionsRef.current.forEach(cs => {
-                try { cs.conn.send({ type: 'chat', text: `${name} left`, from: 'system', time: Date.now() }) } catch {}
+                try {
+                  cs.conn.send({ type: 'online-count', count })
+                  cs.conn.send({ type: 'system-msg', text: `${name} left`, time: Date.now() })
+                } catch {}
               })
               if (connectionsRef.current.size === 0) {
                 if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
@@ -164,7 +177,7 @@ export function useSender() {
           let password = ''
           if (connState.encryptKey && data.data) {
             try {
-              const decrypted = await decryptChunk(connState.encryptKey, new Uint8Array(data.data))
+              const decrypted = await decryptChunk(connState.encryptKey, base64ToUint8(data.data))
               password = new TextDecoder().decode(decrypted)
             } catch { conn.send({ type: 'password-wrong' }); return }
           }
@@ -177,23 +190,53 @@ export function useSender() {
           return
         }
 
+        if (data.type === 'typing') {
+          const nick = data.nickname
+          setTypingUsers(prev => prev.includes(nick) ? prev : [...prev, nick])
+          clearTimeout(typingTimeouts.current[nick])
+          typingTimeouts.current[nick] = setTimeout(() => {
+            setTypingUsers(prev => prev.filter(n => n !== nick))
+          }, 3000)
+          connectionsRef.current.forEach((cs, id) => {
+            if (id !== connId) { try { cs.conn.send({ type: 'typing', nickname: nick }) } catch {} }
+          })
+          return
+        }
+
+        if (data.type === 'reaction') {
+          setMessages(prev => prev.map(m => {
+            if (`${m.time}` === data.msgId) {
+              const reactions = { ...(m.reactions || {}) }
+              if (!reactions[data.emoji]) reactions[data.emoji] = []
+              if (!reactions[data.emoji].includes(data.nickname)) {
+                reactions[data.emoji] = [...reactions[data.emoji], data.nickname]
+              }
+              return { ...m, reactions }
+            }
+            return m
+          }))
+          connectionsRef.current.forEach((cs, id) => {
+            if (id !== connId) { try { cs.conn.send(data) } catch {} }
+          })
+          return
+        }
+
         if (data.type === 'chat-encrypted') {
-          // Decrypt incoming chat
-          let text = data.text
+          let payload = {}
           if (connState.encryptKey && data.data) {
             try {
-              const decrypted = await decryptChunk(connState.encryptKey, new Uint8Array(data.data))
-              text = new TextDecoder().decode(decrypted)
+              const decrypted = await decryptChunk(connState.encryptKey, base64ToUint8(data.data))
+              payload = JSON.parse(new TextDecoder().decode(decrypted))
             } catch { return }
           }
-          const msg = { text, from: data.nickname || 'Anon', time: data.time, self: false }
+          const msg = { text: payload.text || '', image: payload.image, replyTo: payload.replyTo, from: data.nickname || 'Anon', time: data.time, self: false }
           setMessages(prev => [...prev, msg])
-          // Relay to all OTHER receivers (re-encrypt for each)
+          const relayPayload = JSON.stringify(payload)
           for (const [id, cs] of connectionsRef.current) {
             if (id !== connId && cs.encryptKey) {
               try {
-                const encrypted = await encryptChunk(cs.encryptKey, new TextEncoder().encode(text))
-                cs.conn.send({ type: 'chat-encrypted', data: Array.from(new Uint8Array(encrypted)), from: data.nickname || 'Anon', time: data.time })
+                const encrypted = await encryptChunk(cs.encryptKey, new TextEncoder().encode(relayPayload))
+                cs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: data.nickname || 'Anon', time: data.time })
               } catch {}
             }
           }
@@ -203,10 +246,25 @@ export function useSender() {
         if (data.type === 'join') {
           connState.nickname = data.nickname
           setMessages(prev => [...prev, { text: `${data.nickname} joined`, from: 'system', time: Date.now(), self: false }])
-          // Notify other receivers
+          // Broadcast online count + join to all receivers
+          const count = connectionsRef.current.size + 1
+          connectionsRef.current.forEach((cs, id) => {
+            try { cs.conn.send({ type: 'online-count', count }) } catch {}
+            if (id !== connId) {
+              try { cs.conn.send({ type: 'system-msg', text: `${data.nickname} joined`, time: Date.now() }) } catch {}
+            }
+          })
+          return
+        }
+
+        if (data.type === 'nickname-change') {
+          const oldName = connState.nickname || data.oldName
+          connState.nickname = data.newName
+          const msg = `${oldName} is now ${data.newName}`
+          setMessages(prev => [...prev, { text: msg, from: 'system', time: Date.now(), self: false }])
           connectionsRef.current.forEach((cs, id) => {
             if (id !== connId) {
-              try { cs.conn.send({ type: 'chat', text: `${data.nickname} joined`, from: 'system', time: Date.now() }) } catch {}
+              try { cs.conn.send({ type: 'system-msg', text: msg, time: Date.now() }) } catch {}
             }
           })
           return
@@ -281,9 +339,13 @@ export function useSender() {
         connectionsRef.current.delete(connId)
         setRecipientCount(connectionsRef.current.size)
         setMessages(prev => [...prev, { text: `${name} left`, from: 'system', time: Date.now(), self: false }])
-        // Notify other receivers
+        // Notify other receivers + update online count
+        const count = connectionsRef.current.size + 1
         connectionsRef.current.forEach(cs => {
-          try { cs.conn.send({ type: 'chat', text: `${name} left`, from: 'system', time: Date.now() }) } catch {}
+          try {
+            cs.conn.send({ type: 'online-count', count })
+            cs.conn.send({ type: 'system-msg', text: `${name} left`, time: Date.now() })
+          } catch {}
         })
         if (connectionsRef.current.size === 0) {
           if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
@@ -331,19 +393,52 @@ export function useSender() {
     }
   }, [sessionKey])
 
-  const sendMessage = useCallback(async (text) => {
-    if (!text.trim()) return
+  const sendMessage = useCallback(async (text, image, replyTo) => {
+    if (!text && !image) return
     const time = Date.now()
-    setMessages(prev => [...prev, { text: text.trim(), from: 'You', time, self: true }])
+    setMessages(prev => [...prev, { text, image, replyTo, from: 'You', time, self: true }])
+    const payload = JSON.stringify({ text, image, replyTo })
     for (const cs of connectionsRef.current.values()) {
       try {
         if (cs.encryptKey) {
-          const encrypted = await encryptChunk(cs.encryptKey, new TextEncoder().encode(text.trim()))
-          cs.conn.send({ type: 'chat-encrypted', data: Array.from(new Uint8Array(encrypted)), from: 'Sender', time })
+          const encrypted = await encryptChunk(cs.encryptKey, new TextEncoder().encode(payload))
+          cs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: senderName, time })
         }
       } catch {}
     }
-  }, [])
+  }, [senderName])
+
+  const sendTyping = useCallback(() => {
+    connectionsRef.current.forEach(cs => {
+      try { cs.conn.send({ type: 'typing', nickname: senderName }) } catch {}
+    })
+  }, [senderName])
+
+  const sendReaction = useCallback((msgId, emoji) => {
+    setMessages(prev => prev.map(m => {
+      if (`${m.time}` === msgId) {
+        const reactions = { ...(m.reactions || {}) }
+        if (!reactions[emoji]) reactions[emoji] = []
+        if (!reactions[emoji].includes('You')) reactions[emoji] = [...reactions[emoji], 'You']
+        return { ...m, reactions }
+      }
+      return m
+    }))
+    connectionsRef.current.forEach(cs => {
+      try { cs.conn.send({ type: 'reaction', msgId, emoji, nickname: senderName }) } catch {}
+    })
+  }, [senderName])
+
+  const changeSenderName = useCallback((newName) => {
+    if (!newName.trim()) return
+    const oldName = senderName
+    setSenderName(newName.trim())
+    const msg = `${oldName} is now ${newName.trim()}`
+    setMessages(prev => [...prev, { text: msg, from: 'system', time: Date.now(), self: false }])
+    connectionsRef.current.forEach(cs => {
+      try { cs.conn.send({ type: 'system-msg', text: msg, time: Date.now() }) } catch {}
+    })
+  }, [senderName])
 
   const reset = useCallback(() => {
     if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
@@ -352,6 +447,7 @@ export function useSender() {
     if (peerRef.current) peerRef.current.destroy()
     filesRef.current = []
     passwordRef.current = null
+    chatOnlyRef.current = false
     setPeerId(null)
     setStatus('initializing')
     setProgress({})
@@ -364,10 +460,12 @@ export function useSender() {
     setRecipientCount(0)
     setMessages([])
     setRtt(null)
+    setSenderName('Host')
+    setTypingUsers([])
     setSessionKey(k => k + 1)
   }, [])
 
-  return { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, messages, sendMessage, rtt }
+  return { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, setChatOnly, messages, sendMessage, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction }
 }
 
 async function sendSingleFile(conn, files, index, startChunk, connState, encryptKey, aggregateUI) {

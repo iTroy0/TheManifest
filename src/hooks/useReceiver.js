@@ -1,7 +1,7 @@
 import Peer from 'peerjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { parseChunkPacket } from '../utils/fileChunker'
-import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint } from '../utils/crypto'
+import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { createFileStream } from '../utils/streamWriter'
 import { createStreamingZip } from '../utils/zipBuilder'
 import { STUN_ONLY, WITH_TURN } from '../utils/iceServers'
@@ -36,7 +36,10 @@ export function useReceiver(peerId) {
   const [passwordError, setPasswordError] = useState(false)
   const [messages, setMessages] = useState([])
   const [rtt, setRtt] = useState(null)
-  const [nickname] = useState(() => generateNickname())
+  const [nickname, setNickname] = useState(() => generateNickname())
+  const [onlineCount, setOnlineCount] = useState(0)
+  const [typingUsers, setTypingUsers] = useState([])
+  const typingTimeouts = useRef({})
 
   const streamsRef = useRef({})
   const chunksRef = useRef({}) // fallback only
@@ -180,15 +183,50 @@ export function useReceiver(peerId) {
             return
           }
 
+          if (data.type === 'online-count') {
+            setOnlineCount(data.count)
+            return
+          }
+
+          if (data.type === 'typing') {
+            const nick = data.nickname
+            setTypingUsers(prev => prev.includes(nick) ? prev : [...prev, nick])
+            clearTimeout(typingTimeouts.current[nick])
+            typingTimeouts.current[nick] = setTimeout(() => {
+              setTypingUsers(prev => prev.filter(n => n !== nick))
+            }, 3000)
+            return
+          }
+
+          if (data.type === 'reaction') {
+            setMessages(prev => prev.map(m => {
+              if (`${m.time}` === data.msgId) {
+                const reactions = { ...(m.reactions || {}) }
+                if (!reactions[data.emoji]) reactions[data.emoji] = []
+                if (!reactions[data.emoji].includes(data.nickname)) {
+                  reactions[data.emoji] = [...reactions[data.emoji], data.nickname]
+                }
+                return { ...m, reactions }
+              }
+              return m
+            }))
+            return
+          }
+
+          if (data.type === 'system-msg') {
+            setMessages(prev => [...prev, { text: data.text, from: 'system', time: data.time, self: false }])
+            return
+          }
+
           if (data.type === 'chat-encrypted') {
-            let text = ''
+            let payload = {}
             if (decryptKeyRef.current && data.data) {
               try {
-                const decrypted = await decryptChunk(decryptKeyRef.current, new Uint8Array(data.data))
-                text = new TextDecoder().decode(decrypted)
+                const decrypted = await decryptChunk(decryptKeyRef.current, base64ToUint8(data.data))
+                payload = JSON.parse(new TextDecoder().decode(decrypted))
               } catch { return }
             }
-            setMessages(prev => [...prev, { text, from: data.from || 'Sender', time: data.time, self: false }])
+            setMessages(prev => [...prev, { text: payload.text || '', image: payload.image, replyTo: payload.replyTo, from: data.from || 'Sender', time: data.time, self: false }])
             return
           }
 
@@ -349,15 +387,43 @@ export function useReceiver(peerId) {
     setTimeout(() => { startConnection(true) }, 500)
   }, [startConnection])
 
-  const sendMessage = useCallback(async (text) => {
-    if (!text.trim()) return
+  const sendTyping = useCallback(() => {
+    const conn = connRef.current
+    if (conn) try { conn.send({ type: 'typing', nickname }) } catch {}
+  }, [nickname])
+
+  const sendReaction = useCallback((msgId, emoji) => {
+    setMessages(prev => prev.map(m => {
+      if (`${m.time}` === msgId) {
+        const reactions = { ...(m.reactions || {}) }
+        if (!reactions[emoji]) reactions[emoji] = []
+        if (!reactions[emoji].includes('You')) reactions[emoji] = [...reactions[emoji], 'You']
+        return { ...m, reactions }
+      }
+      return m
+    }))
+    const conn = connRef.current
+    if (conn) try { conn.send({ type: 'reaction', msgId, emoji, nickname }) } catch {}
+  }, [nickname])
+
+  const changeNickname = useCallback((newName) => {
+    const conn = connRef.current
+    if (!conn || !newName.trim()) return
+    const oldName = nickname
+    setNickname(newName.trim())
+    try { conn.send({ type: 'nickname-change', oldName, newName: newName.trim() }) } catch {}
+  }, [nickname])
+
+  const sendMessage = useCallback(async (text, image, replyTo) => {
+    if (!text && !image) return
     const conn = connRef.current
     if (!conn || !decryptKeyRef.current) return
     const time = Date.now()
-    setMessages(prev => [...prev, { text: text.trim(), from: 'You', time, self: true }])
+    setMessages(prev => [...prev, { text, image, replyTo, from: 'You', time, self: true }])
     try {
-      const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(text.trim()))
-      conn.send({ type: 'chat-encrypted', data: Array.from(new Uint8Array(encrypted)), nickname, time })
+      const payload = JSON.stringify({ text, image, replyTo })
+      const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(payload))
+      conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), nickname, time })
     } catch {}
   }, [nickname])
 
@@ -367,7 +433,7 @@ export function useReceiver(peerId) {
     setPasswordError(false)
     try {
       const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(password))
-      conn.send({ type: 'password-encrypted', data: Array.from(new Uint8Array(encrypted)) })
+      conn.send({ type: 'password-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)) })
     } catch {}
   }, [])
 
@@ -456,6 +522,7 @@ export function useReceiver(peerId) {
     pendingFiles, completedFiles, requestFile, requestAllAsZip,
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
     passwordRequired, passwordError, submitPassword,
-    messages, sendMessage, rtt, nickname,
+    messages, sendMessage, rtt, nickname, changeNickname, onlineCount,
+    typingUsers, sendTyping, sendReaction,
   }
 }
