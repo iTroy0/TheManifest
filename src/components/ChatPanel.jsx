@@ -242,27 +242,30 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
           <div className="px-3 sm:px-4 pb-4 space-y-3">
             {/* Nickname editor */}
             {onNicknameChange && (
-              <div className="flex items-center gap-2 p-2 bg-surface-2/30 rounded-xl border border-border/50">
-                <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center shrink-0">
-                  <Users className="w-3.5 h-3.5 text-accent/70" />
+              <div className="flex items-center gap-2 p-2.5 bg-surface-2 rounded-xl border border-border">
+                <div className="w-8 h-8 rounded-lg bg-accent/15 flex items-center justify-center shrink-0">
+                  <Users className="w-4 h-4 text-accent" />
                 </div>
-                <input
-                  type="text"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && nameChanged && handleSetName()}
-                  maxLength={20}
-                  placeholder="Your nickname"
-                  className="flex-1 min-w-0 bg-transparent font-mono text-sm text-text
-                    placeholder:text-muted/40 focus:outline-none"
-                />
+                <div className="flex-1 min-w-0">
+                  <label className="font-mono text-[10px] text-muted block mb-0.5">Nickname</label>
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && nameChanged && handleSetName()}
+                    maxLength={20}
+                    placeholder="Enter your name"
+                    className="w-full bg-bg border border-border rounded-lg px-2.5 py-1.5 font-mono text-sm text-text
+                      placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors"
+                  />
+                </div>
                 {nameChanged && (
                   <button
                     onClick={handleSetName}
-                    className="shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-lg font-mono text-xs
-                      bg-accent text-bg font-medium hover:bg-accent-dim transition-colors"
+                    className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-xs
+                      bg-accent text-bg font-medium hover:bg-accent-dim active:scale-95 transition-all"
                   >
-                    <Check className="w-3 h-3" />
+                    <Check className="w-3.5 h-3.5" />
                     Save
                   </button>
                 )}
@@ -303,7 +306,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
                     key={`group-${groupIdx}-${group.messages[0].time}`} 
                     className={`flex ${group.self ? 'justify-end' : 'justify-start'} animate-fade-in-up`}
                   >
-                    <div className={`flex flex-col gap-0.5 max-w-[85%] sm:max-w-[75%] ${group.self ? 'items-end' : 'items-start'}`}>
+                    <div className={`flex flex-col gap-0.5 max-w-[90%] sm:max-w-[80%] ${group.self ? 'items-end' : 'items-start'}`}>
                       {/* Show author name only once per group */}
                       {!group.self && (
                         <p className="font-mono text-[10px] text-accent/70 mb-0.5 px-1">{group.from}</p>
@@ -320,11 +323,11 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
                           <div key={`${msg.time}-${i}`} className="relative group/msg w-full">
                             <div
                               className={`
-                                px-3 py-2 space-y-1 transition-colors
+                                px-3 py-2 sm:px-3.5 sm:py-2.5 space-y-1 transition-colors cursor-pointer
                                 ${group.self
-                                  ? `bg-accent/10 border border-accent/20 hover:bg-accent/15
+                                  ? `bg-accent/10 border border-accent/20 active:bg-accent/20 sm:hover:bg-accent/15
                                      ${isFirst && isLast ? 'rounded-2xl rounded-tr-md' : isFirst ? 'rounded-t-2xl rounded-tr-md rounded-b-md' : isLast ? 'rounded-b-2xl rounded-t-md' : 'rounded-md'}`
-                                  : `bg-surface-2 border border-border hover:bg-surface-2/80
+                                  : `bg-surface-2 border border-border active:bg-surface-2/70 sm:hover:bg-surface-2/80
                                      ${isFirst && isLast ? 'rounded-2xl rounded-tl-md' : isFirst ? 'rounded-t-2xl rounded-tl-md rounded-b-md' : isLast ? 'rounded-b-2xl rounded-t-md' : 'rounded-md'}`
                                 }
                               `}
@@ -354,12 +357,10 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
                                 </p>
                               )}
 
-                              {/* Show time only on last message or if time gaps */}
-                              {isLast && (
-                                <p className="text-[9px] text-muted/60 font-mono mt-1">
-                                  {formatRelativeTime(msg.time)}
-                                </p>
-                              )}
+                              {/* Timestamp on every message */}
+                              <p className="text-[9px] text-muted/50 font-mono mt-0.5">
+                                {new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </p>
                             </div>
 
                             {/* Reactions display */}
@@ -377,48 +378,41 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
                               </div>
                             )}
 
-                            {/* Action buttons — visible on hover/tap */}
-                            {onReaction && (
-                              <div className={`
-                                absolute ${group.self ? 'left-0 -translate-x-full pr-1.5' : 'right-0 translate-x-full pl-1.5'} top-1/2 -translate-y-1/2
-                                flex items-center gap-1 transition-all duration-200
-                                ${showActions ? 'opacity-100 scale-100' : 'opacity-0 scale-95 sm:group-hover/msg:opacity-100 sm:group-hover/msg:scale-100 pointer-events-none sm:pointer-events-auto'}
-                              `}>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); setReactingIdx(reactingIdx === i ? null : i) }}
-                                  className="p-1.5 rounded-lg bg-surface border border-border text-muted hover:text-accent hover:border-accent/30 transition-colors shadow-sm"
-                                >
-                                  <Smile className="w-3.5 h-3.5" />
-                                </button>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); setReplyTo({ text: msg.text, from: msg.from, time: msg.time }); setActiveMsg(null) }}
-                                  className="p-1.5 rounded-lg bg-surface border border-border text-muted hover:text-accent hover:border-accent/30 transition-colors shadow-sm"
-                                >
-                                  <Reply className="w-3.5 h-3.5" />
-                                </button>
+                            {/* Inline emoji picker that scales with message */}
+                            {reactingIdx === i && (
+                              <div className="flex flex-wrap gap-0.5 mt-1.5 p-1 bg-surface border border-border rounded-lg">
+                                {EMOJIS.slice(0, 6).map(emoji => (
+                                  <button
+                                    key={emoji}
+                                    onClick={(e) => { e.stopPropagation(); onReaction(msgId, emoji); setReactingIdx(null); setActiveMsg(null) }}
+                                    className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded hover:bg-accent/15 active:scale-90 transition-all text-sm sm:text-base"
+                                  >
+                                    {emoji}
+                                  </button>
+                                ))}
                               </div>
                             )}
 
-                            {/* Emoji picker */}
-                            {reactingIdx === i && (
-                              <div 
-                                className={`
-                                  absolute z-20 ${group.self ? 'right-0' : 'left-0'} 
-                                  ${i < 3 ? 'top-full mt-2' : 'bottom-full mb-2'}
-                                  bg-surface border border-border rounded-xl p-2 shadow-xl shadow-black/40
-                                `}
-                              >
-                                <div className="grid grid-cols-6 gap-1">
-                                  {EMOJIS.map(emoji => (
-                                    <button
-                                      key={emoji}
-                                      onClick={(e) => { e.stopPropagation(); onReaction(msgId, emoji); setReactingIdx(null); setActiveMsg(null) }}
-                                      className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-accent/10 hover:scale-110 active:scale-95 transition-all text-lg"
-                                    >
-                                      {emoji}
-                                    </button>
-                                  ))}
-                                </div>
+                            {/* Action buttons — visible on tap (mobile) or hover (desktop) */}
+                            {onReaction && !reactingIdx && (
+                              <div className={`
+                                flex items-center gap-1 mt-1 transition-all duration-150
+                                ${showActions ? 'opacity-100 max-h-10' : 'opacity-0 max-h-0 overflow-hidden sm:group-hover/msg:opacity-100 sm:group-hover/msg:max-h-10'}
+                              `}>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setReactingIdx(i) }}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-md bg-surface border border-border text-muted hover:text-accent hover:border-accent/30 transition-colors text-[11px] font-mono"
+                                >
+                                  <Smile className="w-3 h-3" />
+                                  <span className="hidden sm:inline">React</span>
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setReplyTo({ text: msg.text, from: msg.from, time: msg.time }); setActiveMsg(null) }}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-md bg-surface border border-border text-muted hover:text-accent hover:border-accent/30 transition-colors text-[11px] font-mono"
+                                >
+                                  <Reply className="w-3 h-3" />
+                                  <span className="hidden sm:inline">Reply</span>
+                                </button>
                               </div>
                             )}
                           </div>
@@ -482,40 +476,38 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
             )}
 
             {/* Input */}
-            <form onSubmit={handleSend} className="flex gap-2 items-end">
-              <div className="flex-1 relative">
-                <input
-                  ref={textInputRef}
-                  type="text"
-                  value={text}
-                  onChange={handleTyping}
-                  placeholder={disabled ? 'Connect to chat' : 'Type a message...'}
-                  maxLength={2000}
-                  disabled={disabled}
-                  className="w-full bg-bg border border-border rounded-2xl px-4 py-3 pr-12 font-mono text-sm text-text
-                    placeholder:text-muted/40 focus:outline-none focus:border-accent/40 focus:ring-2 focus:ring-accent/10 transition-all
-                    disabled:opacity-40 disabled:cursor-not-allowed min-h-[48px]"
-                />
-                <input ref={imageInputRef} type="file" accept="image/*" onChange={handleImagePick} className="hidden" />
-                <button
-                  type="button"
-                  onClick={() => imageInputRef.current?.click()}
-                  disabled={disabled}
-                  aria-label="Attach image"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-lg text-muted/60 
-                    hover:text-accent hover:bg-accent/10 active:scale-95 transition-all
-                    disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  <ImagePlus className="w-4 h-4" />
-                </button>
-              </div>
+            <form onSubmit={handleSend} className="flex gap-1.5 sm:gap-2 items-end">
+              <input ref={imageInputRef} type="file" accept="image/*" onChange={handleImagePick} className="hidden" />
+              <button
+                type="button"
+                onClick={() => imageInputRef.current?.click()}
+                disabled={disabled}
+                aria-label="Attach image"
+                className="shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-surface border border-border text-muted 
+                  hover:text-accent hover:border-accent/30 active:scale-95 transition-all flex items-center justify-center
+                  disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <ImagePlus className="w-4 h-4 sm:w-5 sm:h-5" />
+              </button>
+              <input
+                ref={textInputRef}
+                type="text"
+                value={text}
+                onChange={handleTyping}
+                placeholder={disabled ? 'Connect to chat' : 'Message...'}
+                maxLength={2000}
+                disabled={disabled}
+                className="flex-1 min-w-0 bg-bg border border-border rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 font-mono text-sm text-text
+                  placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-all
+                  disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px]"
+              />
               <button
                 type="submit"
                 disabled={disabled || (!text.trim() && !imagePreview)}
                 aria-label="Send message"
-                className={`shrink-0 w-12 h-12 rounded-2xl flex items-center justify-center transition-all
+                className={`shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center transition-all
                   ${!disabled && (text.trim() || imagePreview)
-                    ? 'bg-accent text-bg hover:bg-accent-dim active:scale-95 shadow-lg shadow-accent/20'
+                    ? 'bg-accent text-bg hover:bg-accent-dim active:scale-90 shadow-lg shadow-accent/25'
                     : 'bg-surface border border-border text-muted/40 cursor-not-allowed'
                   }`}
               >
