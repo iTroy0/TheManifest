@@ -176,7 +176,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
             {/* Messages */}
             <div
               ref={scrollRef}
-              className="h-[50vh] max-h-[400px] min-h-[200px] overflow-y-auto space-y-2 scrollbar-thin pr-1"
+              className="max-h-[min(50vh,400px)] min-h-[150px] overflow-y-auto space-y-2 scrollbar-thin pr-1"
               onClick={() => { setReactingIdx(null); setActiveMsg(null) }}
             >
               {messages.length === 0 && (
@@ -265,9 +265,9 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
                         </div>
                       )}
 
-                      {/* Emoji picker */}
+                      {/* Emoji picker — below for first 2 messages, above for rest */}
                       {reactingIdx === i && (
-                        <div className={`absolute ${msg.self ? 'right-0' : 'left-0'} -top-10 flex gap-1 bg-surface border border-border rounded-xl px-2 py-1.5 shadow-lg shadow-black/30 z-10`}>
+                        <div className={`absolute ${msg.self ? 'right-0' : 'left-0'} ${i < 2 ? 'top-full mt-1' : '-top-10'} flex gap-1 bg-surface border border-border rounded-xl px-2 py-1.5 shadow-lg shadow-black/30 z-10`}>
                           {EMOJIS.map(emoji => (
                             <button
                               key={emoji}
