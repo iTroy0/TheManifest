@@ -174,14 +174,18 @@ body {
   position: relative;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 12px;
+  border-radius: 16px;
+  transition: border-color 0.3s ease;
+}
+.glow-card:hover {
+  border-color: var(--color-border-hover);
 }
 .glow-card::before {
   content: '';
   position: absolute;
   inset: -1px;
-  border-radius: 13px;
-  background: linear-gradient(135deg, rgba(0,255,136,0.1), transparent 40%, transparent 60%, rgba(0,255,136,0.05));
+  border-radius: 17px;
+  background: linear-gradient(135deg, rgba(0,255,136,0.08), transparent 50%, transparent 70%, rgba(0,255,136,0.04));
   z-index: -1;
   opacity: 0;
   transition: opacity 0.4s;
@@ -203,4 +207,23 @@ body {
 .text-glow {
   text-shadow: 0 0 12px rgba(0, 255, 136, 0.4), 0 0 30px rgba(0, 255, 136, 0.1);
 }
+
+/* ── Focus visible ring ── */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-bg), 0 0 0 4px rgba(0, 255, 136, 0.4);
+}
+
+/* ── Smooth transitions for interactive elements ── */
+button, a {
+  transition-property: color, background-color, border-color, transform, box-shadow, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Custom sizing for large icons ── */
+.w-18 { width: 4.5rem; }
+.h-18 { height: 4.5rem; }
 
