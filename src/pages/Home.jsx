@@ -11,6 +11,7 @@ import PortalLink from '../components/PortalLink'
 import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import ChatPanel from '../components/ChatPanel'
+import { ComponentErrorBoundary } from '../components/ErrorBoundary'
 
 export default function Home() {
   const [files, setFilesState] = useState([])
@@ -100,13 +101,13 @@ export default function Home() {
 
         {/* Hero — only on landing */}
         {!isActive && (
-          <div className="text-center py-4 animate-fade-in-up">
-            <p className="font-mono text-xl font-bold text-text-bright mb-2 tracking-tight">
+          <div className="text-center py-6 animate-fade-in-up">
+            <h2 className="font-mono text-2xl sm:text-3xl font-bold text-text-bright mb-3 tracking-tight text-balance">
               Share files & chat. No servers. No trace.
-            </p>
-            <p className="text-xs text-muted-light max-w-sm mx-auto leading-relaxed">
+            </h2>
+            <p className="text-sm text-muted-light max-w-md mx-auto leading-relaxed text-pretty">
               Files and messages stream directly browser-to-browser via WebRTC.
-              End-to-end encrypted. Close the tab and it's gone.
+              End-to-end encrypted. Close the tab and it&apos;s gone.
             </p>
           </div>
         )}
@@ -115,15 +116,17 @@ export default function Home() {
         {!isActive && (
           <>
             <DropZone onFiles={handleFiles} disabled={isTransferring || isFinished} />
-            <div className="text-center">
+            <div className="flex items-center justify-center gap-4">
+              <div className="h-px flex-1 bg-border/50" />
               <button
                 onClick={startChatRoom}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs
-                  bg-surface border border-border text-muted-light hover:border-accent/40 hover:text-accent transition-colors"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm
+                  bg-surface-2/50 border border-border text-muted hover:border-accent/40 hover:text-accent hover:bg-surface-2 active:scale-[0.98] transition-all"
               >
-                <MessagesSquare className="w-3.5 h-3.5" />
-                Or start a chat room
+                <MessagesSquare className="w-4 h-4" />
+                Start a chat room
               </button>
+              <div className="h-px flex-1 bg-border/50" />
             </div>
           </>
         )}
@@ -220,16 +223,18 @@ export default function Home() {
                   <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesOpen ? 'rotate-180' : ''}`} />
                 </div>
               </button>
-              <div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-                <div className="overflow-hidden">
-                  <div className="px-4 pb-3">
-                    <FileList
-                      files={files}
-                      onRemove={isTransferring || isFinished ? null : removeFile}
-                      onReorder={isTransferring || isFinished ? null : reorderFiles}
+<div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+  <div className="overflow-hidden">
+  <div className="px-4 pb-3">
+  <ComponentErrorBoundary name="Files">
+    <FileList
+      files={files}
+      onRemove={isTransferring || isFinished ? null : removeFile}
+      onReorder={isTransferring || isFinished ? null : reorderFiles}
                       progress={showProgress ? progress : null}
                       currentFileIndex={isTransferring ? currentFileIndex : -1}
                     />
+                  </ComponentErrorBoundary>
                   </div>
                 </div>
               </div>
@@ -266,10 +271,12 @@ export default function Home() {
               <PortalLink peerId={peerId} />
             )}
 
-            {/* Chat */}
-            {(recipientCount > 0 || chatMode) && !isFinished && (
-              <ChatPanel messages={messages} onSend={sendMessage} disabled={recipientCount === 0} onlineCount={recipientCount + 1} nickname={senderName} onNicknameChange={changeSenderName} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
-            )}
+{/* Chat */}
+  {(recipientCount > 0 || chatMode) && !isFinished && (
+    <ComponentErrorBoundary name="Chat">
+      <ChatPanel messages={messages} onSend={sendMessage} disabled={recipientCount === 0} onlineCount={recipientCount + 1} nickname={senderName} onNicknameChange={changeSenderName} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
+    </ComponentErrorBoundary>
+  )}
           </>
         )}
 
@@ -282,34 +289,48 @@ export default function Home() {
 
         {/* Done / closed / error — show new session button */}
         {isFinished && (
-          <div className="text-center py-8 animate-fade-in-up space-y-4">
-            {status === 'done' && (
-              <>
-                <div className="w-14 h-14 rounded-2xl bg-accent/15 flex items-center justify-center mx-auto">
-                  <svg className="w-7 h-7 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                  </svg>
+          <div className="text-center py-12 animate-fade-in-up">
+            <div className="max-w-sm mx-auto space-y-5">
+              {status === 'done' && (
+                <>
+                  <div className="w-16 h-16 rounded-2xl bg-accent/15 flex items-center justify-center mx-auto ring-4 ring-accent/10">
+                    <svg className="w-8 h-8 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="font-mono text-lg text-accent text-glow font-medium">Transfer complete</p>
+                    <p className="font-mono text-sm text-muted mt-1">
+                      {formatBytes(totalSent)} delivered in {formatElapsed(elapsed)}
+                    </p>
+                  </div>
+                </>
+              )}
+              {status === 'closed' && (
+                <div className="space-y-2">
+                  <div className="w-16 h-16 rounded-2xl bg-muted/10 flex items-center justify-center mx-auto">
+                    <Users className="w-8 h-8 text-muted" />
+                  </div>
+                  <p className="font-mono text-base text-muted">Recipient disconnected</p>
                 </div>
-                <p className="font-mono text-sm text-accent text-glow">Transfer complete</p>
-                <p className="font-mono text-xs text-muted">
-                  {formatBytes(totalSent)} delivered in {formatElapsed(elapsed)}
-                </p>
-              </>
-            )}
-            {status === 'closed' && (
-              <p className="font-mono text-sm text-muted">Recipient disconnected.</p>
-            )}
-            {status === 'error' && (
-              <p className="font-mono text-sm text-danger">Connection error occurred.</p>
-            )}
-            <button
-              onClick={handleNewSession}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm
-                bg-surface border border-border text-text hover:border-accent/40 hover:text-accent transition-colors"
-            >
-              <RotateCcw className="w-4 h-4" />
-              New Session
-            </button>
+              )}
+              {status === 'error' && (
+                <div className="space-y-2">
+                  <div className="w-16 h-16 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto">
+                    <AlertTriangle className="w-8 h-8 text-danger" />
+                  </div>
+                  <p className="font-mono text-base text-danger">Connection error occurred</p>
+                </div>
+              )}
+              <button
+                onClick={handleNewSession}
+                className="inline-flex items-center gap-2 px-6 py-3 rounded-xl font-mono text-sm font-medium
+                  bg-accent text-bg hover:bg-accent-dim active:scale-[0.98] transition-all"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Start New Session
+              </button>
+            </div>
           </div>
         )}
       </main>
@@ -427,28 +448,32 @@ function PasswordSection({ password, onChange }) {
     <div className="glow-card overflow-hidden animate-fade-in-up">
       <button
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center justify-between p-4 text-left group"
+        className="w-full flex items-center justify-between p-4 text-left group hover:bg-surface-2/30 transition-colors"
       >
-        <div className="flex items-center gap-2">
-          <Lock className="w-3.5 h-3.5 text-accent" />
-          <span className="font-mono text-xs text-accent uppercase tracking-widest">Password</span>
-          <span className="font-mono text-[10px] text-muted">(optional)</span>
-          {password && !open && (
-            <span className="font-mono text-[10px] text-accent/60">set</span>
-          )}
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
+            <Lock className="w-4 h-4 text-accent" />
+          </div>
+          <div>
+            <span className="font-mono text-sm text-text font-medium">Password protect</span>
+            <p className="font-mono text-[10px] text-muted">
+              {password ? 'Password set' : 'Optional security'}
+            </p>
+          </div>
         </div>
-        <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
       </button>
       <div className={`grid transition-all duration-400 ease-in-out ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
         <div className="overflow-hidden">
           <div className="px-4 pb-4">
             <input
               type="password"
-              placeholder="Set a password to protect this portal"
+              placeholder="Enter a password..."
               value={password}
               onChange={(e) => onChange(e.target.value)}
-              className="w-full bg-bg border border-border rounded-lg px-3 py-2.5 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/40 transition-colors"
+              className="w-full bg-bg border border-border rounded-xl px-4 py-3 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all"
             />
+            <p className="font-mono text-[10px] text-muted mt-2 px-1">Recipients will need this password to access the portal</p>
           </div>
         </div>
       </div>
@@ -458,9 +483,11 @@ function PasswordSection({ password, onChange }) {
 
 function InfoCard({ icon: Icon, title, desc }) {
   return (
-    <div className="bg-surface border border-border rounded-xl p-4 space-y-2 hover:border-border-hover transition-colors">
-      <Icon className="w-4 h-4 text-accent" strokeWidth={1.5} />
-      <p className="font-mono text-xs text-text font-medium">{title}</p>
+    <div className="group bg-surface border border-border rounded-xl p-4 space-y-2.5 hover:border-accent/30 hover:bg-surface-2/30 transition-all duration-300">
+      <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center group-hover:bg-accent/15 transition-colors">
+        <Icon className="w-4 h-4 text-accent" strokeWidth={1.5} />
+      </div>
+      <p className="font-mono text-sm text-text font-medium">{title}</p>
       <p className="text-xs text-muted-light leading-relaxed">{desc}</p>
     </div>
   )

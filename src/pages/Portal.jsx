@@ -7,6 +7,7 @@ import FileList from '../components/FileList'
 import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import ChatPanel from '../components/ChatPanel'
+import { ComponentErrorBoundary } from '../components/ErrorBoundary'
 import { useState } from 'react'
 import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Wifi, Archive, Lock, ChevronDown, MessagesSquare } from 'lucide-react'
 
@@ -110,70 +111,82 @@ export default function Portal() {
 
         {/* Connecting */}
         {isConnecting && (
-          <div className="text-center py-14 animate-fade-in-up">
-            <div className="w-16 h-16 rounded-2xl border-2 border-accent/30 flex items-center justify-center mx-auto mb-5">
-              <div className="w-10 h-10 border-2 border-accent border-t-transparent rounded-full animate-spin-slow" />
+          <div className="text-center py-16 animate-fade-in-up">
+            <div className="relative w-20 h-20 mx-auto mb-6">
+              <div className="absolute inset-0 rounded-2xl bg-accent/10 animate-pulse" />
+              <div className="absolute inset-2 rounded-xl border-2 border-accent/30 flex items-center justify-center">
+                <div className="w-10 h-10 border-2 border-accent border-t-transparent rounded-full animate-spin-slow" />
+              </div>
             </div>
-            <p className="font-mono text-sm text-text mb-2">
-              {status === 'reconnecting' ? 'Reconnecting...' : status === 'retrying' ? `Retrying... (attempt ${retryCount + 1}/2)` : 'Connecting to portal...'}
+            <p className="font-mono text-base text-text font-medium mb-2">
+              {status === 'reconnecting' ? 'Reconnecting...' : status === 'retrying' ? `Retrying connection (${retryCount + 1}/2)` : 'Connecting to portal'}
             </p>
-            <p className="text-xs text-muted max-w-xs mx-auto leading-relaxed">
-              {status === 'reconnecting' ? 'Connection dropped. Resuming where it left off.' : 'Establishing a secure peer-to-peer connection.'}
+            <p className="text-sm text-muted max-w-sm mx-auto leading-relaxed">
+              {status === 'reconnecting' ? 'Connection dropped. Resuming where we left off.' : 'Establishing a secure peer-to-peer connection with the sender.'}
             </p>
           </div>
         )}
 
         {/* Password required */}
         {status === 'password-required' && (
-          <div className="text-center py-10 animate-fade-in-up space-y-5">
-            <div className="w-16 h-16 rounded-2xl bg-accent/10 flex items-center justify-center mx-auto">
-              <Lock className="w-8 h-8 text-accent" strokeWidth={1.5} />
+          <div className="text-center py-12 animate-fade-in-up">
+            <div className="max-w-sm mx-auto space-y-6">
+              <div className="w-18 h-18 rounded-2xl bg-accent/10 flex items-center justify-center mx-auto ring-4 ring-accent/5">
+                <Lock className="w-9 h-9 text-accent" strokeWidth={1.5} />
+              </div>
+              <div>
+                <p className="font-mono text-lg text-text font-medium mb-2">Password Protected</p>
+                <p className="text-sm text-muted">Enter the password to access this portal.</p>
+              </div>
+              <form onSubmit={(e) => { e.preventDefault(); setPasswordLoading(true); submitPassword(passwordInput); setTimeout(() => setPasswordLoading(false), 2000) }} className="space-y-4">
+                <div className="relative">
+                  <input
+                    type="password"
+                    value={passwordInput}
+                    onChange={(e) => { setPasswordInput(e.target.value); setPasswordLoading(false) }}
+                    placeholder="Enter password"
+                    disabled={passwordLoading}
+                    className="w-full bg-bg border border-border rounded-xl px-4 py-3.5 font-mono text-sm text-text text-center placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all disabled:opacity-40"
+                    autoFocus
+                  />
+                </div>
+                {passwordError && !passwordLoading && (
+                  <div className="flex items-center justify-center gap-2 text-danger">
+                    <AlertCircle className="w-4 h-4" />
+                    <p className="font-mono text-sm">Wrong password. Try again.</p>
+                  </div>
+                )}
+                <button type="submit" disabled={passwordLoading || !passwordInput} className="w-full px-5 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                  {passwordLoading ? 'Verifying...' : 'Unlock Portal'}
+                </button>
+              </form>
             </div>
-            <div>
-              <p className="font-mono text-sm text-text mb-2">This portal is password protected</p>
-              <p className="text-xs text-muted max-w-sm mx-auto">Enter the password to access the files.</p>
-            </div>
-            <form onSubmit={(e) => { e.preventDefault(); setPasswordLoading(true); submitPassword(passwordInput); setTimeout(() => setPasswordLoading(false), 2000) }} className="max-w-xs mx-auto space-y-3">
-              <input
-                type="password"
-                value={passwordInput}
-                onChange={(e) => { setPasswordInput(e.target.value); setPasswordLoading(false) }}
-                placeholder="Enter password"
-                disabled={passwordLoading}
-                className="w-full bg-bg border border-border rounded-lg px-3 py-2.5 font-mono text-sm text-text text-center placeholder:text-muted/40 focus:outline-none focus:border-accent/40 transition-colors min-h-[44px] disabled:opacity-40"
-                autoFocus
-              />
-              {passwordError && !passwordLoading && (
-                <p className="font-mono text-xs text-danger">Wrong password. Try again.</p>
-              )}
-              <button type="submit" disabled={passwordLoading || !passwordInput} className="w-full px-4 py-2.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim transition-colors disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px]">
-                {passwordLoading ? 'Verifying...' : 'Unlock Portal'}
-              </button>
-            </form>
           </div>
         )}
 
         {/* Direct failed — relay option */}
         {status === 'direct-failed' && (
-          <div className="text-center py-10 animate-fade-in-up space-y-5">
-            <div className="w-16 h-16 rounded-2xl bg-warning/10 flex items-center justify-center mx-auto">
-              <Radio className="w-8 h-8 text-warning" strokeWidth={1.5} />
+          <div className="text-center py-12 animate-fade-in-up">
+            <div className="max-w-sm mx-auto space-y-6">
+              <div className="w-18 h-18 rounded-2xl bg-warning/10 flex items-center justify-center mx-auto ring-4 ring-warning/5">
+                <Radio className="w-9 h-9 text-warning" strokeWidth={1.5} />
+              </div>
+              <div>
+                <p className="font-mono text-lg text-text font-medium mb-2">Direct connection failed</p>
+                <p className="text-sm text-muted leading-relaxed">Your network doesn&apos;t allow a direct connection. You can use an encrypted relay instead.</p>
+              </div>
+              <div className="bg-surface-2/50 border border-border rounded-xl p-4 text-left space-y-3">
+                <p className="font-mono text-xs text-accent font-medium">What does this mean?</p>
+                <ul className="space-y-2 text-sm text-muted leading-relaxed">
+                  <li className="flex gap-2"><span className="text-accent shrink-0">1.</span>Files pass through a relay server</li>
+                  <li className="flex gap-2"><span className="text-accent shrink-0">2.</span>All data is still end-to-end encrypted</li>
+                  <li className="flex gap-2"><span className="text-accent shrink-0">3.</span>Speed may be slightly slower</li>
+                </ul>
+              </div>
+              <button onClick={enableRelay} className="inline-flex items-center gap-2.5 px-6 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all">
+                <Radio className="w-4 h-4" /> Connect via Relay
+              </button>
             </div>
-            <div>
-              <p className="font-mono text-sm text-text mb-2">Direct connection failed</p>
-              <p className="text-xs text-muted max-w-sm mx-auto leading-relaxed">Your network doesn't allow a direct connection. You can try using an encrypted relay.</p>
-            </div>
-            <div className="glow-card p-5 text-left max-w-sm mx-auto space-y-3">
-              <p className="font-mono text-xs text-accent uppercase tracking-widest">What does this mean?</p>
-              <ul className="space-y-2 text-xs text-muted leading-relaxed">
-                <li className="flex gap-2"><span className="text-accent mt-0.5 shrink-0">&bull;</span>Files pass through a relay instead of directly browser-to-browser.</li>
-                <li className="flex gap-2"><span className="text-accent mt-0.5 shrink-0">&bull;</span>All data is still encrypted. The relay cannot read your files.</li>
-                <li className="flex gap-2"><span className="text-accent mt-0.5 shrink-0">&bull;</span>Speed may be slightly slower than a direct connection.</li>
-              </ul>
-            </div>
-            <button onClick={enableRelay} className="inline-flex items-center gap-2.5 px-6 py-3 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim transition-colors">
-              <Radio className="w-4 h-4" /> Connect via Relay
-            </button>
           </div>
         )}
 
@@ -245,17 +258,19 @@ export default function Portal() {
                       </div>
                     )}
 
-                    <FileList
-                      files={manifest.files}
-                      progress={progress}
-                      pendingFiles={pendingFiles}
-                      pausedFiles={pausedFiles}
-                      onRequest={isDead || hasPending ? null : requestFile}
-                      onCancel={hasPending ? cancelFile : null}
-                      onPause={hasPending ? pauseFile : null}
-                      onResume={resumeFile}
-                      currentFileIndex={currentFileIndex}
-                    />
+                    <ComponentErrorBoundary name="Files">
+                      <FileList
+                        files={manifest.files}
+                        progress={progress}
+                        pendingFiles={pendingFiles}
+                        pausedFiles={pausedFiles}
+                        onRequest={isDead || hasPending ? null : requestFile}
+                        onCancel={hasPending ? cancelFile : null}
+                        onPause={hasPending ? pauseFile : null}
+                        onResume={resumeFile}
+                        currentFileIndex={currentFileIndex}
+                      />
+                    </ComponentErrorBoundary>
                   </div>
                 </div>
               </div>
@@ -282,16 +297,16 @@ export default function Portal() {
             {/* Download all bar */}
             {!allDone && !isDead && !hasPending && manifest.files.length > 1 && (
               <div className="sticky bottom-4 z-10">
-                <div className="flex items-center justify-center gap-3 bg-surface/95 backdrop-blur-sm border border-border rounded-xl px-4 py-2.5 shadow-lg shadow-black/30">
+                <div className="flex items-center justify-center gap-4 bg-surface/95 backdrop-blur-md border border-accent/20 rounded-2xl px-5 py-3 shadow-xl shadow-black/40">
                   <button
                     onClick={requestAllAsZip}
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg font-mono text-xs bg-accent text-bg font-medium hover:bg-accent-dim transition-colors"
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all"
                   >
-                    <Archive className="w-3.5 h-3.5" />
+                    <Archive className="w-4 h-4" />
                     Download All as Zip
                   </button>
                   {completedCount > 0 && (
-                    <span className="font-mono text-[10px] text-muted">
+                    <span className="font-mono text-xs text-muted">
                       {completedCount}/{manifest.files.length} saved
                     </span>
                   )}
@@ -301,10 +316,12 @@ export default function Portal() {
           </div>
         )}
 
-        {/* Chat */}
-        {showManifest && !isDead && (
-          <ChatPanel messages={messages} onSend={sendMessage} disabled={isDead} nickname={nickname} onNicknameChange={changeNickname} onlineCount={onlineCount} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
-        )}
+{/* Chat */}
+  {showManifest && !isDead && (
+    <ComponentErrorBoundary name="Chat">
+      <ChatPanel messages={messages} onSend={sendMessage} disabled={isDead} nickname={nickname} onNicknameChange={changeNickname} onlineCount={onlineCount} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
+    </ComponentErrorBoundary>
+  )}
 
       </main>
 
@@ -323,12 +340,23 @@ export default function Portal() {
 
 function ErrorBlock({ title, desc }) {
   return (
-    <div className="text-center py-14 animate-fade-in-up">
-      <div className="w-16 h-16 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto mb-5">
-        <AlertCircle className="w-8 h-8 text-danger" strokeWidth={1.5} />
+    <div className="text-center py-16 animate-fade-in-up">
+      <div className="max-w-sm mx-auto space-y-5">
+        <div className="w-18 h-18 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto ring-4 ring-danger/5">
+          <AlertCircle className="w-9 h-9 text-danger" strokeWidth={1.5} />
+        </div>
+        <div>
+          <p className="font-mono text-lg text-text font-medium mb-2">{title}</p>
+          <p className="text-sm text-muted leading-relaxed">{desc}</p>
+        </div>
+        <Link
+          to="/"
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-muted-light hover:border-accent/40 hover:text-accent transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Go to Home
+        </Link>
       </div>
-      <p className="font-mono text-sm text-text mb-2">{title}</p>
-      <p className="text-xs text-muted max-w-xs mx-auto leading-relaxed">{desc}</p>
     </div>
   )
 }

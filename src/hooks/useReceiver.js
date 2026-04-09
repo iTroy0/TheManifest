@@ -66,6 +66,7 @@ export function useReceiver(peerId) {
   const reconnectCountRef = useRef(0)
   const useTurnRef = useRef(false)
   const rttRef = useRef(null)
+  const expectedChunkRef = useRef({}) // Track expected chunk index per file for ACK
 
   const startConnection = useCallback((withTurn, isReconnect = false) => {
     if (!window.crypto?.subtle) { setStatus('error'); return }
@@ -119,6 +120,31 @@ export function useReceiver(peerId) {
             }).catch(() => {})
           }, 3000)
 
+          // Heartbeat mechanism - send ping every 5s
+          const heartbeatInterval = setInterval(() => {
+            try { conn.send({ type: 'ping', ts: Date.now() }) } catch {}
+          }, 5000)
+          let lastPong = Date.now()
+          
+          // Check for zombie connections
+          const heartbeatCheck = setInterval(() => {
+            if (Date.now() - lastPong > 15000 && !destroyedRef.current) {
+              clearInterval(heartbeatInterval)
+              clearInterval(heartbeatCheck)
+              if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
+              setRtt(null)
+              setMessages(prev => [...prev, { text: 'Connection lost', from: 'system', time: Date.now(), self: false }])
+              if (!wasTransferringRef.current) {
+                setStatus('closed')
+              }
+            }
+          }, 5000)
+          
+          // Store for cleanup
+          conn._heartbeatInterval = heartbeatInterval
+          conn._heartbeatCheck = heartbeatCheck
+          conn._updateLastPong = () => { lastPong = Date.now() }
+
           // Fast disconnect detection via ICE state
           const pc = conn.peerConnection
           if (pc) {
@@ -161,6 +187,16 @@ export function useReceiver(peerId) {
             return
           }
 
+          // Heartbeat responses
+          if (data.type === 'pong') {
+            if (conn._updateLastPong) conn._updateLastPong()
+            return
+          }
+          if (data.type === 'ping') {
+            try { conn.send({ type: 'pong', ts: data.ts }) } catch {}
+            return
+          }
+
           // Key exchange: receive sender's public key, send ours back
           if (data.type === 'public-key') {
             if (!keyPairRef.current) {
@@ -194,6 +230,15 @@ export function useReceiver(peerId) {
 
           if (data.type === 'online-count') {
             setOnlineCount(data.count)
+            return
+          }
+
+          // Handle batched messages
+          if (data.type === 'batch') {
+            for (const msg of data.messages || []) {
+              // Re-dispatch each message in the batch
+              conn.emit('data', msg)
+            }
             return
           }
 
@@ -338,6 +383,8 @@ export function useReceiver(peerId) {
         conn.on('close', () => {
           if (destroyedRef.current) return
           clearTimeout(timeoutRef.current)
+          if (conn._heartbeatInterval) clearInterval(conn._heartbeatInterval)
+          if (conn._heartbeatCheck) clearInterval(conn._heartbeatCheck)
           if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
           if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
             reconnectCountRef.current++
@@ -571,7 +618,33 @@ export function useReceiver(peerId) {
         ? await decryptChunk(decryptKeyRef.current, data)
         : data
     } catch {
-      return // Skip corrupted chunk — GCM tag invalid
+      // Corrupted chunk - request retransmission
+      const conn = connRef.current
+      if (conn) {
+        try { conn.send({ type: 'chunk-nack', fileIndex, chunkIndex }) } catch {}
+      }
+      return
+    }
+
+    // Check for out-of-order chunks (simple detection)
+    const expected = expectedChunkRef.current[fileIndex] || 0
+    if (chunkIndex > expected + 1) {
+      // Missing chunks detected - request retransmission
+      const conn = connRef.current
+      if (conn) {
+        for (let i = expected; i < chunkIndex; i++) {
+          try { conn.send({ type: 'chunk-nack', fileIndex, chunkIndex: i }) } catch {}
+        }
+      }
+    }
+    expectedChunkRef.current[fileIndex] = chunkIndex + 1
+
+    // Send ACK every 10 chunks for flow control
+    if (chunkIndex % 10 === 0) {
+      const conn = connRef.current
+      if (conn) {
+        try { conn.send({ type: 'chunk-ack', fileIndex, chunkIndex }) } catch {}
+      }
     }
 
     lastFileIndexRef.current = fileIndex
