@@ -1,31 +1,21 @@
 import { useState, useEffect, useRef } from 'react'
 
-export function useAnimatedNumber(target, duration = 400) {
+export function useAnimatedNumber(target, duration = 150) {
   const [display, setDisplay] = useState(target)
   const frameRef = useRef(null)
-  const startRef = useRef(null)
   const fromRef = useRef(target)
 
   useEffect(() => {
     const from = fromRef.current
     if (from === target) return
+    fromRef.current = target
 
     const start = performance.now()
-    startRef.current = start
 
     function tick(now) {
-      const elapsed = now - start
-      const t = Math.min(elapsed / duration, 1)
-      // ease-out cubic
-      const eased = 1 - Math.pow(1 - t, 3)
-      const current = Math.round(from + (target - from) * eased)
-      setDisplay(current)
-
-      if (t < 1) {
-        frameRef.current = requestAnimationFrame(tick)
-      } else {
-        fromRef.current = target
-      }
+      const t = Math.min((now - start) / duration, 1)
+      setDisplay(Math.round(from + (target - from) * t))
+      if (t < 1) frameRef.current = requestAnimationFrame(tick)
     }
 
     frameRef.current = requestAnimationFrame(tick)

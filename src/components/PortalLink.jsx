@@ -44,14 +44,14 @@ export default function PortalLink({ peerId }) {
           >
             {url}
           </code>
-          <button onClick={handleCopy} className="shrink-0 p-2 rounded-lg bg-surface-2 text-muted-light hover:text-accent hover:bg-accent/10 transition-colors" title="Copy link">
+          <button onClick={handleCopy} aria-label="Copy link" className="shrink-0 p-2 rounded-lg bg-surface-2 text-muted-light hover:text-accent hover:bg-accent/10 transition-colors" title="Copy link">
             <Copy className="w-3.5 h-3.5" />
           </button>
-          <button onClick={() => setShowQr(q => !q)} className={`shrink-0 p-2 rounded-lg transition-colors ${showQr ? 'bg-accent/15 text-accent' : 'bg-surface-2 text-muted-light hover:text-accent hover:bg-accent/10'}`} title="QR code">
+          <button onClick={() => setShowQr(q => !q)} aria-label="QR code" className={`shrink-0 p-2 rounded-lg transition-colors ${showQr ? 'bg-accent/15 text-accent' : 'bg-surface-2 text-muted-light hover:text-accent hover:bg-accent/10'}`} title="QR code">
             <QrCode className="w-3.5 h-3.5" />
           </button>
           {canShare && (
-            <button onClick={handleShare} className="shrink-0 p-2 rounded-lg bg-accent/10 text-accent hover:bg-accent/20 transition-colors" title="Share">
+            <button onClick={handleShare} aria-label="Share" className="shrink-0 p-2 rounded-lg bg-accent/10 text-accent hover:bg-accent/20 transition-colors" title="Share">
               <Share2 className="w-3.5 h-3.5" />
             </button>
           )}

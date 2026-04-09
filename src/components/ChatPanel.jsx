@@ -3,6 +3,17 @@ import { createPortal } from 'react-dom'
 import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply } from 'lucide-react'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎']
+const URL_REGEX = /(https?:\/\/[^\s<>"']+)/g
+
+function Linkify({ text }) {
+  if (!text) return null
+  const parts = text.split(URL_REGEX)
+  return parts.map((part, i) =>
+    URL_REGEX.test(part)
+      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-info underline hover:text-info/80 break-all">{part}</a>
+      : part
+  )
+}
 
 export default function ChatPanel({ messages, onSend, disabled, nickname, onNicknameChange, onlineCount, onTyping, typingUsers, onReaction }) {
   const [open, setOpen] = useState(false)
@@ -62,8 +73,10 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
     const file = e.target.files?.[0]
     if (!file || !file.type.startsWith('image/')) return
     e.target.value = ''
-    const compressed = await compressImage(file)
-    setImagePreview(compressed)
+    try {
+      const compressed = await compressImage(file)
+      setImagePreview(compressed)
+    } catch { /* invalid image */ }
   }
 
   useEffect(() => {
@@ -73,7 +86,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
       if (!item) return
       e.preventDefault()
       const file = item.getAsFile()
-      if (file) compressImage(file).then(setImagePreview)
+      if (file) compressImage(file).then(setImagePreview).catch(() => {})
     }
     window.addEventListener('paste', handlePaste)
     return () => window.removeEventListener('paste', handlePaste)
@@ -212,7 +225,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
                           <img src={msg.image} alt="" className="rounded-lg max-w-full max-h-[200px] object-contain cursor-pointer hover:opacity-80 transition-opacity" onClick={(e) => { e.stopPropagation(); setViewImage(msg.image) }} />
                         )}
 
-                        {msg.text && <p className="text-sm text-text break-words">{msg.text}</p>}
+                        {msg.text && <p className="text-sm text-text break-words"><Linkify text={msg.text} /></p>}
 
                         <p className="text-[10px] text-muted-light font-mono">
                           {new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -311,6 +324,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
                 value={text}
                 onChange={handleTyping}
                 placeholder={disabled ? 'Connect to chat' : 'Message...'}
+                maxLength={2000}
                 disabled={disabled}
                 className="flex-1 bg-bg border border-border rounded-xl px-3 py-2.5 font-mono text-sm text-text
                   placeholder:text-muted/40 focus:outline-none focus:border-accent/40 transition-colors
@@ -321,6 +335,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
                 type="button"
                 onClick={() => imageInputRef.current?.click()}
                 disabled={disabled}
+                aria-label="Send image"
                 className="shrink-0 w-[44px] h-[44px] rounded-xl bg-accent/10 text-accent/70
                   hover:text-accent hover:bg-accent/20 active:bg-accent/25 transition-colors flex items-center justify-center
                   disabled:opacity-30 disabled:cursor-not-allowed"
@@ -330,6 +345,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
               <button
                 type="submit"
                 disabled={disabled || (!text.trim() && !imagePreview)}
+                aria-label="Send message"
                 className="shrink-0 w-[44px] h-[44px] rounded-xl bg-accent/10 text-accent
                   hover:bg-accent/20 active:bg-accent/25 transition-colors flex items-center justify-center
                   disabled:opacity-30 disabled:cursor-not-allowed"
@@ -341,7 +357,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
         </div>
       </div>
       {viewImage && createPortal(
-        <div className="fixed inset-0 z-[9999] bg-black/90 flex flex-col items-center justify-center p-4" onClick={() => setViewImage(null)}>
+        <div className="fixed inset-0 z-[9999] bg-black/90 flex flex-col items-center justify-center p-4" onClick={() => setViewImage(null)} onKeyDown={(e) => e.key === 'Escape' && setViewImage(null)} role="dialog" aria-label="Image preview">
           <div className="absolute top-4 right-4 flex gap-2 z-10">
             <a
               href={viewImage}
@@ -353,12 +369,14 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
             </a>
             <button
               onClick={() => setViewImage(null)}
+              autoFocus
+              aria-label="Close preview"
               className="px-4 py-2.5 rounded-lg font-mono text-sm bg-surface border border-border text-text hover:border-border-hover transition-colors min-h-[44px]"
             >
               Close
             </button>
           </div>
-          <img src={viewImage} alt="" className="max-w-full max-h-[85vh] object-contain rounded-lg" onClick={(e) => e.stopPropagation()} />
+          <img src={viewImage} alt="Preview" className="max-w-full max-h-[85vh] object-contain rounded-lg" onClick={(e) => e.stopPropagation()} />
         </div>,
         document.body
       )}
@@ -367,10 +385,12 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
 }
 
 async function compressImage(file) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image()
     const reader = new FileReader()
+    reader.onerror = () => reject(new Error('Failed to read file'))
     reader.onload = () => {
+      img.onerror = () => reject(new Error('Failed to load image'))
       img.onload = () => {
         const canvas = document.createElement('canvas')
         let { width, height } = img

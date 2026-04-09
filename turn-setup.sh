@@ -41,7 +41,7 @@ log-file=/var/log/turnserver.log
 simple-log
 total-quota=100
 stale-nonce=600
-max-bps=0
+max-bps=25000000
 CONF
 
 touch /var/log/turnserver.log && chown turnserver:turnserver /var/log/turnserver.log

@@ -4,25 +4,17 @@ import { chunkFile, buildChunkPacket, waitForBufferDrain, CHUNK_SIZE } from '../
 import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { STUN_ONLY } from '../utils/iceServers'
 
-function generateThumbnail(file, maxDim = 80) {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    const url = URL.createObjectURL(file)
-    img.onload = () => {
-      let { width, height } = img
-      const ratio = Math.min(maxDim / width, maxDim / height, 1)
-      width = Math.round(width * ratio)
-      height = Math.round(height * ratio)
-      const canvas = document.createElement('canvas')
-      canvas.width = width
-      canvas.height = height
-      canvas.getContext('2d').drawImage(img, 0, 0, width, height)
-      URL.revokeObjectURL(url)
-      resolve(canvas.toDataURL('image/jpeg', 0.5))
-    }
-    img.onerror = () => { URL.revokeObjectURL(url); reject() }
-    img.src = url
-  })
+async function generateThumbnail(file, maxDim = 80) {
+  const bitmap = await createImageBitmap(file)
+  const ratio = Math.min(maxDim / bitmap.width, maxDim / bitmap.height, 1)
+  const w = Math.round(bitmap.width * ratio)
+  const h = Math.round(bitmap.height * ratio)
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h)
+  bitmap.close()
+  return canvas.toDataURL('image/jpeg', 0.5)
 }
 
 async function buildManifestData(files, chatOnly) {
@@ -59,6 +51,7 @@ export function useSender() {
   const [senderName, setSenderName] = useState('Host')
   const [typingUsers, setTypingUsers] = useState([])
   const typingTimeouts = useRef({})
+  const lastMsgTime = useRef(0)
   const peerRef = useRef(null)
   const filesRef = useRef([])
   const connectionsRef = useRef(new Map())
@@ -79,6 +72,7 @@ export function useSender() {
   }, [])
 
   useEffect(() => {
+    if (!window.crypto?.subtle) { setStatus('error'); return }
     let destroyed = false
     const peer = new Peer(STUN_ONLY)
     peerRef.current = peer
@@ -119,7 +113,10 @@ export function useSender() {
         const activeWithFile = active.find(cs => cs.currentFileIndex >= 0)
         setCurrentFileIndex(activeWithFile ? activeWithFile.currentFileIndex : -1)
 
-        if (active.length === 0) return
+        if (active.length === 0) {
+          setTotalSent(0); setOverallProgress(0); setSpeed(0); setEta(null)
+          return
+        }
 
         const sent = active.reduce((s, cs) => s + cs.totalSent, 0)
         const total = active.reduce((s, cs) => s + cs.transferTotalSize, 0)
@@ -302,6 +299,22 @@ export function useSender() {
           return
         }
 
+        if (data.type === 'cancel-all') {
+          connState.abort = { aborted: true }
+          connState.transferring = false
+          connState.progress = {}
+          connState.totalSent = 0
+          connState.speed = 0
+          if (connState.pauseResolvers) {
+            Object.values(connState.pauseResolvers).forEach(r => r())
+            connState.pauseResolvers = {}
+          }
+          aggregateUI()
+          const anyActive = Array.from(connectionsRef.current.values()).some(cs => cs.transferring)
+          if (!anyActive) setStatus('connected')
+          return
+        }
+
         if (data.type === 'cancel-file') {
           if (!connState.cancelledFiles) connState.cancelledFiles = new Set()
           connState.cancelledFiles.add(data.index)
@@ -346,9 +359,12 @@ export function useSender() {
         }
 
         if (data.type === 'request-file') {
-          const transferSize = filesRef.current[data.index]?.size || 0
-          startTransfer(transferSize)
-          await sendSingleFile(conn, filesRef.current, data.index, data.resumeChunk || 0, connState, connState.encryptKey, aggregateUI)
+          const file = filesRef.current[data.index]
+          if (!file) return
+          const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+          const resumeChunk = Math.min(Math.max(0, data.resumeChunk || 0), totalChunks)
+          startTransfer(file.size)
+          await sendSingleFile(conn, filesRef.current, data.index, resumeChunk, connState, connState.encryptKey, aggregateUI)
           if (!connState.abort.aborted) endTransfer()
         }
 
@@ -358,7 +374,7 @@ export function useSender() {
           startTransfer(transferSize)
           for (const idx of indices) {
             if (connState.abort.aborted) break
-            await sendSingleFile(conn, filesRef.current, idx, 0, connState, connState.encryptKey, aggregateUI)
+            try { await sendSingleFile(conn, filesRef.current, idx, 0, connState, connState.encryptKey, aggregateUI) } catch { /* skip failed file, continue batch */ }
           }
           if (!connState.abort.aborted) {
             conn.send({ type: 'batch-done' })
@@ -371,7 +387,7 @@ export function useSender() {
           startTransfer(transferSize)
           for (let i = 0; i < filesRef.current.length; i++) {
             if (connState.abort.aborted) break
-            await sendSingleFile(conn, filesRef.current, i, 0, connState, connState.encryptKey, aggregateUI)
+            try { await sendSingleFile(conn, filesRef.current, i, 0, connState, connState.encryptKey, aggregateUI) } catch { /* skip failed file */ }
           }
           if (!connState.abort.aborted) {
             conn.send({ type: 'done' })
@@ -392,6 +408,11 @@ export function useSender() {
         if (destroyed) return
         connState.abort.aborted = true
         const name = connState.nickname || 'A recipient'
+        if (name && typingTimeouts.current[name]) {
+          clearTimeout(typingTimeouts.current[name])
+          delete typingTimeouts.current[name]
+        }
+        setTypingUsers(prev => prev.filter(n => n !== name))
         connectionsRef.current.delete(connId)
         setRecipientCount(connectionsRef.current.size)
         setMessages(prev => [...prev, { text: `${name} left`, from: 'system', time: Date.now(), self: false }])
@@ -451,6 +472,9 @@ export function useSender() {
 
   const sendMessage = useCallback(async (text, image, replyTo) => {
     if (!text && !image) return
+    const now = Date.now()
+    if (now - lastMsgTime.current < 100) return
+    lastMsgTime.current = now
     const time = Date.now()
     setMessages(prev => [...prev, { text, image, replyTo, from: 'You', time, self: true }])
     const payload = JSON.stringify({ text, image, replyTo })
@@ -475,7 +499,12 @@ export function useSender() {
       if (`${m.time}` === msgId) {
         const reactions = { ...(m.reactions || {}) }
         if (!reactions[emoji]) reactions[emoji] = []
-        if (!reactions[emoji].includes('You')) reactions[emoji] = [...reactions[emoji], 'You']
+        if (reactions[emoji].includes('You')) {
+          reactions[emoji] = reactions[emoji].filter(n => n !== 'You')
+          if (reactions[emoji].length === 0) delete reactions[emoji]
+        } else {
+          reactions[emoji] = [...reactions[emoji], 'You']
+        }
         return { ...m, reactions }
       }
       return m
@@ -542,6 +571,7 @@ async function sendSingleFile(conn, files, index, startChunk, connState, encrypt
 
   let chunkIndex = 0
   let fileSent = startChunk * CHUNK_SIZE
+  let lastUIUpdate = 0
 
   for await (const chunkData of chunkFile(file)) {
     if (connState.abort.aborted) return
@@ -581,12 +611,13 @@ async function sendSingleFile(conn, files, index, startChunk, connState, encrypt
     connState.totalSent += chunkData.byteLength
     connState.progress[file.name] = Math.round((fileSent / file.size) * 100)
 
-    const elapsed = (Date.now() - connState.startTime) / 1000
-    if (elapsed > 0.5) {
-      connState.speed = connState.totalSent / elapsed
+    const now = Date.now()
+    if (now - lastUIUpdate >= 100) {
+      lastUIUpdate = now
+      const elapsed = (now - connState.startTime) / 1000
+      if (elapsed > 0.5) connState.speed = connState.totalSent / elapsed
+      aggregateUI()
     }
-
-    aggregateUI()
   }
 
   if (!connState.abort.aborted) {

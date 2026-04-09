@@ -11,7 +11,7 @@ const ADJECTIVES = ['Swift', 'Bold', 'Calm', 'Keen', 'Wild', 'Wise', 'Dark', 'Br
 function generateNickname() {
   const a = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)]
   const b = ANIMALS[Math.floor(Math.random() * ANIMALS.length)]
-  return `${a}${b}${Math.floor(Math.random() * 100)}`
+  return `${a}${b}${Math.floor(Math.random() * 10000)}`
 }
 
 const MAX_RETRIES = 2
@@ -41,6 +41,7 @@ export function useReceiver(peerId) {
   const [typingUsers, setTypingUsers] = useState([])
   const [pausedFiles, setPausedFiles] = useState({})
   const typingTimeouts = useRef({})
+  const lastMsgTime = useRef(0)
 
   const streamsRef = useRef({})
   const chunksRef = useRef({}) // fallback only
@@ -67,6 +68,7 @@ export function useReceiver(peerId) {
   const rttRef = useRef(null)
 
   const startConnection = useCallback((withTurn, isReconnect = false) => {
+    if (!window.crypto?.subtle) { setStatus('error'); return }
     destroyedRef.current = false
     attemptRef.current = 0
     setRetryCount(0)
@@ -141,6 +143,12 @@ export function useReceiver(peerId) {
             setPendingFiles(prev => ({ ...prev, [lastFileIndexRef.current]: true }))
           } else {
             setStatus('connected')
+            // Timeout if manifest never arrives
+            const manifestTimeout = setTimeout(() => {
+              if (!manifestRef.current && !destroyedRef.current) setStatus('closed')
+            }, 15000)
+            const origManifestHandler = (d) => { if (d.type === 'manifest') clearTimeout(manifestTimeout) }
+            conn.on('data', origManifestHandler)
           }
           conn.send({ type: 'join', nickname })
         })
@@ -417,6 +425,28 @@ export function useReceiver(peerId) {
     setStatus('manifest-received')
   }, [])
 
+  const cancelAll = useCallback(() => {
+    const conn = connRef.current
+    if (conn) try { conn.send({ type: 'cancel-all' }) } catch {}
+    if (zipWriterRef.current) {
+      zipWriterRef.current.abort()
+      zipWriterRef.current = null
+      zipModeRef.current = false
+      setZipMode(false)
+    }
+    Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
+    streamsRef.current = {}
+    fileMetaRef.current = {}
+    setPendingFiles({})
+    setPausedFiles({})
+    setProgress({})
+    setOverallProgress(0)
+    setSpeed(0)
+    setEta(null)
+    wasTransferringRef.current = false
+    setStatus('manifest-received')
+  }, [])
+
   const pauseFile = useCallback((index) => {
     const conn = connRef.current
     if (!conn) return
@@ -441,7 +471,12 @@ export function useReceiver(peerId) {
       if (`${m.time}` === msgId) {
         const reactions = { ...(m.reactions || {}) }
         if (!reactions[emoji]) reactions[emoji] = []
-        if (!reactions[emoji].includes('You')) reactions[emoji] = [...reactions[emoji], 'You']
+        if (reactions[emoji].includes('You')) {
+          reactions[emoji] = reactions[emoji].filter(n => n !== 'You')
+          if (reactions[emoji].length === 0) delete reactions[emoji]
+        } else {
+          reactions[emoji] = [...reactions[emoji], 'You']
+        }
         return { ...m, reactions }
       }
       return m
@@ -460,6 +495,9 @@ export function useReceiver(peerId) {
 
   const sendMessage = useCallback(async (text, image, replyTo) => {
     if (!text && !image) return
+    const now = Date.now()
+    if (now - lastMsgTime.current < 100) return
+    lastMsgTime.current = now
     const conn = connRef.current
     if (!conn || !decryptKeyRef.current) return
     const time = Date.now()
@@ -520,43 +558,56 @@ export function useReceiver(peerId) {
     setPendingFiles(pending)
   }, [completedFiles])
 
+  let lastChunkUIUpdate = 0
+
   async function handleChunk(rawData) {
     const buffer = rawData instanceof ArrayBuffer ? rawData : rawData.buffer || new Uint8Array(rawData).buffer
     const { fileIndex, chunkIndex, data } = parseChunkPacket(buffer)
 
     // Decrypt if we have a key
-    const plainData = decryptKeyRef.current
-      ? await decryptChunk(decryptKeyRef.current, data)
-      : data
+    let plainData
+    try {
+      plainData = decryptKeyRef.current
+        ? await decryptChunk(decryptKeyRef.current, data)
+        : data
+    } catch {
+      return // Skip corrupted chunk — GCM tag invalid
+    }
 
     lastFileIndexRef.current = fileIndex
     lastChunkIndexRef.current = chunkIndex + 1
     totalReceivedRef.current += plainData.byteLength
 
     // Write to zip stream, file stream, or memory fallback
-    if (zipModeRef.current && zipWriterRef.current) {
-      zipWriterRef.current.writeChunk(plainData)
-    } else if (streamsRef.current[fileIndex]) {
-      streamsRef.current[fileIndex].write(plainData)
-    } else {
-      if (!chunksRef.current[fileIndex]) chunksRef.current[fileIndex] = []
-      chunksRef.current[fileIndex][chunkIndex] = plainData
+    try {
+      if (zipModeRef.current && zipWriterRef.current) {
+        zipWriterRef.current.writeChunk(plainData)
+      } else if (streamsRef.current[fileIndex]) {
+        await streamsRef.current[fileIndex].write(plainData)
+      } else {
+        if (!chunksRef.current[fileIndex]) chunksRef.current[fileIndex] = []
+        chunksRef.current[fileIndex][chunkIndex] = plainData
+      }
+    } catch {
+      // Write failed (disk full, stream error) — skip chunk
     }
 
-    const meta = fileMetaRef.current[fileIndex]
-    if (meta) {
-      const pct = Math.round(((chunkIndex + 1) / meta.totalChunks) * 100)
-      setProgress(prev => ({ ...prev, [meta.name]: pct }))
-    }
-
-    const totalSize = transferTotalRef.current || manifestRef.current?.totalSize || 0
-    if (totalSize > 0) {
-      setOverallProgress(Math.min(100, Math.round((totalReceivedRef.current / totalSize) * 100)))
-      const elapsed = (Date.now() - startTimeRef.current) / 1000
-      if (elapsed > 0.5) {
-        const currentSpeed = totalReceivedRef.current / elapsed
-        setSpeed(currentSpeed)
-        setEta(Math.max(0, (totalSize - totalReceivedRef.current) / currentSpeed))
+    const now = Date.now()
+    if (now - lastChunkUIUpdate >= 100) {
+      lastChunkUIUpdate = now
+      const meta = fileMetaRef.current[fileIndex]
+      if (meta) {
+        setProgress(prev => ({ ...prev, [meta.name]: Math.round(((chunkIndex + 1) / meta.totalChunks) * 100) }))
+      }
+      const totalSize = transferTotalRef.current || manifestRef.current?.totalSize || 0
+      if (totalSize > 0) {
+        setOverallProgress(Math.min(100, Math.round((totalReceivedRef.current / totalSize) * 100)))
+        const elapsed = (now - startTimeRef.current) / 1000
+        if (elapsed > 0.5) {
+          const currentSpeed = totalReceivedRef.current / elapsed
+          setSpeed(currentSpeed)
+          setEta(Math.max(0, (totalSize - totalReceivedRef.current) / currentSpeed))
+        }
       }
     }
   }
@@ -567,6 +618,6 @@ export function useReceiver(peerId) {
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
     passwordRequired, passwordError, submitPassword,
     messages, sendMessage, rtt, nickname, changeNickname, onlineCount,
-    typingUsers, sendTyping, sendReaction, cancelFile, pauseFile, resumeFile, pausedFiles,
+    typingUsers, sendTyping, sendReaction, cancelFile, cancelAll, pauseFile, resumeFile, pausedFiles,
   }
 }

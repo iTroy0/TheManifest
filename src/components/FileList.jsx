@@ -138,6 +138,7 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, i
       {onPause && isPending && isActive && !isPaused && (
         <button
           onClick={(e) => { e.stopPropagation(); onPause(index) }}
+          aria-label="Pause download"
           className="p-1.5 rounded-lg text-yellow-400 bg-yellow-400/10 hover:bg-yellow-400/20 transition-colors"
           title="Pause"
         >
@@ -147,6 +148,7 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, i
       {onResume && isPaused && (
         <button
           onClick={(e) => { e.stopPropagation(); onResume(index) }}
+          aria-label="Resume download"
           className="p-1.5 rounded-lg text-accent bg-accent/10 hover:bg-accent/20 transition-colors"
           title="Resume"
         >

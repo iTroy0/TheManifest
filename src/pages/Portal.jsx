@@ -18,7 +18,7 @@ export default function Portal() {
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
     passwordRequired, passwordError, submitPassword,
     messages, sendMessage, rtt, nickname, changeNickname, onlineCount,
-    typingUsers, sendTyping, sendReaction, cancelFile, pauseFile, resumeFile, pausedFiles,
+    typingUsers, sendTyping, sendReaction, cancelFile, cancelAll, pauseFile, resumeFile, pausedFiles,
   } = useReceiver(peerId)
   const [passwordInput, setPasswordInput] = useState('')
   const [passwordLoading, setPasswordLoading] = useState(false)
@@ -229,13 +229,19 @@ export default function Portal() {
 
                     {/* Transfer info */}
                     {hasPending && (
-                      <div className="flex items-start gap-2 bg-info/5 border border-info/15 rounded-lg px-3 py-2">
-                        <Info className="w-3.5 h-3.5 text-info shrink-0 mt-0.5" />
-                        <p className="font-mono text-[10px] text-info/80 leading-relaxed">
+                      <div className="flex items-center gap-2 bg-info/5 border border-info/15 rounded-lg px-3 py-2">
+                        <Info className="w-3.5 h-3.5 text-info shrink-0" />
+                        <p className="flex-1 font-mono text-[10px] text-info/80 leading-relaxed">
                           {zipMode
-                            ? 'Downloading all files. A zip will be saved when complete.'
-                            : 'Downloading to your device. Keep this tab open.'}
+                            ? 'Downloading all files as zip.'
+                            : 'Downloading to your device.'}
                         </p>
+                        <button
+                          onClick={cancelAll}
+                          className="shrink-0 px-2 py-1 rounded-lg font-mono text-[10px] bg-danger/10 text-danger hover:bg-danger/20 transition-colors"
+                        >
+                          Cancel
+                        </button>
                       </div>
                     )}
 
