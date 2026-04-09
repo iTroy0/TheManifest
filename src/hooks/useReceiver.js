@@ -313,7 +313,10 @@ export function useReceiver(peerId) {
 
           if (data.type === 'file-start') {
             const resumeFrom = data.resumeFrom || 0
-            fileMetaRef.current[data.index] = { name: data.name, size: data.size, totalChunks: data.totalChunks }
+            // Track received bytes per file. We can't trust totalChunks for
+            // progress because the sender uses adaptive chunk sizes (64KB–1MB)
+            // while totalChunks is computed against the default 256KB size.
+            fileMetaRef.current[data.index] = { name: data.name, size: data.size, totalChunks: data.totalChunks, received: 0 }
             lastFileIndexRef.current = data.index
             if (!startTimeRef.current) startTimeRef.current = Date.now()
 
@@ -668,6 +671,9 @@ export function useReceiver(peerId) {
     lastFileIndexRef.current = fileIndex
     lastChunkIndexRef.current = chunkIndex + 1
     totalReceivedRef.current += plainData.byteLength
+    // Track per-file bytes so progress is correct under adaptive chunk sizes.
+    const metaForBytes = fileMetaRef.current[fileIndex]
+    if (metaForBytes) metaForBytes.received = (metaForBytes.received || 0) + plainData.byteLength
 
     // Write to zip stream, file stream, or memory fallback
     try {
@@ -687,8 +693,11 @@ export function useReceiver(peerId) {
     if (now - lastChunkUIUpdate >= 100) {
       lastChunkUIUpdate = now
       const meta = fileMetaRef.current[fileIndex]
-      if (meta) {
-        setProgress(prev => ({ ...prev, [meta.name]: Math.round(((chunkIndex + 1) / meta.totalChunks) * 100) }))
+      if (meta && meta.size > 0) {
+        // Use byte-based progress, not chunk-based — adaptive chunking makes
+        // chunkIndex/totalChunks unreliable.
+        const pct = Math.min(100, Math.round((meta.received / meta.size) * 100))
+        setProgress(prev => ({ ...prev, [meta.name]: pct }))
       }
       const totalSize = transferTotalRef.current || manifestRef.current?.totalSize || 0
       if (totalSize > 0) {

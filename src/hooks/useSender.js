@@ -2,7 +2,7 @@ import Peer from 'peerjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { chunkFileAdaptive, buildChunkPacket, waitForBufferDrain, CHUNK_SIZE, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
 import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
-import { WITH_TURN } from '../utils/iceServers'
+import { STUN_ONLY } from '../utils/iceServers'
 import { generateThumbnailAsync, generateVideoThumbnail, generateTextPreview, generateThumbnailsBatch } from '../utils/thumbnailWorker'
 
 async function buildManifestData(files, chatOnly) {
@@ -77,10 +77,7 @@ export function useSender() {
   useEffect(() => {
     if (!window.crypto?.subtle) { setStatus('error'); return }
     let destroyed = false
-    // Always include TURN credentials so the sender can allocate a relay
-    // when the receiver's network can't reach us directly. ICE picks the
-    // best path automatically (direct → STUN → relay).
-    const peer = new Peer(WITH_TURN)
+    const peer = new Peer(STUN_ONLY)
     peerRef.current = peer
 
     peer.on('open', (id) => {
