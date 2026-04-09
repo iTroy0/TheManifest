@@ -28,12 +28,24 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
   const scrollRef = useRef(null)
   const prevLen = useRef(messages.length)
   const imageInputRef = useRef(null)
+  const textInputRef = useRef(null)
   const typingTimer = useRef(null)
   const longPressTimer = useRef(null)
 
   useEffect(() => {
     if (nickname) setEditName(nickname)
   }, [nickname])
+
+  // Auto-scroll when chat container resizes (mobile keyboard open/close)
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el || !open) return
+    const observer = new ResizeObserver(() => {
+      el.scrollTop = el.scrollHeight
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [open])
 
   useEffect(() => {
     if (messages.length > prevLen.current) {
@@ -67,6 +79,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
     setText('')
     setImagePreview(null)
     setReplyTo(null)
+    textInputRef.current?.focus()
   }
 
   async function handleImagePick(e) {
@@ -320,6 +333,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
             {/* Input */}
             <form onSubmit={handleSend} className="flex gap-1.5">
               <input
+                ref={textInputRef}
                 type="text"
                 value={text}
                 onChange={handleTyping}
