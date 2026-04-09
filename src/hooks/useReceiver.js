@@ -67,6 +67,10 @@ export function useReceiver(peerId) {
   const useTurnRef = useRef(false)
   const rttRef = useRef(null)
   const expectedChunkRef = useRef({}) // Track expected chunk index per file for ACK
+  // Sequential chunk processing queue. Decrypt + stream-write must happen in
+  // order, otherwise concurrent writes from multiple in-flight handleChunk
+  // calls can interleave and corrupt the file.
+  const chunkQueueRef = useRef(Promise.resolve())
 
   const startConnection = useCallback((withTurn, isReconnect = false) => {
     if (!window.crypto?.subtle) { setStatus('error'); return }
@@ -183,7 +187,11 @@ export function useReceiver(peerId) {
           if (destroyedRef.current) return
 
           if (data instanceof ArrayBuffer || (data && data.byteLength !== undefined && !(typeof data === 'object' && data.type))) {
-            handleChunk(data)
+            // Chain onto the queue so chunks are decrypted + written strictly
+            // in arrival order. PeerJS's EventEmitter does not await listeners,
+            // so without this serialization concurrent handleChunk calls can
+            // race and write chunks out of order, corrupting the file.
+            chunkQueueRef.current = chunkQueueRef.current.then(() => handleChunk(data)).catch(() => {})
             return
           }
 
@@ -330,6 +338,11 @@ export function useReceiver(peerId) {
             const meta = fileMetaRef.current[data.index]
             if (!meta) return
 
+            // Wait for any in-flight chunk writes to drain before closing
+            // the stream — otherwise close() races the last few writes and
+            // the saved file is truncated.
+            await chunkQueueRef.current
+
             if (zipModeRef.current && zipWriterRef.current) {
               // End the current file in the streaming zip
               zipWriterRef.current.endFile()
@@ -363,6 +376,11 @@ export function useReceiver(peerId) {
           }
 
           if (data.type === 'done' || data.type === 'batch-done') {
+            // Drain any in-flight chunk writes before finalizing the zip,
+            // otherwise zip.end() runs while writes are still pending and
+            // the resulting archive is truncated.
+            await chunkQueueRef.current
+
             wasTransferringRef.current = false
             setPendingFiles({})
             setOverallProgress(100)
