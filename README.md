@@ -9,7 +9,7 @@
     <img src="https://img.shields.io/github/stars/iTroy0/TheManifest?style=for-the-badge&logo=github" alt="Stars" />
   </a>
   <a href="https://the-manifest-portal.vercel.app/">
-    <img src="https://img.shields.io/badge/Live_Demo-black?style=for-the-badge&logo=vercel&logoColor=white" alt="Live Demo" />
+    <img src="https://img.shields.io/badge/Live_Demo-grey?style=for-the-badge&logo=vercel" alt="Live Demo" />
   </a>
   <a href="https://github.com/iTroy0/TheManifest/blob/main/LICENSE">
     <img src="https://img.shields.io/badge/License-AGPL%20v3-blue?style=for-the-badge" alt="License" />
