@@ -307,6 +307,7 @@ export function useReceiver(peerId) {
             const resumeFrom = data.resumeFrom || 0
             fileMetaRef.current[data.index] = { name: data.name, size: data.size, totalChunks: data.totalChunks }
             lastFileIndexRef.current = data.index
+            expectedChunkRef.current[data.index] = resumeFrom // Reset expected chunk for ACK
             if (!startTimeRef.current) startTimeRef.current = Date.now()
 
             if (resumeFrom === 0) {
@@ -323,6 +324,11 @@ export function useReceiver(peerId) {
                   chunksRef.current[data.index] = []
                 }
               }
+            } else {
+              // Resume mode: ensure chunksRef is initialized for memory fallback
+              if (!zipModeRef.current && !streamsRef.current[data.index] && !chunksRef.current[data.index]) {
+                chunksRef.current[data.index] = []
+              }
             }
           }
 
@@ -334,18 +340,27 @@ export function useReceiver(peerId) {
               // End the current file in the streaming zip
               zipWriterRef.current.endFile()
             } else if (streamsRef.current[data.index]) {
-              streamsRef.current[data.index].close()
+              try {
+                streamsRef.current[data.index].close()
+              } catch {
+                // Stream close failed - ignore
+              }
               streamsRef.current[data.index] = null
-            } else if (chunksRef.current[data.index]) {
-              // Fallback: save blob
+            }
+            
+            // Memory fallback: save blob (check if we have chunks stored)
+            const chunks = chunksRef.current[data.index]
+            if (chunks && chunks.length > 0) {
               const mimeType = manifestRef.current?.files?.[data.index]?.type || 'application/octet-stream'
-              const blob = new Blob(chunksRef.current[data.index], { type: mimeType })
+              const blob = new Blob(chunks, { type: mimeType })
               const url = URL.createObjectURL(blob)
               const a = document.createElement('a')
               a.href = url
               a.download = meta.name
+              document.body.appendChild(a)
               a.click()
-              URL.revokeObjectURL(url)
+              document.body.removeChild(a)
+              setTimeout(() => URL.revokeObjectURL(url), 1000)
               chunksRef.current[data.index] = null
             }
 
@@ -652,20 +667,26 @@ export function useReceiver(peerId) {
     totalReceivedRef.current += plainData.byteLength
 
     // Write to zip stream, file stream, or memory fallback
+    const chunk = plainData instanceof ArrayBuffer ? new Uint8Array(plainData) : plainData
+    let written = false
+    
     try {
       if (zipModeRef.current && zipWriterRef.current) {
-        zipWriterRef.current.writeChunk(plainData)
+        zipWriterRef.current.writeChunk(chunk)
+        written = true
       } else if (streamsRef.current[fileIndex]) {
-        await streamsRef.current[fileIndex].write(plainData)
-      } else {
-        // Memory fallback - store chunks in order (push to array)
-        if (!chunksRef.current[fileIndex]) chunksRef.current[fileIndex] = []
-        // Convert ArrayBuffer to Uint8Array for proper Blob construction
-        const chunk = plainData instanceof ArrayBuffer ? new Uint8Array(plainData) : plainData
-        chunksRef.current[fileIndex].push(chunk)
+        await streamsRef.current[fileIndex].write(chunk)
+        written = true
       }
     } catch {
-      // Write failed (disk full, stream error) — skip chunk
+      // Stream write failed - will fall back to memory below
+      streamsRef.current[fileIndex] = null // Clear broken stream
+    }
+    
+    // Memory fallback - store chunks in order (push to array)
+    if (!written) {
+      if (!chunksRef.current[fileIndex]) chunksRef.current[fileIndex] = []
+      chunksRef.current[fileIndex].push(chunk)
     }
 
     const now = Date.now()
