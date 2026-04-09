@@ -378,41 +378,49 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
                               </div>
                             )}
 
-                            {/* Inline emoji picker that scales with message */}
-                            {reactingIdx === i && (
-                              <div className="flex flex-wrap gap-0.5 mt-1.5 p-1 bg-surface border border-border rounded-lg">
-                                {EMOJIS.slice(0, 6).map(emoji => (
-                                  <button
-                                    key={emoji}
-                                    onClick={(e) => { e.stopPropagation(); onReaction(msgId, emoji); setReactingIdx(null); setActiveMsg(null) }}
-                                    className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded hover:bg-accent/15 active:scale-90 transition-all text-sm sm:text-base"
-                                  >
-                                    {emoji}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-
                             {/* Action buttons — visible on tap (mobile) or hover (desktop) */}
-                            {onReaction && !reactingIdx && (
+                            {onReaction && (
                               <div className={`
                                 flex items-center gap-1 mt-1 transition-all duration-150
-                                ${showActions ? 'opacity-100 max-h-10' : 'opacity-0 max-h-0 overflow-hidden sm:group-hover/msg:opacity-100 sm:group-hover/msg:max-h-10'}
+                                ${showActions || reactingIdx === i ? 'opacity-100 max-h-20' : 'opacity-0 max-h-0 overflow-hidden sm:group-hover/msg:opacity-100 sm:group-hover/msg:max-h-20'}
                               `}>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); setReactingIdx(i) }}
-                                  className="flex items-center gap-1 px-2 py-1 rounded-md bg-surface border border-border text-muted hover:text-accent hover:border-accent/30 transition-colors text-[11px] font-mono"
-                                >
-                                  <Smile className="w-3 h-3" />
-                                  <span className="hidden sm:inline">React</span>
-                                </button>
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); setReplyTo({ text: msg.text, from: msg.from, time: msg.time }); setActiveMsg(null) }}
-                                  className="flex items-center gap-1 px-2 py-1 rounded-md bg-surface border border-border text-muted hover:text-accent hover:border-accent/30 transition-colors text-[11px] font-mono"
-                                >
-                                  <Reply className="w-3 h-3" />
-                                  <span className="hidden sm:inline">Reply</span>
-                                </button>
+                                {/* Emoji picker inline */}
+                                {reactingIdx === i ? (
+                                  <div className="flex flex-wrap gap-0.5 p-1 bg-surface border border-border rounded-lg">
+                                    {EMOJIS.slice(0, 6).map(emoji => (
+                                      <button
+                                        key={emoji}
+                                        onClick={(e) => { e.stopPropagation(); onReaction(msgId, emoji); setReactingIdx(null); setActiveMsg(null) }}
+                                        className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded hover:bg-accent/15 active:scale-90 transition-all text-sm sm:text-base"
+                                      >
+                                        {emoji}
+                                      </button>
+                                    ))}
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); setReactingIdx(null) }}
+                                      className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded hover:bg-danger/15 text-muted hover:text-danger active:scale-90 transition-all text-xs"
+                                    >
+                                      <X className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); setReactingIdx(i); setActiveMsg(i) }}
+                                      className="flex items-center gap-1 px-2 py-1 rounded-md bg-surface border border-border text-muted hover:text-accent hover:border-accent/30 transition-colors text-[11px] font-mono"
+                                    >
+                                      <Smile className="w-3 h-3" />
+                                      <span className="hidden sm:inline">React</span>
+                                    </button>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); setReplyTo({ text: msg.text, from: msg.from, time: msg.time }); setActiveMsg(null) }}
+                                      className="flex items-center gap-1 px-2 py-1 rounded-md bg-surface border border-border text-muted hover:text-accent hover:border-accent/30 transition-colors text-[11px] font-mono"
+                                    >
+                                      <Reply className="w-3 h-3" />
+                                      <span className="hidden sm:inline">Reply</span>
+                                    </button>
+                                  </>
+                                )}
                               </div>
                             )}
                           </div>
