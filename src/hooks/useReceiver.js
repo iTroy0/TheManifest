@@ -658,8 +658,11 @@ export function useReceiver(peerId) {
       } else if (streamsRef.current[fileIndex]) {
         await streamsRef.current[fileIndex].write(plainData)
       } else {
+        // Memory fallback - store chunks in order (push to array)
         if (!chunksRef.current[fileIndex]) chunksRef.current[fileIndex] = []
-        chunksRef.current[fileIndex][chunkIndex] = plainData
+        // Convert ArrayBuffer to Uint8Array for proper Blob construction
+        const chunk = plainData instanceof ArrayBuffer ? new Uint8Array(plainData) : plainData
+        chunksRef.current[fileIndex].push(chunk)
       }
     } catch {
       // Write failed (disk full, stream error) — skip chunk
