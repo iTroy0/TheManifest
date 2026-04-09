@@ -18,15 +18,27 @@ const statusConfig = {
 
 export default function StatusIndicator({ status, children }) {
   const config = statusConfig[status] || statusConfig.error
+  const isGood = status === 'connected' || status === 'manifest-received' || status === 'done'
+  const isActive = status === 'transferring' || status === 'receiving'
+  const isBad = status === 'closed' || status === 'error' || status === 'rejected'
+  
   return (
-    <div className="flex items-center gap-3 bg-surface border border-border rounded-xl px-4 py-3 flex-wrap">
-      <span className="relative flex h-2.5 w-2.5 shrink-0">
+    <div className={`
+      flex items-center gap-3 rounded-xl px-4 py-3 flex-wrap transition-colors duration-300
+      ${isGood ? 'bg-accent/5 border border-accent/20' : 
+        isActive ? 'bg-info/5 border border-info/20' : 
+        isBad ? 'bg-danger/5 border border-danger/20' : 
+        'bg-surface border border-border'}
+    `}>
+      <span className="relative flex h-3 w-3 shrink-0">
         {config.pulse && (
-          <span className={`absolute inset-0 rounded-full ${config.color} opacity-60 animate-ping`} />
+          <span className={`absolute inset-0 rounded-full ${config.color} opacity-50 animate-ping`} />
         )}
-        <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${config.color} ring-2 ${config.ring}`} />
+        <span className={`relative inline-flex rounded-full h-3 w-3 ${config.color} ring-2 ${config.ring}`} />
       </span>
-      <span className="font-mono text-xs text-muted-light">{config.text}</span>
+      <span className={`font-mono text-sm font-medium ${
+        isGood ? 'text-accent' : isActive ? 'text-info' : isBad ? 'text-danger' : 'text-muted-light'
+      }`}>{config.text}</span>
       {children && <div className="flex items-center gap-2 ml-auto flex-wrap">{children}</div>}
     </div>
   )

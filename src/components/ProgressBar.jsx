@@ -2,24 +2,31 @@ import { useAnimatedNumber } from '../hooks/useAnimatedNumber'
 
 export default function ProgressBar({ percent, label }) {
   const animatedPercent = useAnimatedNumber(percent)
+  const isComplete = percent === 100
 
   return (
-    <div className="space-y-1" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100} aria-label={label || 'Transfer progress'}>
+    <div className="space-y-1.5" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100} aria-label={label || 'Transfer progress'}>
       {label && (
         <div className="flex justify-between items-center">
-          <span className="font-mono text-[10px] text-muted truncate mr-2">{label}</span>
-          <span className="font-mono text-[10px] font-medium text-accent tabular-nums" aria-live="polite">{animatedPercent}%</span>
+          <span className="font-mono text-[11px] text-muted truncate mr-2">{label}</span>
+          <span className={`font-mono text-xs font-bold tabular-nums transition-colors ${isComplete ? 'text-accent' : 'text-info'}`} aria-live="polite">
+            {animatedPercent}%
+          </span>
         </div>
       )}
-      <div className="h-1.5 bg-border/60 rounded-full overflow-hidden">
+      <div className="h-2 bg-surface-2 rounded-full overflow-hidden border border-border/30">
         <div
-          className="h-full rounded-full relative shimmer-bar transition-all duration-500 ease-out"
+          className={`h-full rounded-full relative transition-all duration-500 ease-out ${!isComplete ? 'shimmer-bar' : ''}`}
           style={{
             width: `${percent}%`,
-            background: percent === 100
+            background: isComplete
               ? 'var(--color-accent)'
-              : 'linear-gradient(90deg, var(--color-accent-dim), var(--color-accent))',
-            boxShadow: percent > 0 ? '0 0 10px var(--color-accent-glow)' : 'none',
+              : 'linear-gradient(90deg, var(--color-info), #6bb8ff)',
+            boxShadow: percent > 0 
+              ? isComplete 
+                ? '0 0 12px var(--color-accent-glow)' 
+                : '0 0 8px rgba(74, 158, 255, 0.3)' 
+              : 'none',
           }}
         />
       </div>

@@ -64,48 +64,59 @@ export default function DropZone({ onFiles, disabled }) {
         onDrop={handleDrop}
         onClick={handleClick}
         className={`
-          relative rounded-2xl text-center cursor-pointer
-          transition-all duration-500 group mobile-full-drop
+          relative rounded-2xl text-center cursor-pointer overflow-hidden
+          transition-all duration-400 group mobile-full-drop
           ${disabled
-            ? 'border border-border/50 opacity-40 cursor-not-allowed py-6 px-8'
+            ? 'border border-border/50 opacity-40 cursor-not-allowed py-8 px-8'
             : dragging
-              ? 'border-2 border-accent bg-accent/5 py-6 px-8 scale-[1.02] animate-pulse-glow'
-              : 'border-2 border-dashed border-border hover:border-accent/40 py-6 px-8 hover:shadow-[0_0_30px_rgba(0,255,136,0.06)]'
+              ? 'border-2 border-accent bg-accent/5 py-8 px-8 scale-[1.01] animate-pulse-glow'
+              : 'border-2 border-dashed border-border/60 hover:border-accent/50 py-8 px-8'
           }
         `}
       >
-        {!disabled && !dragging && (
-          <div className="absolute inset-0 rounded-2xl bg-accent/0 group-hover:bg-accent/[0.02] transition-all duration-500 pointer-events-none" />
+        {/* Subtle gradient overlay on hover */}
+        {!disabled && (
+          <div className={`absolute inset-0 transition-opacity duration-500 pointer-events-none
+            ${dragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}
+          `}>
+            <div className="absolute inset-0 bg-gradient-to-b from-accent/[0.03] to-transparent" />
+            <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-3/4 h-24 bg-accent/5 blur-3xl" />
+          </div>
         )}
 
-        <div className={`relative transition-transform duration-300 ${dragging ? 'scale-110' : ''}`}>
+        <div className={`relative transition-transform duration-300 ${dragging ? 'scale-105' : ''}`}>
+          {/* Icon container with ring effect */}
           <div className={`
-            w-12 h-12 mx-auto mb-3 rounded-2xl flex items-center justify-center transition-all duration-500
-            ${dragging ? 'bg-accent/15 text-accent' : disabled ? 'bg-surface-2 text-muted' : 'bg-surface-2 text-muted group-hover:text-accent group-hover:bg-accent/10'}
+            relative w-14 h-14 mx-auto mb-4 rounded-2xl flex items-center justify-center transition-all duration-400
+            ${dragging 
+              ? 'bg-accent/20 text-accent ring-4 ring-accent/20' 
+              : disabled 
+                ? 'bg-surface-2 text-muted' 
+                : 'bg-surface-2 text-muted group-hover:text-accent group-hover:bg-accent/10 group-hover:ring-4 group-hover:ring-accent/10'
+            }
           `}>
-            <Upload className="w-5 h-5" strokeWidth={1.5} />
+            <Upload className={`w-6 h-6 transition-transform duration-300 ${dragging ? 'animate-bounce' : ''}`} strokeWidth={1.5} />
           </div>
 
           {disabled ? (
             <p className="font-mono text-sm text-muted">Portal is active</p>
           ) : dragging ? (
-            <p className="font-mono text-sm text-accent text-glow">Release to add files</p>
+            <p className="font-mono text-base text-accent text-glow font-medium">Release to add files</p>
           ) : (
             <>
-              <p className="font-mono text-sm text-text mb-2">Drag & drop files here</p>
-              <div className="flex items-center justify-center gap-3 text-muted flex-wrap">
-                <div className="flex items-center gap-1.5">
+              <p className="font-mono text-base text-text font-medium mb-3">Drop files to share</p>
+              <div className="flex items-center justify-center gap-4 text-muted flex-wrap">
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-2/50 hover:bg-surface-2 transition-colors">
                   <MousePointerClick className="w-3.5 h-3.5" />
-                  <p className="font-mono text-xs">click to browse</p>
+                  <p className="font-mono text-xs">browse</p>
                 </div>
-                <span className="text-border hidden sm:inline">&middot;</span>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-2/50 hover:bg-surface-2 transition-colors">
                   <Clipboard className="w-3.5 h-3.5" />
-                  <p className="font-mono text-xs">Ctrl+V to paste</p>
+                  <p className="font-mono text-xs">paste</p>
                 </div>
               </div>
-              <p className="font-mono text-[11px] text-muted mt-2">
-                Any file type &middot; Multiple files &middot; No size limit
+              <p className="font-mono text-[10px] text-muted/70 mt-4">
+                Any file type &bull; No size limit &bull; End-to-end encrypted
               </p>
             </>
           )}
