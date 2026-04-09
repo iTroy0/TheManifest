@@ -1,6 +1,7 @@
 import { Routes, Route } from 'react-router-dom'
 import Home from './pages/Home'
 import Portal from './pages/Portal'
+import FAQ from './pages/FAQ'
 
 export default function App() {
   return (
@@ -8,6 +9,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/portal/:peerId" element={<Portal />} />
+        <Route path="/faq" element={<FAQ />} />
       </Routes>
     </div>
   )

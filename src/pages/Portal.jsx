@@ -53,7 +53,7 @@ export default function Portal() {
         <div className="max-w-[720px] mx-auto px-6 py-5">
           <Link to="/" className="flex items-center gap-2 text-muted hover:text-accent transition-colors mb-3 w-fit group">
             <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
-            <span className="font-mono text-[11px]">Send your own files</span>
+            <span className="font-mono text-[11px]">Create your own portal</span>
           </Link>
           <div className="flex items-center justify-between">
             <Link to="/" className="group">
@@ -66,6 +66,13 @@ export default function Portal() {
                   : <><Download className="w-3 h-3" /> Incoming file portal</>
                 }
               </p>
+            </Link>
+            <Link 
+              to="/faq" 
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs
+                bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
+            >
+              <span>FAQ</span>
             </Link>
           </div>
         </div>
@@ -330,7 +337,7 @@ export default function Portal() {
         <div className="max-w-[720px] mx-auto px-6 py-5 flex items-center justify-between flex-wrap gap-2">
           <p className="font-mono text-xs text-muted">No servers. No storage. No tracking.</p>
           <p className="font-mono text-xs text-muted">
-            by <a href="https://github.com/iTroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">iTroy0</a> &middot; <a href="https://buymeacoffee.com/itroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">☕ buy me a coffee</a>
+            <Link to="/faq" className="text-muted-light hover:text-accent transition-colors">FAQ</Link> &middot; by <a href="https://github.com/iTroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">iTroy0</a> &middot; <a href="https://buymeacoffee.com/itroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">☕ buy me a coffee</a>
           </p>
         </div>
       </footer>

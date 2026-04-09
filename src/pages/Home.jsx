@@ -85,7 +85,7 @@ export default function Home() {
       {/* ── Header ── */}
       <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80 sticky top-0 z-10">
         <div className="max-w-[720px] mx-auto px-6 py-5 flex items-center justify-between">
-          <Link to="/" className="group">
+          <Link to="/" className="group" onClick={isActive ? (e) => { e.preventDefault(); handleNewSession() } : undefined}>
             <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
               The Manifest
             </h1>
@@ -93,6 +93,25 @@ export default function Home() {
               Encrypted file sharing & chat
             </p>
           </Link>
+          <div className="flex items-center gap-2">
+            {isActive && !isFinished && (
+              <button
+                onClick={handleNewSession}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs
+                  bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">New</span>
+              </button>
+            )}
+            <Link 
+              to="/faq" 
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs
+                bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
+            >
+              <span>FAQ</span>
+            </Link>
+          </div>
         </div>
       </header>
 
@@ -342,7 +361,7 @@ export default function Home() {
             No servers. No storage. No tracking.
           </p>
           <p className="font-mono text-xs text-muted">
-            by <a href="https://github.com/iTroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">iTroy0</a> &middot; <a href="https://buymeacoffee.com/itroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">☕ buy me a coffee</a>
+            <Link to="/faq" className="text-muted-light hover:text-accent transition-colors">FAQ</Link> &middot; by <a href="https://github.com/iTroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">iTroy0</a> &middot; <a href="https://buymeacoffee.com/itroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">☕ buy me a coffee</a>
           </p>
         </div>
       </footer>
