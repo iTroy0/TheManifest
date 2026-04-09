@@ -334,31 +334,37 @@ export function useReceiver(peerId) {
 
           if (data.type === 'file-end') {
             const meta = fileMetaRef.current[data.index]
+            console.log("[v0] file-end", { index: data.index, meta, hasZip: !!zipWriterRef.current, hasStream: !!streamsRef.current[data.index], hasChunks: !!chunksRef.current[data.index], chunksLength: chunksRef.current[data.index]?.length })
             if (!meta) return
 
             if (zipModeRef.current && zipWriterRef.current) {
               // End the current file in the streaming zip
               zipWriterRef.current.endFile()
+              console.log("[v0] ended zip file")
             } else if (streamsRef.current[data.index]) {
               try {
                 streamsRef.current[data.index].close()
-              } catch {
-                // Stream close failed - ignore
+                console.log("[v0] closed stream")
+              } catch (err) {
+                console.log("[v0] stream close failed:", err)
               }
               streamsRef.current[data.index] = null
             }
             
             // Memory fallback: save blob (check if we have chunks stored)
             const chunks = chunksRef.current[data.index]
+            console.log("[v0] checking memory fallback", { hasChunks: !!chunks, length: chunks?.length })
             if (chunks && chunks.length > 0) {
               const mimeType = manifestRef.current?.files?.[data.index]?.type || 'application/octet-stream'
               const blob = new Blob(chunks, { type: mimeType })
+              console.log("[v0] created blob", { size: blob.size, type: mimeType, name: meta.name })
               const url = URL.createObjectURL(blob)
               const a = document.createElement('a')
               a.href = url
               a.download = meta.name
               document.body.appendChild(a)
               a.click()
+              console.log("[v0] triggered download click")
               document.body.removeChild(a)
               setTimeout(() => URL.revokeObjectURL(url), 1000)
               chunksRef.current[data.index] = null
@@ -670,16 +676,21 @@ export function useReceiver(peerId) {
     const chunk = plainData instanceof ArrayBuffer ? new Uint8Array(plainData) : plainData
     let written = false
     
+    console.log("[v0] handleChunk", { fileIndex, chunkIndex, chunkSize: chunk.byteLength, hasZip: !!zipWriterRef.current, hasStream: !!streamsRef.current[fileIndex], hasChunks: !!chunksRef.current[fileIndex] })
+    
     try {
       if (zipModeRef.current && zipWriterRef.current) {
         zipWriterRef.current.writeChunk(chunk)
         written = true
+        console.log("[v0] wrote to zip")
       } else if (streamsRef.current[fileIndex]) {
         await streamsRef.current[fileIndex].write(chunk)
         written = true
+        console.log("[v0] wrote to stream")
       }
-    } catch {
+    } catch (err) {
       // Stream write failed - will fall back to memory below
+      console.log("[v0] stream write failed:", err)
       streamsRef.current[fileIndex] = null // Clear broken stream
     }
     
@@ -687,6 +698,7 @@ export function useReceiver(peerId) {
     if (!written) {
       if (!chunksRef.current[fileIndex]) chunksRef.current[fileIndex] = []
       chunksRef.current[fileIndex].push(chunk)
+      console.log("[v0] stored in memory, total chunks:", chunksRef.current[fileIndex].length)
     }
 
     const now = Date.now()
