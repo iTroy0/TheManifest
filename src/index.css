@@ -121,18 +121,30 @@ body {
 
 /* ── Drag reorder ── */
 .sortable-item {
-  transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+  transition: transform 0.25s cubic-bezier(0.32, 0.72, 0, 1), 
+              box-shadow 0.2s ease,
+              border-color 0.2s ease;
+}
+.sortable-item:active {
+  cursor: grabbing;
 }
 .sortable-placeholder {
-  opacity: 0.2;
+  opacity: 0.3;
   border-style: dashed !important;
+  border-width: 2px !important;
   border-color: var(--color-accent) !important;
-  background: rgba(0, 255, 136, 0.02) !important;
+  background: rgba(0, 255, 136, 0.03) !important;
+  transform: scale(0.98);
 }
 .sortable-overlay {
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(0, 255, 136, 0.2), 0 0 24px rgba(0, 255, 136, 0.06);
-  transform: scale(1.02);
+  box-shadow: 
+    0 20px 60px rgba(0, 0, 0, 0.5), 
+    0 0 0 1px rgba(0, 255, 136, 0.3), 
+    0 0 30px rgba(0, 255, 136, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transform: scale(1.02) rotate(1deg);
   cursor: grabbing;
+  z-index: 50;
 }
 
 /* ── Full-screen mobile drop zone ── */
