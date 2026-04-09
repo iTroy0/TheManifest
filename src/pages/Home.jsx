@@ -11,6 +11,7 @@ import PortalLink from '../components/PortalLink'
 import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import ChatPanel from '../components/ChatPanel'
+import { ComponentErrorBoundary } from '../components/ErrorBoundary'
 
 export default function Home() {
   const [files, setFilesState] = useState([])
@@ -222,16 +223,18 @@ export default function Home() {
                   <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesOpen ? 'rotate-180' : ''}`} />
                 </div>
               </button>
-              <div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-                <div className="overflow-hidden">
-                  <div className="px-4 pb-3">
-                    <FileList
-                      files={files}
-                      onRemove={isTransferring || isFinished ? null : removeFile}
-                      onReorder={isTransferring || isFinished ? null : reorderFiles}
+<div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+  <div className="overflow-hidden">
+  <div className="px-4 pb-3">
+  <ComponentErrorBoundary name="Files">
+    <FileList
+      files={files}
+      onRemove={isTransferring || isFinished ? null : removeFile}
+      onReorder={isTransferring || isFinished ? null : reorderFiles}
                       progress={showProgress ? progress : null}
                       currentFileIndex={isTransferring ? currentFileIndex : -1}
                     />
+                  </ComponentErrorBoundary>
                   </div>
                 </div>
               </div>
@@ -268,10 +271,12 @@ export default function Home() {
               <PortalLink peerId={peerId} />
             )}
 
-            {/* Chat */}
-            {(recipientCount > 0 || chatMode) && !isFinished && (
-              <ChatPanel messages={messages} onSend={sendMessage} disabled={recipientCount === 0} onlineCount={recipientCount + 1} nickname={senderName} onNicknameChange={changeSenderName} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
-            )}
+{/* Chat */}
+  {(recipientCount > 0 || chatMode) && !isFinished && (
+    <ComponentErrorBoundary name="Chat">
+      <ChatPanel messages={messages} onSend={sendMessage} disabled={recipientCount === 0} onlineCount={recipientCount + 1} nickname={senderName} onNicknameChange={changeSenderName} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
+    </ComponentErrorBoundary>
+  )}
           </>
         )}
 

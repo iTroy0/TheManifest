@@ -7,6 +7,7 @@ import FileList from '../components/FileList'
 import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import ChatPanel from '../components/ChatPanel'
+import { ComponentErrorBoundary } from '../components/ErrorBoundary'
 import { useState } from 'react'
 import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Wifi, Archive, Lock, ChevronDown, MessagesSquare } from 'lucide-react'
 
@@ -257,17 +258,19 @@ export default function Portal() {
                       </div>
                     )}
 
-                    <FileList
-                      files={manifest.files}
-                      progress={progress}
-                      pendingFiles={pendingFiles}
-                      pausedFiles={pausedFiles}
-                      onRequest={isDead || hasPending ? null : requestFile}
-                      onCancel={hasPending ? cancelFile : null}
-                      onPause={hasPending ? pauseFile : null}
-                      onResume={resumeFile}
-                      currentFileIndex={currentFileIndex}
-                    />
+                    <ComponentErrorBoundary name="Files">
+                      <FileList
+                        files={manifest.files}
+                        progress={progress}
+                        pendingFiles={pendingFiles}
+                        pausedFiles={pausedFiles}
+                        onRequest={isDead || hasPending ? null : requestFile}
+                        onCancel={hasPending ? cancelFile : null}
+                        onPause={hasPending ? pauseFile : null}
+                        onResume={resumeFile}
+                        currentFileIndex={currentFileIndex}
+                      />
+                    </ComponentErrorBoundary>
                   </div>
                 </div>
               </div>
@@ -313,10 +316,12 @@ export default function Portal() {
           </div>
         )}
 
-        {/* Chat */}
-        {showManifest && !isDead && (
-          <ChatPanel messages={messages} onSend={sendMessage} disabled={isDead} nickname={nickname} onNicknameChange={changeNickname} onlineCount={onlineCount} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
-        )}
+{/* Chat */}
+  {showManifest && !isDead && (
+    <ComponentErrorBoundary name="Chat">
+      <ChatPanel messages={messages} onSend={sendMessage} disabled={isDead} nickname={nickname} onNicknameChange={changeNickname} onlineCount={onlineCount} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
+    </ComponentErrorBoundary>
+  )}
 
       </main>
 

@@ -1,30 +1,33 @@
 import Peer from 'peerjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { chunkFile, buildChunkPacket, waitForBufferDrain, CHUNK_SIZE } from '../utils/fileChunker'
+import { chunkFileAdaptive, buildChunkPacket, waitForBufferDrain, CHUNK_SIZE, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
 import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { STUN_ONLY } from '../utils/iceServers'
-
-async function generateThumbnail(file, maxDim = 80) {
-  const bitmap = await createImageBitmap(file)
-  const ratio = Math.min(maxDim / bitmap.width, maxDim / bitmap.height, 1)
-  const w = Math.round(bitmap.width * ratio)
-  const h = Math.round(bitmap.height * ratio)
-  const canvas = document.createElement('canvas')
-  canvas.width = w
-  canvas.height = h
-  canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h)
-  bitmap.close()
-  return canvas.toDataURL('image/jpeg', 0.5)
-}
+import { generateThumbnailAsync, generateVideoThumbnail, generateTextPreview, generateThumbnailsBatch } from '../utils/thumbnailWorker'
 
 async function buildManifestData(files, chatOnly) {
-  const fileEntries = await Promise.all(files.map(async f => {
+  // Generate thumbnails in batch using web worker (non-blocking)
+  const thumbnails = await generateThumbnailsBatch(files, 80, 3)
+  
+  const fileEntries = await Promise.all(files.map(async (f, i) => {
     const entry = { name: f.name, size: f.size, type: f.type }
-    if (f.type?.startsWith('image/') && f instanceof File) {
-      try { entry.thumbnail = await generateThumbnail(f) } catch {}
+    
+    // Add image thumbnail
+    if (thumbnails[i]) {
+      entry.thumbnail = thumbnails[i]
     }
+    // Add video thumbnail
+    else if (f.type?.startsWith('video/') && f instanceof File) {
+      try { entry.thumbnail = await generateVideoThumbnail(f, 80) } catch {}
+    }
+    // Add text preview
+    else if (f.type?.startsWith('text/') || f.type === 'application/json') {
+      try { entry.textPreview = await generateTextPreview(f, 150) } catch {}
+    }
+    
     return entry
   }))
+  
   return {
     type: 'manifest',
     chatOnly,
@@ -136,7 +139,7 @@ export function useSender() {
         if (destroyed) return
         setStatus('connected')
 
-        // Start RTT polling
+        // Start RTT polling + heartbeat
         if (!rttRef.current) {
           rttRef.current = setInterval(() => {
             const conns = Array.from(connectionsRef.current.values())
@@ -151,6 +154,34 @@ export function useSender() {
             }).catch(() => {})
           }, 3000)
         }
+
+        // Heartbeat mechanism - send ping every 5s to detect zombie connections
+        connState.heartbeatInterval = setInterval(() => {
+          try {
+            conn.send({ type: 'ping', ts: Date.now() })
+          } catch {
+            // Connection dead, will be cleaned up by ICE state change
+          }
+        }, 5000)
+        connState.lastPong = Date.now()
+        
+        // Check for missed pongs (zombie connection detection)
+        connState.heartbeatCheck = setInterval(() => {
+          if (Date.now() - connState.lastPong > 15000) { // No pong in 15s = dead
+            connState.abort.aborted = true
+            const name = connState.nickname || 'A recipient'
+            connectionsRef.current.delete(connId)
+            setRecipientCount(connectionsRef.current.size)
+            setMessages(prev => [...prev, { text: `${name} connection lost`, from: 'system', time: Date.now(), self: false }])
+            clearInterval(connState.heartbeatInterval)
+            clearInterval(connState.heartbeatCheck)
+            if (connectionsRef.current.size === 0) {
+              if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
+              setRtt(null)
+              setStatus(prev => prev === 'done' ? prev : 'waiting')
+            }
+          }
+        }, 5000)
 
         // Fast disconnect detection via ICE state
         const pc = conn.peerConnection
@@ -187,6 +218,16 @@ export function useSender() {
       conn.on('data', async (data) => {
         if (destroyed) return
 
+        // Heartbeat responses
+        if (data.type === 'pong') {
+          connState.lastPong = Date.now()
+          return
+        }
+        if (data.type === 'ping') {
+          try { conn.send({ type: 'pong', ts: data.ts }) } catch {}
+          return
+        }
+
         if (data.type === 'public-key') {
           const remotePubKey = await importPublicKey(new Uint8Array(data.key))
           connState.encryptKey = await deriveSharedKey(connState.keyPair.privateKey, remotePubKey)
@@ -215,6 +256,15 @@ export function useSender() {
             await sendManifest(conn)
           } else {
             conn.send({ type: 'password-wrong' })
+          }
+          return
+        }
+
+        // Handle batched messages
+        if (data.type === 'batch') {
+          for (const msg of data.messages || []) {
+            // Re-dispatch each message in the batch
+            conn.emit('data', msg)
           }
           return
         }
@@ -407,6 +457,9 @@ export function useSender() {
       conn.on('close', () => {
         if (destroyed) return
         connState.abort.aborted = true
+        // Clean up heartbeat intervals
+        if (connState.heartbeatInterval) clearInterval(connState.heartbeatInterval)
+        if (connState.heartbeatCheck) clearInterval(connState.heartbeatCheck)
         const name = connState.nickname || 'A recipient'
         if (name && typingTimeouts.current[name]) {
           clearTimeout(typingTimeouts.current[name])
@@ -564,16 +617,21 @@ export function useSender() {
 async function sendSingleFile(conn, files, index, startChunk, connState, encryptKey, aggregateUI) {
   const file = files[index]
   if (!file) return
-  const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+  
+  // Initialize adaptive chunker and progress throttler for this transfer
+  if (!connState.chunker) connState.chunker = new AdaptiveChunker()
+  if (!connState.progressThrottler) connState.progressThrottler = new ProgressThrottler(80) // ~12fps
+  
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE) // Use default for total count estimation
 
   connState.currentFileIndex = index
   conn.send({ type: 'file-start', name: file.name, size: file.size, index, totalChunks, resumeFrom: startChunk })
 
   let chunkIndex = 0
   let fileSent = startChunk * CHUNK_SIZE
-  let lastUIUpdate = 0
+  let chunkStartTime = 0
 
-  for await (const chunkData of chunkFile(file)) {
+  for await (const { buffer: chunkData, chunkSize } of chunkFileAdaptive(file, connState.chunker)) {
     if (connState.abort.aborted) return
     if (connState.cancelledFiles?.has(index)) {
       conn.send({ type: 'file-cancelled', index })
@@ -598,6 +656,8 @@ async function sendSingleFile(conn, files, index, startChunk, connState, encrypt
       continue
     }
 
+    chunkStartTime = Date.now()
+
     const dataToSend = encryptKey
       ? await encryptChunk(encryptKey, chunkData)
       : chunkData
@@ -606,14 +666,18 @@ async function sendSingleFile(conn, files, index, startChunk, connState, encrypt
     conn.send(packet)
     await waitForBufferDrain(conn)
 
+    // Record transfer time for adaptive chunk sizing
+    const transferTime = Date.now() - chunkStartTime
+    connState.chunker.recordTransfer(chunkData.byteLength, transferTime)
+
     chunkIndex++
     fileSent += chunkData.byteLength
     connState.totalSent += chunkData.byteLength
     connState.progress[file.name] = Math.round((fileSent / file.size) * 100)
 
-    const now = Date.now()
-    if (now - lastUIUpdate >= 100) {
-      lastUIUpdate = now
+    // Throttled UI updates for better performance
+    if (connState.progressThrottler.shouldUpdate()) {
+      const now = Date.now()
       const elapsed = (now - connState.startTime) / 1000
       if (elapsed > 0.5) connState.speed = connState.totalSent / elapsed
       aggregateUI()
@@ -623,6 +687,7 @@ async function sendSingleFile(conn, files, index, startChunk, connState, encrypt
   if (!connState.abort.aborted) {
     conn.send({ type: 'file-end', index })
     connState.progress[file.name] = 100
+    connState.progressThrottler.forceUpdate() // Always update on file end
     aggregateUI()
   }
 }

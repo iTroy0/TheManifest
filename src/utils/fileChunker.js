@@ -1,15 +1,116 @@
-export const CHUNK_SIZE = 256 * 1024 // 256KB — larger chunks for better throughput
-const BUFFER_THRESHOLD = 1024 * 1024 // 1MB — higher threshold for larger chunks
+// Adaptive chunk sizing based on connection quality
+export const MIN_CHUNK_SIZE = 64 * 1024   // 64KB - for poor connections
+export const DEFAULT_CHUNK_SIZE = 256 * 1024 // 256KB - default
+export const MAX_CHUNK_SIZE = 1024 * 1024  // 1MB - for excellent connections
+export const CHUNK_SIZE = DEFAULT_CHUNK_SIZE // For backwards compatibility
+
+const BUFFER_THRESHOLD = 2 * 1024 * 1024 // 2MB — higher threshold for larger chunks
 // Header: 2 bytes file index + 4 bytes chunk index = 6 bytes
 const HEADER_SIZE = 6
 
-export async function* chunkFile(file) {
+// Adaptive chunk size calculator based on RTT and throughput
+export class AdaptiveChunker {
+  constructor() {
+    this.currentChunkSize = DEFAULT_CHUNK_SIZE
+    this.measurements = []
+    this.maxMeasurements = 10
+  }
+
+  // Record a chunk transfer measurement
+  recordTransfer(chunkSize, transferTimeMs) {
+    if (transferTimeMs <= 0) return
+    const throughput = (chunkSize / transferTimeMs) * 1000 // bytes per second
+    this.measurements.push({ chunkSize, transferTimeMs, throughput, timestamp: Date.now() })
+    if (this.measurements.length > this.maxMeasurements) {
+      this.measurements.shift()
+    }
+    this.adjustChunkSize()
+  }
+
+  adjustChunkSize() {
+    if (this.measurements.length < 3) return // Need at least 3 samples
+
+    const recentMeasurements = this.measurements.slice(-5)
+    const avgThroughput = recentMeasurements.reduce((sum, m) => sum + m.throughput, 0) / recentMeasurements.length
+    const avgTransferTime = recentMeasurements.reduce((sum, m) => sum + m.transferTimeMs, 0) / recentMeasurements.length
+
+    // Target: chunks should take 50-200ms to transfer for responsive progress
+    if (avgTransferTime < 30 && this.currentChunkSize < MAX_CHUNK_SIZE) {
+      // Transfers too fast - increase chunk size for efficiency
+      this.currentChunkSize = Math.min(this.currentChunkSize * 1.5, MAX_CHUNK_SIZE)
+    } else if (avgTransferTime > 300 && this.currentChunkSize > MIN_CHUNK_SIZE) {
+      // Transfers too slow - decrease chunk size for better progress feedback
+      this.currentChunkSize = Math.max(this.currentChunkSize * 0.7, MIN_CHUNK_SIZE)
+    }
+
+    // Round to nearest 64KB for alignment
+    this.currentChunkSize = Math.round(this.currentChunkSize / (64 * 1024)) * (64 * 1024)
+  }
+
+  getChunkSize() {
+    return this.currentChunkSize
+  }
+
+  getStats() {
+    if (this.measurements.length === 0) return null
+    const recent = this.measurements.slice(-5)
+    return {
+      avgThroughput: recent.reduce((sum, m) => sum + m.throughput, 0) / recent.length,
+      avgTransferTime: recent.reduce((sum, m) => sum + m.transferTimeMs, 0) / recent.length,
+      currentChunkSize: this.currentChunkSize
+    }
+  }
+
+  reset() {
+    this.measurements = []
+    this.currentChunkSize = DEFAULT_CHUNK_SIZE
+  }
+}
+
+// Progress throttler to limit UI updates
+export class ProgressThrottler {
+  constructor(updateIntervalMs = 80) { // ~12fps default
+    this.updateIntervalMs = updateIntervalMs
+    this.lastUpdate = 0
+    this.pendingUpdate = null
+  }
+
+  shouldUpdate() {
+    const now = Date.now()
+    if (now - this.lastUpdate >= this.updateIntervalMs) {
+      this.lastUpdate = now
+      return true
+    }
+    return false
+  }
+
+  // Force update (for final chunk, file end, etc.)
+  forceUpdate() {
+    this.lastUpdate = Date.now()
+    return true
+  }
+}
+
+export async function* chunkFile(file, chunkSize = CHUNK_SIZE) {
   let offset = 0
+  const size = chunkSize || CHUNK_SIZE
   while (offset < file.size) {
-    const slice = file.slice(offset, offset + CHUNK_SIZE)
+    const slice = file.slice(offset, offset + size)
     const buffer = await slice.arrayBuffer()
     yield buffer
-    offset += CHUNK_SIZE
+    offset += size
+  }
+}
+
+// Adaptive chunk generator that uses AdaptiveChunker
+export async function* chunkFileAdaptive(file, chunker) {
+  let offset = 0
+  while (offset < file.size) {
+    const chunkSize = chunker ? chunker.getChunkSize() : DEFAULT_CHUNK_SIZE
+    const slice = file.slice(offset, offset + chunkSize)
+    const buffer = await slice.arrayBuffer()
+    yield { buffer, chunkSize, offset }
+    offset += chunkSize
   }
 }
 

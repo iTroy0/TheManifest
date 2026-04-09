@@ -42,6 +42,14 @@ function isImageType(type) {
   return type && type.startsWith('image/')
 }
 
+function isVideoType(type) {
+  return type && type.startsWith('video/')
+}
+
+function isTextType(type) {
+  return type && (type.startsWith('text/') || type === 'application/json' || type === 'application/javascript')
+}
+
 function ImageThumb({ file }) {
   const [src, setSrc] = useState(null)
   useEffect(() => {
@@ -52,6 +60,31 @@ function ImageThumb({ file }) {
   }, [file])
   if (!src) return null
   return <img src={src} alt="" className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg object-cover" />
+}
+
+// Text preview tooltip
+function TextPreviewTooltip({ preview }) {
+  const [show, setShow] = useState(false)
+  if (!preview) return null
+  
+  return (
+    <div className="relative">
+      <button 
+        onMouseEnter={() => setShow(true)} 
+        onMouseLeave={() => setShow(false)}
+        className="text-[9px] text-muted hover:text-accent transition-colors font-mono"
+      >
+        preview
+      </button>
+      {show && (
+        <div className="absolute bottom-full left-0 mb-2 w-64 p-2 bg-surface border border-border rounded-lg shadow-lg z-10">
+          <pre className="text-[10px] text-muted-light font-mono whitespace-pre-wrap break-all overflow-hidden max-h-32">
+            {preview}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, isPaused, showThumb, Icon, canDrag, onRequest, onRemove, onCancel, onPause, onResume }) {
@@ -125,6 +158,13 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, i
         ) : file.thumbnail ? (
           <div className="relative">
             <img src={file.thumbnail} alt="" className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg object-cover" />
+            {isVideoType(file.type) && (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="w-5 h-5 rounded-full bg-black/60 flex items-center justify-center">
+                  <Play className="w-2.5 h-2.5 text-white ml-0.5" fill="white" />
+                </div>
+              </div>
+            )}
             {progressRing && <div className="absolute -inset-0.5">{progressRing}</div>}
           </div>
         ) : (
@@ -158,6 +198,7 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, i
         </p>
         <div className="flex items-center gap-2 mt-0.5">
           <p className="text-[10px] sm:text-[11px] text-muted font-mono">{formatBytes(file.size)}</p>
+          {file.textPreview && <TextPreviewTooltip preview={file.textPreview} />}
           {isActive && !isPaused && (
             <span className="inline-flex items-center gap-1 font-mono text-[10px] text-info">
               <span className="w-1 h-1 rounded-full bg-info animate-pulse" />
