@@ -242,30 +242,27 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
           <div className="px-3 sm:px-4 pb-4 space-y-3">
             {/* Nickname editor */}
             {onNicknameChange && (
-              <div className="flex items-center gap-2 p-2.5 bg-surface-2 rounded-xl border border-border">
-                <div className="w-8 h-8 rounded-lg bg-accent/15 flex items-center justify-center shrink-0">
-                  <Users className="w-4 h-4 text-accent" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <label className="font-mono text-[10px] text-muted block mb-0.5">Nickname</label>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 p-2 bg-surface-2 rounded-lg border border-border">
+                  <Users className="w-3.5 h-3.5 text-accent shrink-0" />
                   <input
                     type="text"
                     value={editName}
                     onChange={(e) => setEditName(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && nameChanged && handleSetName()}
                     maxLength={20}
-                    placeholder="Enter your name"
-                    className="w-full bg-bg border border-border rounded-lg px-2.5 py-1.5 font-mono text-sm text-text
-                      placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors"
+                    placeholder="Nickname"
+                    className="w-24 sm:w-28 bg-transparent font-mono text-sm text-text
+                      placeholder:text-muted/50 focus:outline-none"
                   />
                 </div>
                 {nameChanged && (
                   <button
                     onClick={handleSetName}
-                    className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-xs
+                    className="shrink-0 flex items-center gap-1 px-2.5 py-2 rounded-lg font-mono text-xs
                       bg-accent text-bg font-medium hover:bg-accent-dim active:scale-95 transition-all"
                   >
-                    <Check className="w-3.5 h-3.5" />
+                    <Check className="w-3 h-3" />
                     Save
                   </button>
                 )}
