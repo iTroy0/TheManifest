@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="public/logo.svg" alt="The Manifest" width="80" height="80" />
-</p>
-
 <h1 align="center">The Manifest</h1>
 
 <p align="center">
@@ -9,6 +5,9 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/iTroy0/TheManifest/stargazers">
+    <img src="https://img.shields.io/github/stars/iTroy0/TheManifest?style=for-the-badge&logo=github&logoColor=white&color=00FF88" alt="Stars" />
+  </a>
   <a href="https://the-manifest-portal.vercel.app/">
     <img src="https://img.shields.io/badge/Live%20Demo-00FF88?style=for-the-badge&logo=vercel&logoColor=black" alt="Live Demo" />
   </a>
@@ -212,10 +211,4 @@ This project is licensed under the **AGPL-3.0 License** — see the [LICENSE](LI
   <sub>Made with care by <a href="https://github.com/iTroy0">@iTroy0</a></sub>
   <br/>
   <sub>Open source, free forever.</sub>
-</p>
-
-<p align="center">
-  <a href="https://github.com/iTroy0/TheManifest/stargazers">
-    <img src="https://img.shields.io/github/stars/iTroy0/TheManifest?style=social" alt="Stars" />
-  </a>
 </p>
