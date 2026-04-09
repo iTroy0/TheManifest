@@ -26,6 +26,8 @@ Encrypted P2P file sharing and chat. No servers, no accounts, no trace.
 - **Resume on disconnect** — auto-reconnects and resumes from the last chunk
 - **Self-hosted signaling & relay** — optional PeerJS + coturn for true zero-knowledge
 - **Mobile-friendly** — native share API, QR codes, responsive chat with touch support
+- **URL linkification** — clickable links in chat (https only, safe against javascript: URLs)
+- **Accessible** — ARIA labels, keyboard navigation, screen reader support, WCAG AA contrast
 - **Ephemeral** — close the tab and everything is gone
 
 ## Getting Started
@@ -33,6 +35,7 @@ Encrypted P2P file sharing and chat. No servers, no accounts, no trace.
 ```bash
 npm install
 npm run dev
+npm test        # run test suite
 ```
 
 ## Environment Variables
