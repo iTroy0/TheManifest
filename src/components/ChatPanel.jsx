@@ -260,59 +260,95 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   return (
     <div className={`animate-fade-in-up transition-all duration-300 ${
       isFullscreen 
-        ? 'fixed inset-0 z-50 bg-bg flex flex-col' 
+        ? 'fixed inset-0 z-50 bg-bg flex flex-col safe-area-inset' 
         : 'glow-card overflow-hidden'
-    }`}>
-      <button
-        onClick={() => !isFullscreen && setOpen(o => !o)}
-        className={`w-full flex items-center justify-between p-4 text-left group transition-colors ${
-          isFullscreen ? 'border-b border-border shrink-0' : 'hover:bg-surface-2/30'
-        }`}
-      >
-        <div className="flex items-center gap-3">
-          <div className="relative">
-            <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center">
-              <MessageCircle className="w-4 h-4 text-accent" />
-            </div>
-            {unread > 0 && (
-              <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[18px] h-[18px] rounded-full bg-accent text-bg font-mono text-[10px] font-bold px-1 shadow-lg shadow-accent/30 animate-pulse">
-                {unread > 99 ? '99+' : unread}
-              </span>
-            )}
-          </div>
-          <div>
-            <span className="font-mono text-sm text-text font-medium">Chat</span>
+    }`}
+    style={isFullscreen ? { paddingBottom: 'env(safe-area-inset-bottom, 0)' } : undefined}>
+      {/* Header - messaging app style when fullscreen */}
+      {isFullscreen ? (
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0 bg-surface/50"
+          style={{ paddingTop: 'max(env(safe-area-inset-top, 0), 12px)' }}>
+          {/* Left: Close button */}
+          <button
+            onClick={() => setIsFullscreen(false)}
+            className="p-2 -ml-2 rounded-xl text-muted hover:text-accent hover:bg-accent/10 transition-colors"
+            title="Exit fullscreen"
+          >
+            <Minimize2 className="w-5 h-5" />
+          </button>
+          
+          {/* Center: Title and online count */}
+          <div className="flex flex-col items-center">
+            <span className="font-mono text-sm text-text font-semibold">Chat</span>
             {onlineCount > 0 && (
-              <div className="flex items-center gap-1 mt-0.5">
+              <div className="flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
                 <span className="font-mono text-[10px] text-muted">{onlineCount} online</span>
               </div>
             )}
           </div>
+          
+          {/* Right: Clear messages */}
+          <div className="w-9 flex justify-end">
+            {onClearMessages && messages.length > 0 && (
+              <button
+                onClick={onClearMessages}
+                className="p-2 -mr-2 rounded-xl text-muted hover:text-danger hover:bg-danger/10 transition-colors"
+                title="Clear messages"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-1">
-          {onClearMessages && messages.length > 0 && (
+      ) : (
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="w-full flex items-center justify-between p-4 text-left group hover:bg-surface-2/30 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center">
+                <MessageCircle className="w-4 h-4 text-accent" />
+              </div>
+              {unread > 0 && (
+                <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[18px] h-[18px] rounded-full bg-accent text-bg font-mono text-[10px] font-bold px-1 shadow-lg shadow-accent/30 animate-pulse">
+                  {unread > 99 ? '99+' : unread}
+                </span>
+              )}
+            </div>
+            <div>
+              <span className="font-mono text-sm text-text font-medium">Chat</span>
+              {onlineCount > 0 && (
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+                  <span className="font-mono text-[10px] text-muted">{onlineCount} online</span>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            {onClearMessages && messages.length > 0 && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onClearMessages() }}
+                className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
+                title="Clear messages"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {/* Fullscreen toggle - mobile only */}
             <button
-              onClick={(e) => { e.stopPropagation(); onClearMessages() }}
-              className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
-              title="Clear messages"
+              onClick={(e) => { e.stopPropagation(); setIsFullscreen(true) }}
+              className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors sm:hidden"
+              title="Fullscreen chat"
             >
-              <Trash2 className="w-3.5 h-3.5" />
+              <Maximize2 className="w-4 h-4" />
             </button>
-          )}
-          {/* Fullscreen toggle - mobile only */}
-          <button
-            onClick={(e) => { e.stopPropagation(); setIsFullscreen(f => !f) }}
-            className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors sm:hidden"
-            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen chat'}
-          >
-            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-          </button>
-          {!isFullscreen && (
             <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
-          )}
-        </div>
-      </button>
+          </div>
+        </button>
+      )}
 
       <div className={`transition-all duration-400 ease-in-out ${
         isFullscreen 
@@ -320,9 +356,9 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           : `grid ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`
       }`}>
         <div className={isFullscreen ? 'flex-1 flex flex-col overflow-hidden' : 'overflow-hidden'}>
-          <div className={`space-y-3 ${isFullscreen ? 'flex-1 flex flex-col px-4 pb-4 overflow-hidden' : 'px-3 sm:px-4 pb-4'}`}>
+          <div className={`${isFullscreen ? 'flex-1 flex flex-col overflow-hidden' : 'px-3 sm:px-4 pb-4 space-y-3'}`}>
             {/* Nickname editor + settings */}
-            <div className="flex items-center justify-between gap-2">
+            <div className={`flex items-center justify-between gap-2 ${isFullscreen ? 'px-4 py-3 border-b border-border bg-surface/50 shrink-0' : ''}`}>
               {onNicknameChange && (
                 <div className="flex items-center gap-2">
                   <div className="flex items-center gap-2 p-2 bg-surface-2 rounded-lg border border-border">
@@ -380,10 +416,10 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             <div
               ref={scrollRef}
               onScroll={handleScroll}
-              className={`relative overflow-y-auto space-y-3 scrollbar-thin pr-1 ${
+              className={`relative overflow-y-auto space-y-3 scrollbar-thin ${
                 isFullscreen 
-                  ? 'flex-1 min-h-0' 
-                  : 'max-h-[min(55vh,450px)] min-h-[180px]'
+                  ? 'flex-1 min-h-0 px-4 py-3' 
+                  : 'max-h-[min(55vh,450px)] min-h-[180px] pr-1'
               }`}
               onClick={() => { setReactingIdx(null); setActiveMsg(null) }}
             >
@@ -553,7 +589,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
 
             {/* Typing indicator */}
             {typingText && (
-              <div className="flex items-center gap-2 px-1">
+              <div className={`flex items-center gap-2 ${isFullscreen ? 'px-4' : 'px-1'}`}>
                 <div className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-surface-2/50 border border-border/50">
                   <span className="font-mono text-[10px] text-muted-light">{typingText}</span>
                   <TypingDots />
@@ -563,7 +599,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
 
             {/* Reply preview */}
             {replyTo && (
-              <div className="flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-3 py-2 animate-fade-in-up">
+              <div className={`flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-3 py-2 animate-fade-in-up ${isFullscreen ? 'mx-4' : ''}`}>
                 <div className="w-1 h-8 bg-accent/60 rounded-full shrink-0" />
                 <div className="flex-1 min-w-0">
                   <p className="font-mono text-[10px] text-accent font-medium">Replying to {replyTo.from}</p>
@@ -580,7 +616,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
 
             {/* Image preview */}
             {imagePreview && (
-              <div className="relative inline-block animate-fade-in-up">
+              <div className={`relative inline-block animate-fade-in-up ${isFullscreen ? 'mx-4' : ''}`}>
                 <img src={imagePreview.url || imagePreview} alt="Upload preview" className="h-24 rounded-xl border border-border shadow-sm object-cover" />
                 <button
                   onClick={() => {
@@ -595,7 +631,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             )}
 
             {/* Input */}
-            <form onSubmit={handleSend} className="flex gap-1.5 sm:gap-2 items-end">
+            <form onSubmit={handleSend} className={`flex gap-1.5 sm:gap-2 items-end shrink-0 ${isFullscreen ? 'px-4 py-3 border-t border-border bg-surface/50' : ''}`}>
               <input ref={imageInputRef} type="file" accept="image/*" onChange={handleImagePick} className="hidden" />
               <button
                 type="button"
@@ -611,6 +647,12 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               <input
                 ref={textInputRef}
                 type="text"
+                inputMode="text"
+                autoComplete="off"
+                autoCorrect="on"
+                autoCapitalize="sentences"
+                spellCheck="true"
+                enterKeyHint="send"
                 value={text}
                 onChange={handleTyping}
                 placeholder={disabled ? 'Connect to chat' : 'Message...'}
