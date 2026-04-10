@@ -123,14 +123,37 @@ export function useReceiver(peerId) {
           if (conn._rttPoller) conn._rttPoller.cleanup()
           conn._rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
 
+          // Track whether disconnect was already handled (ICE or heartbeat)
+          // to prevent duplicate messages when both fire for the same drop.
+          let disconnectHandled = false
+          function handleDisconnect(reason) {
+            if (disconnectHandled || destroyedRef.current) return
+            disconnectHandled = true
+            if (conn._heartbeat) conn._heartbeat.cleanup()
+            if (conn._rttPoller) { conn._rttPoller.cleanup(); conn._rttPoller = null }
+            setRtt(null)
+            setMessages(prev => [...prev, { text: reason, from: 'system', time: Date.now(), self: false }])
+
+            if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
+              // Initiate reconnect immediately instead of waiting for
+              // conn.on('close') — PeerJS may never fire 'close' if ICE
+              // stays in 'disconnected' limbo without reaching 'closed'.
+              chunkQueueRef.current = Promise.resolve()
+              imageSendQueueRef.current = Promise.resolve()
+              inProgressImageRef.current = null
+              Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
+              streamsRef.current = {}
+              reconnectCountRef.current++
+              peer.destroy()
+              setTimeout(() => { if (!destroyedRef.current) startConnection(useTurnRef.current, true) }, RECONNECT_DELAY)
+            } else {
+              Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
+              setStatus('closed')
+            }
+          }
+
           const heartbeat = setupHeartbeat(conn, {
-            onDead: () => {
-              if (destroyedRef.current) return
-              if (conn._rttPoller) { conn._rttPoller.cleanup(); conn._rttPoller = null }
-              setRtt(null)
-              setMessages(prev => [...prev, { text: 'Connection lost', from: 'system', time: Date.now(), self: false }])
-              if (!wasTransferringRef.current) setStatus('closed')
-            },
+            onDead: () => handleDisconnect('Connection lost'),
           })
           conn._heartbeat = heartbeat
 
@@ -141,11 +164,8 @@ export function useReceiver(peerId) {
             pc.oniceconnectionstatechange = () => {
               if (prevHandler) prevHandler()
               const s = pc.iceConnectionState
-              if ((s === 'disconnected' || s === 'failed' || s === 'closed') && !destroyedRef.current) {
-                if (conn._rttPoller) { conn._rttPoller.cleanup(); conn._rttPoller = null }
-                setRtt(null)
-                setMessages(prev => [...prev, { text: 'Sender disconnected', from: 'system', time: Date.now(), self: false }])
-                if (!wasTransferringRef.current) setStatus('closed')
+              if (s === 'disconnected' || s === 'failed' || s === 'closed') {
+                handleDisconnect('Sender disconnected')
               }
             }
           }
@@ -350,20 +370,21 @@ export function useReceiver(peerId) {
             lastFileIndexRef.current = data.index
             if (!startTimeRef.current) startTimeRef.current = Date.now()
 
-            if (resumeFrom === 0) {
-              if (zipModeRef.current && zipWriterRef.current) {
-                // Zip mode: start a new file entry in the streaming zip
-                zipWriterRef.current.startFile(data.name, data.size)
+            // Always create a fresh stream. On resume the old stream was
+            // aborted in conn.on('close'), so we need a new one regardless.
+            if (!zipModeRef.current || !zipWriterRef.current) {
+              const stream = createFileStream(data.name, data.size)
+              if (stream) {
+                streamsRef.current[data.index] = stream
               } else {
-                // Stream mode: pipe individual file to disk
-                const stream = createFileStream(data.name, data.size)
-                if (stream) {
-                  streamsRef.current[data.index] = stream
-                } else {
-                  // Fallback: store in memory, save as blob
-                  chunksRef.current[data.index] = []
-                }
+                chunksRef.current[data.index] = []
               }
+            } else if (resumeFrom === 0) {
+              zipWriterRef.current.startFile(data.name, data.size)
+            } else {
+              // Zip mode resume — zip entries can't be reopened mid-stream,
+              // so we fall back to memory for the resumed file.
+              chunksRef.current[data.index] = []
             }
           }
 
@@ -434,12 +455,17 @@ export function useReceiver(peerId) {
         conn.on('close', () => {
           if (destroyedRef.current) return
           clearTimeout(timeoutRef.current)
+          // If handleDisconnect already initiated a reconnect or close,
+          // don't double-fire. Just clean up anything it might have missed.
+          if (disconnectHandled) return
           if (conn._heartbeat) conn._heartbeat.cleanup()
           if (conn._rttPoller) { conn._rttPoller.cleanup(); conn._rttPoller = null }
-          // Reset the chunk queue so any stalled writes from the dropped
-          // connection don't poison the new chain after reconnect.
           chunkQueueRef.current = Promise.resolve()
+          imageSendQueueRef.current = Promise.resolve()
+          inProgressImageRef.current = null
           if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
+            Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
+            streamsRef.current = {}
             reconnectCountRef.current++
             peer.destroy()
             setTimeout(() => { if (!destroyedRef.current) startConnection(useTurnRef.current, true) }, RECONNECT_DELAY)

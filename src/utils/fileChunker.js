@@ -130,22 +130,42 @@ export function parseChunkPacket(buffer) {
 
 export async function waitForBufferDrain(conn) {
   const dc = conn._dc || conn.dataChannel
-  if (!dc || dc.bufferedAmount <= BUFFER_THRESHOLD) return
+  if (!dc || dc.readyState === 'closed' || dc.readyState === 'closing') return
+  if (dc.bufferedAmount <= BUFFER_THRESHOLD) return
 
   return new Promise((resolve) => {
-    if (typeof dc.onbufferedamountlow !== 'undefined') {
+    let settled = false
+    const done = () => { if (!settled) { settled = true; cleanup(); resolve() } }
+
+    // Race 1: buffer drains normally
+    const useLowEvent = typeof dc.onbufferedamountlow !== 'undefined'
+    let prevLow = null
+    let pollTimer = null
+
+    if (useLowEvent) {
       dc.bufferedAmountLowThreshold = BUFFER_THRESHOLD
-      const prev = dc.onbufferedamountlow
-      dc.onbufferedamountlow = () => {
-        dc.onbufferedamountlow = prev
-        resolve()
-      }
+      prevLow = dc.onbufferedamountlow
+      dc.onbufferedamountlow = done
     } else {
       const poll = () => {
-        if (dc.bufferedAmount <= BUFFER_THRESHOLD) resolve()
-        else setTimeout(poll, 50)
+        if (settled) return
+        if (!dc || dc.readyState === 'closed' || dc.bufferedAmount <= BUFFER_THRESHOLD) done()
+        else pollTimer = setTimeout(poll, 50)
       }
       poll()
+    }
+
+    // Race 2: channel dies — resolve so the sender loop can exit
+    // instead of hanging forever.
+    const onClose = () => done()
+    dc.addEventListener('close', onClose)
+    dc.addEventListener('error', onClose)
+
+    function cleanup() {
+      if (useLowEvent) dc.onbufferedamountlow = prevLow
+      if (pollTimer) clearTimeout(pollTimer)
+      dc.removeEventListener('close', onClose)
+      dc.removeEventListener('error', onClose)
     }
   })
 }

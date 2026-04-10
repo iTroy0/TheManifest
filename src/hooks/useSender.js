@@ -174,23 +174,34 @@ export function useSender() {
         // RTT polling (one poller per connection — the first active one sets the UI)
         connState.rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
 
-        // Heartbeat — per-connection zombie detection
+        // Shared disconnect handler — both heartbeat and ICE state changes
+        // funnel through here so the cleanup only fires once. Prevents
+        // duplicate system messages when both detect the same drop.
+        function handlePeerDisconnect(reason) {
+          if (connState.disconnectHandled || destroyed) return
+          connState.disconnectHandled = true
+          connState.abort.aborted = true
+          if (connState.heartbeat) connState.heartbeat.cleanup()
+          if (connState.rttPoller) connState.rttPoller.cleanup()
+          const name = connState.nickname || 'A recipient'
+          connectionsRef.current.delete(connId)
+          setRecipientCount(connectionsRef.current.size)
+          setMessages(prev => [...prev, { text: `${name} ${reason}`, from: 'system', time: Date.now(), self: false }])
+          const newCount = connectionsRef.current.size + 1
+          connectionsRef.current.forEach(cs => {
+            try {
+              cs.conn.send({ type: 'online-count', count: newCount })
+              cs.conn.send({ type: 'system-msg', text: `${name} ${reason}`, time: Date.now() })
+            } catch {}
+          })
+          if (connectionsRef.current.size === 0) {
+            setRtt(null)
+            setStatus(prev => prev === 'done' ? prev : 'waiting')
+          }
+        }
+
         connState.heartbeat = setupHeartbeat(conn, {
-          onDead: () => {
-            connState.abort.aborted = true
-            const name = connState.nickname || 'A recipient'
-            connectionsRef.current.delete(connId)
-            setRecipientCount(connectionsRef.current.size)
-            setMessages(prev => [...prev, { text: `${name} connection lost`, from: 'system', time: Date.now(), self: false }])
-            const newCount = connectionsRef.current.size + 1
-            connectionsRef.current.forEach(cs => {
-              try { cs.conn.send({ type: 'online-count', count: newCount }) } catch {}
-            })
-            if (connectionsRef.current.size === 0) {
-              setRtt(null)
-              setStatus(prev => prev === 'done' ? prev : 'waiting')
-            }
-          },
+          onDead: () => handlePeerDisconnect('connection lost'),
         })
 
         // Fast disconnect detection via ICE state
@@ -198,24 +209,8 @@ export function useSender() {
         if (pc) {
           pc.oniceconnectionstatechange = () => {
             const s = pc.iceConnectionState
-            if ((s === 'disconnected' || s === 'failed' || s === 'closed') && !destroyed) {
-              connState.abort.aborted = true
-              const name = connState.nickname || 'A recipient'
-              connectionsRef.current.delete(connId)
-              setRecipientCount(connectionsRef.current.size)
-              setMessages(prev => [...prev, { text: `${name} left`, from: 'system', time: Date.now(), self: false }])
-              const count = connectionsRef.current.size + 1
-              connectionsRef.current.forEach(cs => {
-                try {
-                  cs.conn.send({ type: 'online-count', count })
-                  cs.conn.send({ type: 'system-msg', text: `${name} left`, time: Date.now() })
-                } catch {}
-              })
-              if (connectionsRef.current.size === 0) {
-  
-                setRtt(null)
-                setStatus(prev => prev === 'done' ? prev : 'waiting')
-              }
+            if (s === 'disconnected' || s === 'failed' || s === 'closed') {
+              handlePeerDisconnect('left')
             }
           }
         }
