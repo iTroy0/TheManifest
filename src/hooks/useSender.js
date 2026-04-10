@@ -260,15 +260,6 @@ export function useSender() {
           return
         }
 
-        // Handle batched messages
-        if (data.type === 'batch') {
-          for (const msg of data.messages || []) {
-            // Re-dispatch each message in the batch
-            conn.emit('data', msg)
-          }
-          return
-        }
-
         if (data.type === 'typing') {
           const nick = data.nickname
           setTypingUsers(prev => prev.includes(nick) ? prev : [...prev, nick])

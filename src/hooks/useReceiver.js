@@ -66,7 +66,6 @@ export function useReceiver(peerId) {
   const reconnectCountRef = useRef(0)
   const useTurnRef = useRef(false)
   const rttRef = useRef(null)
-  const expectedChunkRef = useRef({}) // Track expected chunk index per file for ACK
   // Sequential chunk processing queue. Decrypt + stream-write must happen in
   // order, otherwise concurrent writes from multiple in-flight handleChunk
   // calls can interleave and corrupt the file.
@@ -241,15 +240,6 @@ export function useReceiver(peerId) {
             return
           }
 
-          // Handle batched messages
-          if (data.type === 'batch') {
-            for (const msg of data.messages || []) {
-              // Re-dispatch each message in the batch
-              conn.emit('data', msg)
-            }
-            return
-          }
-
           if (data.type === 'typing') {
             const nick = data.nickname
             setTypingUsers(prev => prev.includes(nick) ? prev : [...prev, nick])
@@ -316,7 +306,11 @@ export function useReceiver(peerId) {
             // Track received bytes per file. We can't trust totalChunks for
             // progress because the sender uses adaptive chunk sizes (64KB–1MB)
             // while totalChunks is computed against the default 256KB size.
-            fileMetaRef.current[data.index] = { name: data.name, size: data.size, totalChunks: data.totalChunks, received: 0 }
+            // On resume, preserve the prior `received` count so progress
+            // doesn't snap back to 0% when the connection drops mid-transfer.
+            const prevMeta = fileMetaRef.current[data.index]
+            const priorReceived = (resumeFrom > 0 && prevMeta) ? (prevMeta.received || 0) : 0
+            fileMetaRef.current[data.index] = { name: data.name, size: data.size, totalChunks: data.totalChunks, received: priorReceived }
             lastFileIndexRef.current = data.index
             if (!startTimeRef.current) startTimeRef.current = Date.now()
 
@@ -407,6 +401,9 @@ export function useReceiver(peerId) {
           if (conn._heartbeatInterval) clearInterval(conn._heartbeatInterval)
           if (conn._heartbeatCheck) clearInterval(conn._heartbeatCheck)
           if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
+          // Reset the chunk queue so any stalled writes from the dropped
+          // connection don't poison the new chain after reconnect.
+          chunkQueueRef.current = Promise.resolve()
           if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
             reconnectCountRef.current++
             peer.destroy()
@@ -460,6 +457,7 @@ export function useReceiver(peerId) {
       if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
       decryptKeyRef.current = null
       keyPairRef.current = null
+      chunkQueueRef.current = Promise.resolve()
       Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
       if (zipWriterRef.current) { zipWriterRef.current.abort(); zipWriterRef.current = null }
       if (peerRef.current) peerRef.current.destroy()
@@ -469,6 +467,9 @@ export function useReceiver(peerId) {
   const enableRelay = useCallback(() => {
     destroyedRef.current = true
     clearTimeout(timeoutRef.current)
+    // Clear any stalled queue from the failed direct attempt before
+    // re-creating the peer with TURN.
+    chunkQueueRef.current = Promise.resolve()
     if (peerRef.current) peerRef.current.destroy()
     useTurnRef.current = true
     setUseRelay(true)
@@ -639,33 +640,10 @@ export function useReceiver(peerId) {
         ? await decryptChunk(decryptKeyRef.current, data)
         : data
     } catch {
-      // Corrupted chunk - request retransmission
-      const conn = connRef.current
-      if (conn) {
-        try { conn.send({ type: 'chunk-nack', fileIndex, chunkIndex }) } catch {}
-      }
+      // Corrupted chunk — drop it. SCTP guarantees reliable+ordered delivery
+      // so we should never see this in practice; if we do, the file will end
+      // up incomplete and the user can re-request it.
       return
-    }
-
-    // Check for out-of-order chunks (simple detection)
-    const expected = expectedChunkRef.current[fileIndex] || 0
-    if (chunkIndex > expected + 1) {
-      // Missing chunks detected - request retransmission
-      const conn = connRef.current
-      if (conn) {
-        for (let i = expected; i < chunkIndex; i++) {
-          try { conn.send({ type: 'chunk-nack', fileIndex, chunkIndex: i }) } catch {}
-        }
-      }
-    }
-    expectedChunkRef.current[fileIndex] = chunkIndex + 1
-
-    // Send ACK every 10 chunks for flow control
-    if (chunkIndex % 10 === 0) {
-      const conn = connRef.current
-      if (conn) {
-        try { conn.send({ type: 'chunk-ack', fileIndex, chunkIndex }) } catch {}
-      }
     }
 
     lastFileIndexRef.current = fileIndex
