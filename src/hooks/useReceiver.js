@@ -1,6 +1,6 @@
 import Peer from 'peerjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { parseChunkPacket } from '../utils/fileChunker'
+import { parseChunkPacket, buildChunkPacket, waitForBufferDrain, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker } from '../utils/fileChunker'
 import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { createFileStream } from '../utils/streamWriter'
 import { createStreamingZip } from '../utils/zipBuilder'
@@ -70,6 +70,16 @@ export function useReceiver(peerId) {
   // order, otherwise concurrent writes from multiple in-flight handleChunk
   // calls can interleave and corrupt the file.
   const chunkQueueRef = useRef(Promise.resolve())
+  // Inline chat image being received from the host. One in flight at a time
+  // per connection — the sender side serializes image transmission.
+  const inProgressImageRef = useRef(null)
+  // Serialize outgoing chat images so two GIFs from the user don't interleave
+  // their chunks on the wire (we use fileIndex=0xFFFF as a sentinel, with no
+  // imageId — so chunks always belong to the most recent open image).
+  const imageSendQueueRef = useRef(Promise.resolve())
+  // Blob URLs we created for incoming chat images — revoked on cleanup so
+  // we don't leak memory across long sessions with lots of GIFs.
+  const imageBlobUrlsRef = useRef([])
 
   const startConnection = useCallback((withTurn, isReconnect = false) => {
     if (!window.crypto?.subtle) { setStatus('error'); return }
@@ -127,11 +137,16 @@ export function useReceiver(peerId) {
           const heartbeatInterval = setInterval(() => {
             try { conn.send({ type: 'ping', ts: Date.now() }) } catch {}
           }, 5000)
-          let lastPong = Date.now()
-          
-          // Check for zombie connections
+          // Treat any incoming traffic as proof of life — pongs alone are
+          // unreliable when the connection is busy ferrying large messages
+          // (e.g. multi-MB GIFs) on a slow relay path, since the pong gets
+          // queued behind the data and arrives too late.
+          let lastSeen = Date.now()
+
+          // Check for zombie connections — generous 30s window so a slow
+          // relay or weak peer doesn't get killed mid-transfer.
           const heartbeatCheck = setInterval(() => {
-            if (Date.now() - lastPong > 15000 && !destroyedRef.current) {
+            if (Date.now() - lastSeen > 30000 && !destroyedRef.current) {
               clearInterval(heartbeatInterval)
               clearInterval(heartbeatCheck)
               if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
@@ -142,11 +157,11 @@ export function useReceiver(peerId) {
               }
             }
           }, 5000)
-          
+
           // Store for cleanup
           conn._heartbeatInterval = heartbeatInterval
           conn._heartbeatCheck = heartbeatCheck
-          conn._updateLastPong = () => { lastPong = Date.now() }
+          conn._markAlive = () => { lastSeen = Date.now() }
 
           // Fast disconnect detection via ICE state
           const pc = conn.peerConnection
@@ -184,6 +199,10 @@ export function useReceiver(peerId) {
 
         conn.on('data', async (data) => {
           if (destroyedRef.current) return
+          // Any incoming traffic is proof the sender is alive — much more
+          // reliable than waiting for a pong, which can sit behind queued
+          // chat data on a slow relay.
+          if (conn._markAlive) conn._markAlive()
 
           if (data instanceof ArrayBuffer || (data && data.byteLength !== undefined && !(typeof data === 'object' && data.type))) {
             // Chain onto the queue so chunks are decrypted + written strictly
@@ -194,11 +213,9 @@ export function useReceiver(peerId) {
             return
           }
 
-          // Heartbeat responses
-          if (data.type === 'pong') {
-            if (conn._updateLastPong) conn._updateLastPong()
-            return
-          }
+          // Heartbeat responses (already covered by _markAlive above, but
+          // we still consume them so they don't fall through to other handlers)
+          if (data.type === 'pong') return
           if (data.type === 'ping') {
             try { conn.send({ type: 'pong', ts: data.ts }) } catch {}
             return
@@ -278,7 +295,57 @@ export function useReceiver(peerId) {
                 payload = JSON.parse(new TextDecoder().decode(decrypted))
               } catch { return }
             }
-            setMessages(prev => [...prev, { text: payload.text || '', image: payload.image, replyTo: payload.replyTo, from: data.from || 'Sender', time: data.time, self: false }])
+            setMessages(prev => [...prev, { text: payload.text || '', image: payload.image, mime: payload.mime, replyTo: payload.replyTo, from: data.from || 'Sender', time: data.time, self: false }])
+            return
+          }
+
+          // Inline chat image — START. The host has begun streaming an image
+          // through the binary chunk pipeline. We allocate a buffer; chunks
+          // arrive via handleChunk with fileIndex===CHAT_IMAGE_FILE_INDEX.
+          if (data.type === 'chat-image-start-enc') {
+            if (!decryptKeyRef.current || !data.data) return
+            let meta
+            try {
+              const decrypted = await decryptChunk(decryptKeyRef.current, base64ToUint8(data.data))
+              meta = JSON.parse(new TextDecoder().decode(decrypted))
+            } catch { return }
+            // Discard any previous in-flight image (shouldn't happen in
+            // practice — sender serializes — but be defensive against
+            // a misbehaving / desynced peer).
+            inProgressImageRef.current = {
+              mime: meta.mime || 'application/octet-stream',
+              size: meta.size || 0,
+              text: meta.text || '',
+              replyTo: meta.replyTo || null,
+              time: meta.time || Date.now(),
+              from: data.from || 'Sender',
+              chunks: [],
+              receivedBytes: 0,
+            }
+            return
+          }
+
+          // Inline chat image — END. Concat the buffered chunks, build a
+          // blob URL, and append the message to the chat log.
+          if (data.type === 'chat-image-end-enc') {
+            // Drain any in-flight chunk processing first so all of this
+            // image's bytes are in the buffer before we finalize.
+            await chunkQueueRef.current
+            const inFlight = inProgressImageRef.current
+            inProgressImageRef.current = null
+            if (!inFlight) return
+            const blob = new Blob(inFlight.chunks, { type: inFlight.mime })
+            const url = URL.createObjectURL(blob)
+            imageBlobUrlsRef.current.push(url)
+            setMessages(prev => [...prev, {
+              text: inFlight.text,
+              image: url,
+              mime: inFlight.mime,
+              replyTo: inFlight.replyTo,
+              from: inFlight.from,
+              time: inFlight.time,
+              self: false,
+            }])
             return
           }
 
@@ -458,6 +525,11 @@ export function useReceiver(peerId) {
       decryptKeyRef.current = null
       keyPairRef.current = null
       chunkQueueRef.current = Promise.resolve()
+      imageSendQueueRef.current = Promise.resolve()
+      inProgressImageRef.current = null
+      // Revoke blob URLs we minted for chat images so they don't leak.
+      imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch {} })
+      imageBlobUrlsRef.current = []
       Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
       if (zipWriterRef.current) { zipWriterRef.current.abort(); zipWriterRef.current = null }
       if (peerRef.current) peerRef.current.destroy()
@@ -570,13 +642,81 @@ export function useReceiver(peerId) {
     const conn = connRef.current
     if (!conn || !decryptKeyRef.current) return
     const time = Date.now()
+    const key = decryptKeyRef.current
+
+    // Binary image: { bytes: Uint8Array, mime: string } — stream via the
+    // chunk pipeline (binary-native, backpressure-aware). Local echo uses a
+    // blob URL built from the same bytes so the user sees their image
+    // instantly without waiting for any round-trip.
+    if (image && typeof image === 'object' && image.bytes) {
+      const bytes = image.bytes instanceof Uint8Array ? image.bytes : new Uint8Array(image.bytes)
+      const mime = image.mime || 'application/octet-stream'
+      const localBlob = new Blob([bytes], { type: mime })
+      const localUrl = URL.createObjectURL(localBlob)
+      imageBlobUrlsRef.current.push(localUrl)
+      setMessages(prev => [...prev, { text: text || '', image: localUrl, mime, replyTo, from: 'You', time, self: true }])
+
+      // Serialize image sends to this connection — fileIndex=0xFFFF has no
+      // imageId, so chunks always belong to the most recent open image.
+      imageSendQueueRef.current = imageSendQueueRef.current
+        .then(() => streamImageToHost(conn, key, bytes, mime, text || '', replyTo, time))
+        .catch(() => {})
+      return
+    }
+
+    // Text-only (or legacy data-URI image) — go through the existing
+    // chat-encrypted path.
     setMessages(prev => [...prev, { text, image, replyTo, from: 'You', time, self: true }])
     try {
       const payload = JSON.stringify({ text, image, replyTo })
-      const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(payload))
+      const encrypted = await encryptChunk(key, new TextEncoder().encode(payload))
       conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), nickname, time })
     } catch {}
   }, [nickname])
+
+  // Stream a chat image to the host: announce, ship encrypted chunks via the
+  // existing buildChunkPacket pipeline (with CHAT_IMAGE_FILE_INDEX as the
+  // sentinel), then end. The host will receive this, buffer it, and relay
+  // to other recipients with their own per-recipient encryption.
+  async function streamImageToHost(conn, key, bytes, mime, text, replyTo, time) {
+    if (!conn || conn.open === false || !key) return
+    // 1. Announce the image with encrypted metadata.
+    try {
+      const startPayload = JSON.stringify({ mime, size: bytes.byteLength, text, replyTo, time })
+      const encStart = await encryptChunk(key, new TextEncoder().encode(startPayload))
+      conn.send({ type: 'chat-image-start-enc', data: uint8ToBase64(new Uint8Array(encStart)), from: nickname, time })
+    } catch { return }
+
+    // 2. Stream the body. Each chunk is encrypted independently — the
+    // receiver's chunk queue will decrypt + buffer them in order.
+    const chunker = new AdaptiveChunker()
+    let offset = 0
+    let chunkIndex = 0
+    while (offset < bytes.byteLength) {
+      if (destroyedRef.current || conn.open === false) return
+      const chunkSize = Math.min(chunker.getChunkSize(), bytes.byteLength - offset)
+      const slice = bytes.subarray(offset, offset + chunkSize)
+      const tStart = Date.now()
+      let encChunk
+      try {
+        encChunk = await encryptChunk(key, slice)
+      } catch { return }
+      const packet = buildChunkPacket(CHAT_IMAGE_FILE_INDEX, chunkIndex, encChunk)
+      try { conn.send(packet) } catch { return }
+      try { await waitForBufferDrain(conn) } catch { return }
+      chunker.recordTransfer(slice.byteLength, Date.now() - tStart)
+      offset += chunkSize
+      chunkIndex++
+    }
+
+    // 3. End marker — encrypted but currently empty payload, mirroring
+    // the start frame's shape so we can extend it later if needed.
+    try {
+      const endPayload = JSON.stringify({})
+      const encEnd = await encryptChunk(key, new TextEncoder().encode(endPayload))
+      conn.send({ type: 'chat-image-end-enc', data: uint8ToBase64(new Uint8Array(encEnd)) })
+    } catch { /* swallow — receiver will time out the in-flight image */ }
+  }
 
   const submitPassword = useCallback(async (password) => {
     const conn = connRef.current
@@ -643,6 +783,21 @@ export function useReceiver(peerId) {
       // Corrupted chunk — drop it. SCTP guarantees reliable+ordered delivery
       // so we should never see this in practice; if we do, the file will end
       // up incomplete and the user can re-request it.
+      return
+    }
+
+    // Inline chat image chunk — append to the in-flight image buffer.
+    // We branch BEFORE the file-progress bookkeeping because images aren't
+    // tracked in fileMetaRef.
+    if (fileIndex === CHAT_IMAGE_FILE_INDEX) {
+      const inFlight = inProgressImageRef.current
+      if (inFlight) {
+        // plainData may be ArrayBuffer or TypedArray; Blob accepts both
+        // but normalize to Uint8Array for consistency.
+        const bytes = plainData instanceof Uint8Array ? plainData : new Uint8Array(plainData)
+        inFlight.chunks.push(bytes)
+        inFlight.receivedBytes += bytes.byteLength
+      }
       return
     }
 

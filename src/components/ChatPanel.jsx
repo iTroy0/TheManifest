@@ -138,24 +138,33 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
     textInputRef.current?.focus()
   }
 
+  // Build an image payload: { url, bytes, mime } — `url` for preview,
+  // `bytes` + `mime` for sending through the binary chunk pipeline.
+  async function prepareImage(file) {
+    if (file.type === 'image/gif') {
+      if (file.size > 3 * 1024 * 1024) {
+        alert('GIF is too large (max 3 MB)')
+        return null
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const url = URL.createObjectURL(new Blob([bytes], { type: file.type }))
+      return { url, bytes, mime: file.type }
+    }
+    // Non-GIF: compress to JPEG, then extract bytes for binary transport.
+    const dataUri = await compressImage(file)
+    const raw = atob(dataUri.split(',')[1])
+    const bytes = new Uint8Array(raw.length)
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
+    return { url: dataUri, bytes, mime: 'image/jpeg' }
+  }
+
   async function handleImagePick(e) {
     const file = e.target.files?.[0]
     if (!file || !file.type.startsWith('image/')) return
     e.target.value = ''
     try {
-      // GIFs: skip compression to preserve animation (5MB limit)
-      if (file.type === 'image/gif') {
-        if (file.size > 5 * 1024 * 1024) {
-          alert('GIF is too large (max 5MB)')
-          return
-        }
-        const reader = new FileReader()
-        reader.onload = () => setImagePreview(reader.result)
-        reader.readAsDataURL(file)
-        return
-      }
-      const compressed = await compressImage(file)
-      setImagePreview(compressed)
+      const img = await prepareImage(file)
+      if (img) setImagePreview(img)
     } catch { /* invalid image */ }
   }
 
@@ -167,15 +176,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
       e.preventDefault()
       const file = item.getAsFile()
       if (!file) return
-      // GIFs: skip compression to preserve animation
-      if (file.type === 'image/gif') {
-        if (file.size > 5 * 1024 * 1024) return // silently ignore large GIFs on paste
-        const reader = new FileReader()
-        reader.onload = () => setImagePreview(reader.result)
-        reader.readAsDataURL(file)
-        return
-      }
-      compressImage(file).then(setImagePreview).catch(() => {})
+      prepareImage(file).then(img => { if (img) setImagePreview(img) }).catch(() => {})
     }
     window.addEventListener('paste', handlePaste)
     return () => window.removeEventListener('paste', handlePaste)
@@ -402,7 +403,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
                                   src={msg.image} 
                                   alt="" 
                                   className="rounded-lg max-w-full max-h-[200px] object-contain cursor-pointer hover:opacity-90 transition-opacity shadow-sm" 
-                                  onClick={(e) => { e.stopPropagation(); setViewImage(msg.image) }} 
+                                  onClick={(e) => { e.stopPropagation(); setViewImage({ url: msg.image, mime: msg.mime }) }} 
                                 />
                               )}
 
@@ -528,7 +529,7 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
             {/* Image preview */}
             {imagePreview && (
               <div className="relative inline-block animate-fade-in-up">
-                <img src={imagePreview} alt="Upload preview" className="h-24 rounded-xl border border-border shadow-sm object-cover" />
+                <img src={imagePreview.url || imagePreview} alt="Upload preview" className="h-24 rounded-xl border border-border shadow-sm object-cover" />
                 <button
                   onClick={() => setImagePreview(null)}
                   className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-danger text-white flex items-center justify-center shadow-md hover:bg-danger/90 transition-colors"
@@ -584,8 +585,8 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
         <div className="fixed inset-0 z-[9999] bg-black/90 flex flex-col items-center justify-center p-4" onClick={() => setViewImage(null)} onKeyDown={(e) => e.key === 'Escape' && setViewImage(null)} role="dialog" aria-label="Image preview">
           <div className="absolute top-4 right-4 flex gap-2 z-10">
             <a
-              href={viewImage}
-              download="image.jpg"
+              href={viewImage.url || viewImage}
+              download={imageFilename(viewImage.url || viewImage, viewImage.mime)}
               onClick={(e) => e.stopPropagation()}
               className="px-4 py-2.5 rounded-lg font-mono text-sm bg-accent text-bg hover:bg-accent-dim transition-colors min-h-[44px] flex items-center"
             >
@@ -600,12 +601,32 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
               Close
             </button>
           </div>
-          <img src={viewImage} alt="Preview" className="max-w-full max-h-[85vh] object-contain rounded-lg" onClick={(e) => e.stopPropagation()} />
+          <img src={viewImage.url || viewImage} alt="Preview" className="max-w-full max-h-[85vh] object-contain rounded-lg" onClick={(e) => e.stopPropagation()} />
         </div>,
         document.body
       )}
     </div>
   )
+}
+
+// Pick a sensible filename for the Save button. For data URIs the MIME is
+// embedded in the prefix; for blob URLs we need the separate `mime` hint
+// (passed from the message's .mime field).
+function imageFilename(url, mime) {
+  const dataMatch = /^data:image\/([a-z0-9+.-]+)/i.exec(url || '')
+  if (dataMatch) {
+    let ext = dataMatch[1].toLowerCase()
+    if (ext === 'jpeg') ext = 'jpg'
+    if (ext === 'svg+xml') ext = 'svg'
+    return `image.${ext}`
+  }
+  if (mime) {
+    let ext = (mime.split('/')[1] || 'jpg').toLowerCase()
+    if (ext === 'jpeg') ext = 'jpg'
+    if (ext === 'svg+xml') ext = 'svg'
+    return `image.${ext}`
+  }
+  return 'image.jpg'
 }
 
 async function compressImage(file) {

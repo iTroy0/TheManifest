@@ -4,6 +4,14 @@ export const DEFAULT_CHUNK_SIZE = 256 * 1024 // 256KB - default
 export const MAX_CHUNK_SIZE = 1024 * 1024  // 1MB - for excellent connections
 export const CHUNK_SIZE = DEFAULT_CHUNK_SIZE // For backwards compatibility
 
+// Sentinel fileIndex value used by the chat-image binary transport. Real
+// file indices in the manifest are 0..N-1 with N bounded well below this,
+// so 0xFFFF is safe to repurpose as "this chunk belongs to an in-flight
+// chat image on this connection". The chunk pipeline (buildChunkPacket /
+// parseChunkPacket / waitForBufferDrain / receiver chunkQueueRef) is
+// reused as-is — only the dispatch in handleChunk branches on this value.
+export const CHAT_IMAGE_FILE_INDEX = 0xFFFF
+
 const BUFFER_THRESHOLD = 2 * 1024 * 1024 // 2MB — higher threshold for larger chunks
 // Header: 2 bytes file index + 4 bytes chunk index = 6 bytes
 const HEADER_SIZE = 6
