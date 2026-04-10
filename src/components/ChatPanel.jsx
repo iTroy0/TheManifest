@@ -764,6 +764,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               <input
                 ref={textInputRef}
                 type="text"
+                name="chatMessage"
                 inputMode="text"
                 autoComplete="off"
                 autoCorrect="on"
