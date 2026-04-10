@@ -109,7 +109,22 @@ export function useSender() {
         imageSendQueue: Promise.resolve(),
       }
       connectionsRef.current.set(connId, connState)
-      setRecipientCount(connectionsRef.current.size)
+      // Don't update recipientCount here — defer until the user is
+      // authenticated (announceJoin). For password-protected portals
+      // we don't want unauthenticated connections to appear in the UI.
+
+      function announceJoin(cs, cId) {
+        setStatus('connected')
+        setRecipientCount(connectionsRef.current.size)
+        setMessages(prev => [...prev, { text: `${cs.nickname} joined`, from: 'system', time: Date.now(), self: false }])
+        const count = connectionsRef.current.size + 1
+        connectionsRef.current.forEach((other, id) => {
+          try { other.conn.send({ type: 'online-count', count }) } catch {}
+          if (id !== cId) {
+            try { other.conn.send({ type: 'system-msg', text: `${cs.nickname} joined`, time: Date.now() }) } catch {}
+          }
+        })
+      }
 
       function aggregateUI() {
         const conns = Array.from(connectionsRef.current.values())
@@ -150,7 +165,11 @@ export function useSender() {
 
       conn.on('open', async () => {
         if (destroyed) return
-        setStatus('connected')
+        // Only show 'connected' immediately for non-password portals.
+        // For password-protected portals, defer until announceJoin (after
+        // authentication) so the UI doesn't flash "connected" for users
+        // who haven't entered the password yet.
+        if (!passwordRef.current) setStatus('connected')
 
         // RTT polling (one poller per connection — the first active one sets the UI)
         connState.rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
@@ -230,16 +249,23 @@ export function useSender() {
         }
 
         if (data.type === 'public-key') {
-          const remotePubKey = await importPublicKey(new Uint8Array(data.key))
-          connState.encryptKey = await deriveSharedKey(connState.keyPair.privateKey, remotePubKey)
-          const localPubBytes = await exportPublicKey(connState.keyPair.publicKey)
-          const fp = await getKeyFingerprint(localPubBytes, new Uint8Array(data.key))
-          setFingerprint(fp)
+          try {
+            // importPublicKey + deriveSharedKey will throw if the remote
+            // sends an invalid P-256 point, preventing weak/predictable
+            // key derivation from crafted input.
+            const remotePubKey = await importPublicKey(new Uint8Array(data.key))
+            connState.encryptKey = await deriveSharedKey(connState.keyPair.privateKey, remotePubKey)
+            const localPubBytes = await exportPublicKey(connState.keyPair.publicKey)
+            const fp = await getKeyFingerprint(localPubBytes, new Uint8Array(data.key))
+            setFingerprint(fp)
 
-          if (passwordRef.current) {
-            conn.send({ type: 'password-required' })
-          } else {
-            await sendManifest(conn)
+            if (passwordRef.current) {
+              conn.send({ type: 'password-required' })
+            } else {
+              await sendManifest(conn)
+            }
+          } catch {
+            conn.close()
           }
           return
         }
@@ -252,8 +278,21 @@ export function useSender() {
               password = new TextDecoder().decode(decrypted)
             } catch { conn.send({ type: 'password-wrong' }); return }
           }
-          if (password === passwordRef.current) {
+          // Constant-time comparison: encode both strings and compare
+          // byte-by-byte with XOR so timing doesn't leak password
+          // length or prefix matches.
+          const a = new TextEncoder().encode(password)
+          const b = new TextEncoder().encode(passwordRef.current || '')
+          let match = a.length === b.length ? 0 : 1
+          for (let i = 0; i < a.length; i++) match |= a[i] ^ (b[i] || 0)
+          if (match === 0 && a.length > 0) {
             conn.send({ type: 'password-accepted' })
+            // Now that the user is authenticated, announce their join
+            // (deferred from the earlier 'join' handler).
+            if (connState.pendingJoinAnnounce) {
+              connState.pendingJoinAnnounce = false
+              announceJoin(connState, connId)
+            }
             await sendManifest(conn)
           } else {
             conn.send({ type: 'password-wrong' })
@@ -394,17 +433,16 @@ export function useSender() {
             try { otherCs.conn.close() } catch {}
             connectionsRef.current.delete(otherId)
           }
-          setRecipientCount(connectionsRef.current.size)
 
-          setMessages(prev => [...prev, { text: `${data.nickname} joined`, from: 'system', time: Date.now(), self: false }])
-          // Broadcast online count + join to all receivers
-          const count = connectionsRef.current.size + 1
-          connectionsRef.current.forEach((cs, id) => {
-            try { cs.conn.send({ type: 'online-count', count }) } catch {}
-            if (id !== connId) {
-              try { cs.conn.send({ type: 'system-msg', text: `${data.nickname} joined`, time: Date.now() }) } catch {}
-            }
-          })
+          // If the portal is password-protected, defer the "joined"
+          // announcement until after the password is accepted — otherwise
+          // the sender sees "joined" + "connected" for an unauthenticated
+          // user who may never get in.
+          if (passwordRef.current) {
+            connState.pendingJoinAnnounce = true
+          } else {
+            announceJoin(connState, connId)
+          }
           return
         }
 

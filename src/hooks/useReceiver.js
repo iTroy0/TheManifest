@@ -156,11 +156,15 @@ export function useReceiver(peerId) {
             setPendingFiles(prev => ({ ...prev, [lastFileIndexRef.current]: true }))
           } else {
             setStatus('connected')
-            // Timeout if manifest never arrives
+            // Timeout if manifest never arrives — but NOT if the portal is
+            // password-protected (the manifest is intentionally withheld
+            // until the password is accepted, which can take longer than 15s).
             const manifestTimeout = setTimeout(() => {
-              if (!manifestRef.current && !destroyedRef.current) setStatus('closed')
+              if (!manifestRef.current && !destroyedRef.current && !passwordRequired) setStatus('closed')
             }, 15000)
-            const origManifestHandler = (d) => { if (d.type === 'manifest') clearTimeout(manifestTimeout) }
+            const origManifestHandler = (d) => {
+              if (d.type === 'manifest' || d.type === 'password-required') clearTimeout(manifestTimeout)
+            }
             conn.on('data', origManifestHandler)
           }
           conn.send({ type: 'join', nickname })
@@ -190,15 +194,22 @@ export function useReceiver(peerId) {
 
           // Key exchange: receive sender's public key, send ours back
           if (data.type === 'public-key') {
-            if (!keyPairRef.current) {
-              keyPairRef.current = await generateKeyPair()
+            try {
+              if (!keyPairRef.current) {
+                keyPairRef.current = await generateKeyPair()
+              }
+              const pubKeyBytes = await exportPublicKey(keyPairRef.current.publicKey)
+              conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
+              // importPublicKey + deriveSharedKey will throw if the remote
+              // sends an invalid P-256 point, preventing weak/predictable
+              // key derivation from crafted input.
+              const remotePubKey = await importPublicKey(new Uint8Array(data.key))
+              decryptKeyRef.current = await deriveSharedKey(keyPairRef.current.privateKey, remotePubKey)
+              const fp = await getKeyFingerprint(pubKeyBytes, new Uint8Array(data.key))
+              setFingerprint(fp)
+            } catch {
+              setStatus('error')
             }
-            const pubKeyBytes = await exportPublicKey(keyPairRef.current.publicKey)
-            conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
-            const remotePubKey = await importPublicKey(new Uint8Array(data.key))
-            decryptKeyRef.current = await deriveSharedKey(keyPairRef.current.privateKey, remotePubKey)
-            const fp = await getKeyFingerprint(pubKeyBytes, new Uint8Array(data.key))
-            setFingerprint(fp)
             return
           }
 
@@ -743,19 +754,20 @@ export function useReceiver(peerId) {
     }
 
     // Inline chat image chunk — append to the in-flight image buffer.
-    // We branch BEFORE the file-progress bookkeeping because images aren't
-    // tracked in fileMetaRef.
     if (fileIndex === CHAT_IMAGE_FILE_INDEX) {
       const inFlight = inProgressImageRef.current
       if (inFlight) {
-        // plainData may be ArrayBuffer or TypedArray; Blob accepts both
-        // but normalize to Uint8Array for consistency.
         const bytes = plainData instanceof Uint8Array ? plainData : new Uint8Array(plainData)
         inFlight.chunks.push(bytes)
         inFlight.receivedBytes += bytes.byteLength
       }
       return
     }
+
+    // Reject chunk indices outside the manifest range — a crafted
+    // fileIndex could write to arbitrary streamsRef/chunksRef slots.
+    const manifestFiles = manifestRef.current?.files
+    if (!manifestFiles || fileIndex >= manifestFiles.length) return
 
     lastFileIndexRef.current = fileIndex
     lastChunkIndexRef.current = chunkIndex + 1
