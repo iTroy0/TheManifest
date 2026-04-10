@@ -142,45 +142,35 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
     
     let rafId = null
-    let initialHeight = window.innerHeight
     
-    function handleResize() {
+    function handleViewportChange() {
       if (rafId) cancelAnimationFrame(rafId)
       
       rafId = requestAnimationFrame(() => {
-        if (isIOS) {
-          // iOS: Use 100dvh and let CSS handle it - don't fight the browser
-          // Just ensure the container uses dynamic viewport units
-          setViewportHeight('100dvh')
-        } else {
-          // Android: Use visualViewport height directly
-          setViewportHeight(`${vv.height}px`)
-        }
+        // Use visualViewport height which accounts for keyboard on both platforms
+        const height = vv.height
+        setViewportHeight(`${height}px`)
         
-        // Scroll to bottom after keyboard change settles
+        // Scroll messages to bottom after keyboard change
         if (scrollRef.current && isNearBottom) {
-          setTimeout(() => {
-            scrollRef.current?.scrollTo({ 
-              top: scrollRef.current.scrollHeight, 
-              behavior: 'instant' 
-            })
-          }, 50)
+          scrollRef.current.scrollTo({ 
+            top: scrollRef.current.scrollHeight, 
+            behavior: 'instant' 
+          })
         }
       })
     }
     
     // Set initial height
-    if (isIOS) {
-      setViewportHeight('100dvh')
-    } else {
-      setViewportHeight(`${vv.height}px`)
-    }
+    setViewportHeight(`${vv.height}px`)
     
-    vv.addEventListener('resize', handleResize)
+    vv.addEventListener('resize', handleViewportChange)
+    vv.addEventListener('scroll', handleViewportChange)
     
     return () => {
       if (rafId) cancelAnimationFrame(rafId)
-      vv.removeEventListener('resize', handleResize)
+      vv.removeEventListener('resize', handleViewportChange)
+      vv.removeEventListener('scroll', handleViewportChange)
     }
   }, [isFullscreen, isNearBottom])
 
@@ -316,12 +306,12 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     <div 
       className={`animate-fade-in-up ${
         isFullscreen 
-          ? 'fixed inset-0 z-50 bg-bg flex flex-col' 
+          ? 'fixed left-0 right-0 bottom-0 z-50 bg-bg flex flex-col' 
           : 'glow-card overflow-hidden transition-all duration-300'
       }`}
       style={isFullscreen ? { 
         height: viewportHeight,
-        maxHeight: viewportHeight,
+        top: 0,
         paddingBottom: 'env(safe-area-inset-bottom, 0)'
       } : undefined}
       onClick={isFullscreen && showMenu ? () => setShowMenu(false) : undefined}
@@ -807,18 +797,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 data-1p-ignore="true"
                 value={text}
                 onChange={handleTyping}
-                onFocus={() => {
-                  // On iOS, scroll input into view after keyboard appears
-                  if (isFullscreen) {
-                    setTimeout(() => {
-                      textInputRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
-                      // Also scroll messages to bottom
-                      if (scrollRef.current) {
-                        scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'instant' })
-                      }
-                    }, 300)
-                  }
-                }}
                 placeholder={disabled ? 'Connect to chat' : 'Message...'}
                 maxLength={2000}
                 disabled={disabled}
