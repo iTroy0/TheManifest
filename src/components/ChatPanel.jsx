@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2 } from 'lucide-react'
+import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, Minimize2 } from 'lucide-react'
 import { sounds, canNotify, requestNotificationPermission, alertNewMessage } from '../utils/notifications'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
@@ -58,6 +58,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const [isNearBottom, setIsNearBottom] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [notifyEnabled, setNotifyEnabled] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
   const scrollRef = useRef(null)
   const prevLen = useRef(messages.length)
   const imageInputRef = useRef(null)
@@ -115,6 +116,18 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   useEffect(() => {
     if (open) setUnread(0)
   }, [open])
+
+  // Lock body scroll when fullscreen on mobile
+  useEffect(() => {
+    if (isFullscreen) {
+      document.body.style.overflow = 'hidden'
+      // Auto-open the panel when entering fullscreen
+      setOpen(true)
+    } else {
+      document.body.style.overflow = ''
+    }
+    return () => { document.body.style.overflow = '' }
+  }, [isFullscreen])
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -245,10 +258,16 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   }, [messages])
 
   return (
-    <div className="glow-card overflow-hidden animate-fade-in-up">
+    <div className={`animate-fade-in-up transition-all duration-300 ${
+      isFullscreen 
+        ? 'fixed inset-0 z-50 bg-bg flex flex-col' 
+        : 'glow-card overflow-hidden'
+    }`}>
       <button
-        onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center justify-between p-4 text-left group hover:bg-surface-2/30 transition-colors"
+        onClick={() => !isFullscreen && setOpen(o => !o)}
+        className={`w-full flex items-center justify-between p-4 text-left group transition-colors ${
+          isFullscreen ? 'border-b border-border shrink-0' : 'hover:bg-surface-2/30'
+        }`}
       >
         <div className="flex items-center gap-3">
           <div className="relative">
@@ -281,13 +300,27 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
-          <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
+          {/* Fullscreen toggle - mobile only */}
+          <button
+            onClick={(e) => { e.stopPropagation(); setIsFullscreen(f => !f) }}
+            className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors sm:hidden"
+            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen chat'}
+          >
+            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+          {!isFullscreen && (
+            <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
+          )}
         </div>
       </button>
 
-      <div className={`grid transition-all duration-400 ease-in-out ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-        <div className="overflow-hidden">
-          <div className="px-3 sm:px-4 pb-4 space-y-3">
+      <div className={`transition-all duration-400 ease-in-out ${
+        isFullscreen 
+          ? 'flex-1 flex flex-col overflow-hidden' 
+          : `grid ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`
+      }`}>
+        <div className={isFullscreen ? 'flex-1 flex flex-col overflow-hidden' : 'overflow-hidden'}>
+          <div className={`space-y-3 ${isFullscreen ? 'flex-1 flex flex-col px-4 pb-4 overflow-hidden' : 'px-3 sm:px-4 pb-4'}`}>
             {/* Nickname editor + settings */}
             <div className="flex items-center justify-between gap-2">
               {onNicknameChange && (
@@ -347,7 +380,11 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             <div
               ref={scrollRef}
               onScroll={handleScroll}
-              className="relative max-h-[min(55vh,450px)] min-h-[180px] overflow-y-auto space-y-3 scrollbar-thin pr-1"
+              className={`relative overflow-y-auto space-y-3 scrollbar-thin pr-1 ${
+                isFullscreen 
+                  ? 'flex-1 min-h-0' 
+                  : 'max-h-[min(55vh,450px)] min-h-[180px]'
+              }`}
               onClick={() => { setReactingIdx(null); setActiveMsg(null) }}
             >
               {messages.length === 0 && (
