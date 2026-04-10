@@ -137,42 +137,50 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     const vv = window.visualViewport
     if (!vv) return
     
-    let lastHeight = vv.height
+    // Detect iOS
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+    
     let rafId = null
+    let initialHeight = window.innerHeight
     
     function handleResize() {
-      // Cancel any pending animation frame
       if (rafId) cancelAnimationFrame(rafId)
       
-      // Use requestAnimationFrame to batch updates and prevent jumping
       rafId = requestAnimationFrame(() => {
-        const newHeight = vv.height
-        // Only update if height actually changed significantly (>10px)
-        if (Math.abs(newHeight - lastHeight) > 10) {
-          lastHeight = newHeight
-          setViewportHeight(`${newHeight}px`)
-          
-          // Smoothly scroll to bottom after height change settles
-          if (scrollRef.current && isNearBottom) {
-            scrollRef.current.scrollTo({ 
+        if (isIOS) {
+          // iOS: Use 100dvh and let CSS handle it - don't fight the browser
+          // Just ensure the container uses dynamic viewport units
+          setViewportHeight('100dvh')
+        } else {
+          // Android: Use visualViewport height directly
+          setViewportHeight(`${vv.height}px`)
+        }
+        
+        // Scroll to bottom after keyboard change settles
+        if (scrollRef.current && isNearBottom) {
+          setTimeout(() => {
+            scrollRef.current?.scrollTo({ 
               top: scrollRef.current.scrollHeight, 
               behavior: 'instant' 
             })
-          }
+          }, 50)
         }
       })
     }
     
     // Set initial height
-    setViewportHeight(`${vv.height}px`)
+    if (isIOS) {
+      setViewportHeight('100dvh')
+    } else {
+      setViewportHeight(`${vv.height}px`)
+    }
     
     vv.addEventListener('resize', handleResize)
-    vv.addEventListener('scroll', handleResize)
     
     return () => {
       if (rafId) cancelAnimationFrame(rafId)
       vv.removeEventListener('resize', handleResize)
-      vv.removeEventListener('scroll', handleResize)
     }
   }, [isFullscreen, isNearBottom])
 
@@ -308,13 +316,13 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     <div 
       className={`animate-fade-in-up ${
         isFullscreen 
-          ? 'fixed left-0 right-0 top-0 z-50 bg-bg flex flex-col will-change-[height]' 
+          ? 'fixed inset-0 z-50 bg-bg flex flex-col' 
           : 'glow-card overflow-hidden transition-all duration-300'
       }`}
       style={isFullscreen ? { 
         height: viewportHeight,
-        paddingBottom: 'env(safe-area-inset-bottom, 0)',
-        transition: 'none'
+        maxHeight: viewportHeight,
+        paddingBottom: 'env(safe-area-inset-bottom, 0)'
       } : undefined}
       onClick={isFullscreen && showMenu ? () => setShowMenu(false) : undefined}
     >
@@ -799,6 +807,18 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 data-1p-ignore="true"
                 value={text}
                 onChange={handleTyping}
+                onFocus={() => {
+                  // On iOS, scroll input into view after keyboard appears
+                  if (isFullscreen) {
+                    setTimeout(() => {
+                      textInputRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
+                      // Also scroll messages to bottom
+                      if (scrollRef.current) {
+                        scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'instant' })
+                      }
+                    }, 300)
+                  }
+                }}
                 placeholder={disabled ? 'Connect to chat' : 'Message...'}
                 maxLength={2000}
                 disabled={disabled}
