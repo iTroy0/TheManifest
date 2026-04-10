@@ -787,11 +787,9 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               </button>
               <input
                 ref={textInputRef}
-                type="text"
-                name="msg_val_x7"
-                id="msg_val_x7"
+                type="search"
                 inputMode="text"
-                autoComplete="nope"
+                autoComplete="one-time-code"
                 autoCorrect="on"
                 autoCapitalize="sentences"
                 spellCheck="true"
@@ -799,7 +797,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 data-form-type="other"
                 data-lpignore="true"
                 data-1p-ignore="true"
-                aria-autocomplete="none"
                 value={text}
                 onChange={handleTyping}
                 placeholder={disabled ? 'Connect to chat' : 'Message...'}
@@ -807,7 +804,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 disabled={disabled}
                 className="flex-1 min-w-0 bg-bg border border-border rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 font-mono text-sm text-text
                   placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-all
-                  disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px]"
+                  disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px]
+                  [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
               />
               <button
                 type="submit"
