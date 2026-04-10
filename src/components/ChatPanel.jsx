@@ -143,6 +143,17 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
     if (!file || !file.type.startsWith('image/')) return
     e.target.value = ''
     try {
+      // GIFs: skip compression to preserve animation (5MB limit)
+      if (file.type === 'image/gif') {
+        if (file.size > 5 * 1024 * 1024) {
+          alert('GIF is too large (max 5MB)')
+          return
+        }
+        const reader = new FileReader()
+        reader.onload = () => setImagePreview(reader.result)
+        reader.readAsDataURL(file)
+        return
+      }
       const compressed = await compressImage(file)
       setImagePreview(compressed)
     } catch { /* invalid image */ }
@@ -155,7 +166,16 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
       if (!item) return
       e.preventDefault()
       const file = item.getAsFile()
-      if (file) compressImage(file).then(setImagePreview).catch(() => {})
+      if (!file) return
+      // GIFs: skip compression to preserve animation
+      if (file.type === 'image/gif') {
+        if (file.size > 5 * 1024 * 1024) return // silently ignore large GIFs on paste
+        const reader = new FileReader()
+        reader.onload = () => setImagePreview(reader.result)
+        reader.readAsDataURL(file)
+        return
+      }
+      compressImage(file).then(setImagePreview).catch(() => {})
     }
     window.addEventListener('paste', handlePaste)
     return () => window.removeEventListener('paste', handlePaste)
