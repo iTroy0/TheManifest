@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2 } from 'lucide-react'
+import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, MoreVertical } from 'lucide-react'
 import { sounds, canNotify, requestNotificationPermission, alertNewMessage } from '../utils/notifications'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
@@ -58,6 +58,9 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const [isNearBottom, setIsNearBottom] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [notifyEnabled, setNotifyEnabled] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [showMenu, setShowMenu] = useState(false)
+  const [viewportHeight, setViewportHeight] = useState('100dvh')
   const scrollRef = useRef(null)
   const prevLen = useRef(messages.length)
   const imageInputRef = useRef(null)
@@ -115,6 +118,63 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   useEffect(() => {
     if (open) setUnread(0)
   }, [open])
+
+  // Lock body scroll when fullscreen on mobile
+  useEffect(() => {
+    if (isFullscreen) {
+      document.body.style.overflow = 'hidden'
+      // Auto-open the panel when entering fullscreen
+      setOpen(true)
+    } else {
+      document.body.style.overflow = ''
+    }
+    return () => { document.body.style.overflow = '' }
+  }, [isFullscreen])
+
+  // Handle visual viewport changes (keyboard open/close on mobile)
+  useEffect(() => {
+    if (!isFullscreen) return
+    const vv = window.visualViewport
+    if (!vv) return
+    
+    let lastHeight = vv.height
+    let rafId = null
+    
+    function handleResize() {
+      // Cancel any pending animation frame
+      if (rafId) cancelAnimationFrame(rafId)
+      
+      // Use requestAnimationFrame to batch updates and prevent jumping
+      rafId = requestAnimationFrame(() => {
+        const newHeight = vv.height
+        // Only update if height actually changed significantly (>10px)
+        if (Math.abs(newHeight - lastHeight) > 10) {
+          lastHeight = newHeight
+          setViewportHeight(`${newHeight}px`)
+          
+          // Smoothly scroll to bottom after height change settles
+          if (scrollRef.current && isNearBottom) {
+            scrollRef.current.scrollTo({ 
+              top: scrollRef.current.scrollHeight, 
+              behavior: 'instant' 
+            })
+          }
+        }
+      })
+    }
+    
+    // Set initial height
+    setViewportHeight(`${vv.height}px`)
+    
+    vv.addEventListener('resize', handleResize)
+    vv.addEventListener('scroll', handleResize)
+    
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId)
+      vv.removeEventListener('resize', handleResize)
+      vv.removeEventListener('scroll', handleResize)
+    }
+  }, [isFullscreen, isNearBottom])
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -245,50 +305,197 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   }, [messages])
 
   return (
-    <div className="glow-card overflow-hidden animate-fade-in-up">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center justify-between p-4 text-left group hover:bg-surface-2/30 transition-colors"
-      >
-        <div className="flex items-center gap-3">
-          <div className="relative">
-            <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center">
-              <MessageCircle className="w-4 h-4 text-accent" />
-            </div>
-            {unread > 0 && (
-              <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[18px] h-[18px] rounded-full bg-accent text-bg font-mono text-[10px] font-bold px-1 shadow-lg shadow-accent/30 animate-pulse">
-                {unread > 99 ? '99+' : unread}
-              </span>
-            )}
-          </div>
-          <div>
-            <span className="font-mono text-sm text-text font-medium">Chat</span>
+    <div 
+      className={`animate-fade-in-up ${
+        isFullscreen 
+          ? 'fixed left-0 right-0 top-0 z-50 bg-bg flex flex-col will-change-[height]' 
+          : 'glow-card overflow-hidden transition-all duration-300'
+      }`}
+      style={isFullscreen ? { 
+        height: viewportHeight,
+        paddingBottom: 'env(safe-area-inset-bottom, 0)',
+        transition: 'none'
+      } : undefined}
+      onClick={isFullscreen && showMenu ? () => setShowMenu(false) : undefined}
+    >
+      {/* Header - native messaging app style when fullscreen */}
+      {isFullscreen ? (
+        <div 
+          className="flex items-center justify-between px-2 border-b border-border shrink-0 bg-surface/80 backdrop-blur-sm"
+          style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 8px)', paddingBottom: '8px' }}
+        >
+          {/* Left: Back button */}
+          <button
+            onClick={() => setIsFullscreen(false)}
+            className="flex items-center gap-0.5 px-2 py-2 rounded-xl text-accent active:bg-accent/10 transition-colors"
+          >
+            <ChevronDown className="w-5 h-5 rotate-90" />
+            <span className="font-mono text-sm font-medium">Back</span>
+          </button>
+          
+          {/* Center: Title and online count */}
+          <div className="absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none">
+            <span className="font-mono text-base text-text font-semibold">Chat</span>
             {onlineCount > 0 && (
-              <div className="flex items-center gap-1 mt-0.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-accent" />
                 <span className="font-mono text-[10px] text-muted">{onlineCount} online</span>
               </div>
             )}
           </div>
-        </div>
-        <div className="flex items-center gap-1">
-          {onClearMessages && messages.length > 0 && (
+          
+          {/* Right: Three-dot menu */}
+          <div className="relative">
             <button
-              onClick={(e) => { e.stopPropagation(); onClearMessages() }}
-              className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
-              title="Clear messages"
+              onClick={(e) => { e.stopPropagation(); setShowMenu(m => !m) }}
+              className="p-2.5 rounded-xl text-muted active:bg-surface-2 transition-colors"
             >
-              <Trash2 className="w-3.5 h-3.5" />
+              <MoreVertical className="w-5 h-5" />
             </button>
-          )}
-          <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
+            
+            {/* Dropdown menu */}
+            {showMenu && (
+              <div 
+                className="absolute right-0 top-full mt-1 w-56 bg-surface border border-border rounded-xl shadow-xl overflow-hidden animate-fade-in-up z-50"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Nickname section */}
+                {onNicknameChange && (
+                  <div className="p-3 border-b border-border">
+                    <label className="font-mono text-[10px] text-muted uppercase tracking-wide mb-2 block">Nickname</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && nameChanged && handleSetName()}
+                        maxLength={20}
+                        placeholder="Enter name"
+                        className="flex-1 min-w-0 bg-bg border border-border rounded-lg px-2.5 py-2 font-mono text-sm text-text placeholder:text-muted/50 focus:outline-none focus:border-accent/50"
+                      />
+                      {nameChanged && (
+                        <button
+                          onClick={() => { handleSetName(); setShowMenu(false) }}
+                          className="shrink-0 p-2 rounded-lg bg-accent text-bg active:scale-95 transition-transform"
+                        >
+                          <Check className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+                
+                {/* Toggle options */}
+                <div className="py-1">
+                  <button
+                    onClick={() => setSoundEnabled(s => !s)}
+                    className="w-full flex items-center justify-between px-4 py-3 active:bg-surface-2 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      {soundEnabled ? <Volume2 className="w-4 h-4 text-accent" /> : <VolumeX className="w-4 h-4 text-muted" />}
+                      <span className="font-mono text-sm text-text">Sound</span>
+                    </div>
+                    <div className={`w-10 h-6 rounded-full transition-colors ${soundEnabled ? 'bg-accent' : 'bg-border'}`}>
+                      <div className={`w-5 h-5 mt-0.5 rounded-full bg-white shadow transition-transform ${soundEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  
+                  <button
+                    onClick={async () => {
+                      if (!notifyEnabled && !canNotify()) {
+                        const granted = await requestNotificationPermission()
+                        if (granted) setNotifyEnabled(true)
+                      } else {
+                        setNotifyEnabled(n => !n)
+                      }
+                    }}
+                    className="w-full flex items-center justify-between px-4 py-3 active:bg-surface-2 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      {notifyEnabled ? <Bell className="w-4 h-4 text-accent" /> : <BellOff className="w-4 h-4 text-muted" />}
+                      <span className="font-mono text-sm text-text">Notifications</span>
+                    </div>
+                    <div className={`w-10 h-6 rounded-full transition-colors ${notifyEnabled ? 'bg-accent' : 'bg-border'}`}>
+                      <div className={`w-5 h-5 mt-0.5 rounded-full bg-white shadow transition-transform ${notifyEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                </div>
+                
+                {/* Clear messages */}
+                {onClearMessages && messages.length > 0 && (
+                  <>
+                    <div className="border-t border-border" />
+                    <button
+                      onClick={() => { onClearMessages(); setShowMenu(false) }}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-danger active:bg-danger/10 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      <span className="font-mono text-sm">Clear Messages</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </div>
-      </button>
+      ) : (
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="w-full flex items-center justify-between p-4 text-left group hover:bg-surface-2/30 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center">
+                <MessageCircle className="w-4 h-4 text-accent" />
+              </div>
+              {unread > 0 && (
+                <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[18px] h-[18px] rounded-full bg-accent text-bg font-mono text-[10px] font-bold px-1 shadow-lg shadow-accent/30 animate-pulse">
+                  {unread > 99 ? '99+' : unread}
+                </span>
+              )}
+            </div>
+            <div>
+              <span className="font-mono text-sm text-text font-medium">Chat</span>
+              {onlineCount > 0 && (
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+                  <span className="font-mono text-[10px] text-muted">{onlineCount} online</span>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            {onClearMessages && messages.length > 0 && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onClearMessages() }}
+                className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
+                title="Clear messages"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {/* Fullscreen toggle - mobile only */}
+            <button
+              onClick={(e) => { e.stopPropagation(); setIsFullscreen(true) }}
+              className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors sm:hidden"
+              title="Fullscreen chat"
+            >
+              <Maximize2 className="w-4 h-4" />
+            </button>
+            <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
+          </div>
+        </button>
+      )}
 
-      <div className={`grid transition-all duration-400 ease-in-out ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-        <div className="overflow-hidden">
-          <div className="px-3 sm:px-4 pb-4 space-y-3">
-            {/* Nickname editor + settings */}
+      <div className={`transition-all duration-400 ease-in-out ${
+        isFullscreen 
+          ? 'flex-1 flex flex-col overflow-hidden' 
+          : `grid ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`
+      }`}>
+        <div className={isFullscreen ? 'flex-1 flex flex-col overflow-hidden' : 'overflow-hidden'}>
+          <div className={`${isFullscreen ? 'flex-1 flex flex-col overflow-hidden' : 'px-3 sm:px-4 pb-4 space-y-3'}`}>
+            {/* Nickname editor + settings - hidden in fullscreen (moved to menu) */}
+            {!isFullscreen && (
             <div className="flex items-center justify-between gap-2">
               {onNicknameChange && (
                 <div className="flex items-center gap-2">
@@ -342,13 +549,18 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 </button>
               </div>
             </div>
+            )}
 
             {/* Messages */}
             <div
               ref={scrollRef}
               onScroll={handleScroll}
-              className="relative max-h-[min(55vh,450px)] min-h-[180px] overflow-y-auto space-y-3 scrollbar-thin pr-1"
-              onClick={() => { setReactingIdx(null); setActiveMsg(null) }}
+              className={`relative overflow-y-auto space-y-3 scrollbar-thin overscroll-contain ${
+                isFullscreen 
+                  ? 'flex-1 min-h-0 px-4 py-3 bg-bg' 
+                  : 'max-h-[min(55vh,450px)] min-h-[180px] pr-1'
+              }`}
+              onClick={() => { setReactingIdx(null); setActiveMsg(null); if (showMenu) setShowMenu(false) }}
             >
               {messages.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -514,51 +726,53 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               )}
             </div>
 
-            {/* Typing indicator */}
-            {typingText && (
-              <div className="flex items-center gap-2 px-1">
-                <div className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-surface-2/50 border border-border/50">
-                  <span className="font-mono text-[10px] text-muted-light">{typingText}</span>
-                  <TypingDots />
+            {/* Input section - sticky bottom in fullscreen */}
+            <div className={`shrink-0 ${isFullscreen ? 'bg-surface/80 backdrop-blur-sm border-t border-border' : 'space-y-2'}`}>
+              {/* Typing indicator */}
+              {typingText && (
+                <div className={`flex items-center gap-2 ${isFullscreen ? 'px-4 py-1.5' : 'px-1'}`}>
+                  <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface-2/50 border border-border/50">
+                    <span className="font-mono text-[10px] text-muted-light">{typingText}</span>
+                    <TypingDots />
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* Reply preview */}
-            {replyTo && (
-              <div className="flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-3 py-2 animate-fade-in-up">
-                <div className="w-1 h-8 bg-accent/60 rounded-full shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="font-mono text-[10px] text-accent font-medium">Replying to {replyTo.from}</p>
-                  <p className="text-xs text-muted truncate mt-0.5">{replyTo.text || 'Image'}</p>
+              {/* Reply preview */}
+              {replyTo && (
+                <div className={`flex items-center gap-2 bg-accent/5 animate-fade-in-up ${isFullscreen ? 'px-4 py-2 border-b border-accent/20' : 'px-3 py-2 border border-accent/20 rounded-xl'}`}>
+                  <div className="w-1 h-8 bg-accent/60 rounded-full shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-mono text-[10px] text-accent font-medium">Replying to {replyTo.from}</p>
+                    <p className="text-xs text-muted truncate mt-0.5">{replyTo.text || 'Image'}</p>
+                  </div>
+                  <button 
+                    onClick={() => setReplyTo(null)} 
+                    className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
-                <button 
-                  onClick={() => setReplyTo(null)} 
-                  className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            )}
+              )}
 
-            {/* Image preview */}
-            {imagePreview && (
-              <div className="relative inline-block animate-fade-in-up">
-                <img src={imagePreview.url || imagePreview} alt="Upload preview" className="h-24 rounded-xl border border-border shadow-sm object-cover" />
-                <button
-                  onClick={() => {
-                    if (imagePreview?.url?.startsWith('blob:')) URL.revokeObjectURL(imagePreview.url)
-                    setImagePreview(null)
-                  }}
-                  className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-danger text-white flex items-center justify-center shadow-md hover:bg-danger/90 transition-colors"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )}
+              {/* Image preview */}
+              {imagePreview && (
+                <div className={`relative inline-block animate-fade-in-up ${isFullscreen ? 'mx-4 my-2' : ''}`}>
+                  <img src={imagePreview.url || imagePreview} alt="Upload preview" className="h-20 rounded-xl border border-border shadow-sm object-cover" />
+                  <button
+                    onClick={() => {
+                      if (imagePreview?.url?.startsWith('blob:')) URL.revokeObjectURL(imagePreview.url)
+                      setImagePreview(null)
+                    }}
+                    className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-danger text-white flex items-center justify-center shadow-md hover:bg-danger/90 transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
 
-            {/* Input */}
-            <form onSubmit={handleSend} className="flex gap-1.5 sm:gap-2 items-end">
+              {/* Input form */}
+              <form onSubmit={handleSend} className={`flex gap-1.5 sm:gap-2 items-end ${isFullscreen ? 'px-3 py-2' : ''}`}>
               <input ref={imageInputRef} type="file" accept="image/*" onChange={handleImagePick} className="hidden" />
               <button
                 type="button"
@@ -573,7 +787,16 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               </button>
               <input
                 ref={textInputRef}
-                type="text"
+                type="search"
+                inputMode="text"
+                autoComplete="one-time-code"
+                autoCorrect="on"
+                autoCapitalize="sentences"
+                spellCheck="true"
+                enterKeyHint="send"
+                data-form-type="other"
+                data-lpignore="true"
+                data-1p-ignore="true"
                 value={text}
                 onChange={handleTyping}
                 placeholder={disabled ? 'Connect to chat' : 'Message...'}
@@ -581,7 +804,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 disabled={disabled}
                 className="flex-1 min-w-0 bg-bg border border-border rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 font-mono text-sm text-text
                   placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-all
-                  disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px]"
+                  disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px]
+                  [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
               />
               <button
                 type="submit"
@@ -596,6 +820,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 <Send className="w-4 h-4" />
               </button>
             </form>
+            </div>
           </div>
         </div>
       </div>
