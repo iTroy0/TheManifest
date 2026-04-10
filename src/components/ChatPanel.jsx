@@ -137,21 +137,44 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     const vv = window.visualViewport
     if (!vv) return
     
+    let lastHeight = vv.height
+    let rafId = null
+    
     function handleResize() {
-      // When keyboard opens, visualViewport.height shrinks
-      setViewportHeight(`${vv.height}px`)
-      // Scroll to bottom when keyboard opens to keep input visible
-      if (scrollRef.current) {
-        setTimeout(() => {
-          scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'instant' })
-        }, 50)
-      }
+      // Cancel any pending animation frame
+      if (rafId) cancelAnimationFrame(rafId)
+      
+      // Use requestAnimationFrame to batch updates and prevent jumping
+      rafId = requestAnimationFrame(() => {
+        const newHeight = vv.height
+        // Only update if height actually changed significantly (>10px)
+        if (Math.abs(newHeight - lastHeight) > 10) {
+          lastHeight = newHeight
+          setViewportHeight(`${newHeight}px`)
+          
+          // Smoothly scroll to bottom after height change settles
+          if (scrollRef.current && isNearBottom) {
+            scrollRef.current.scrollTo({ 
+              top: scrollRef.current.scrollHeight, 
+              behavior: 'instant' 
+            })
+          }
+        }
+      })
     }
     
-    handleResize()
+    // Set initial height
+    setViewportHeight(`${vv.height}px`)
+    
     vv.addEventListener('resize', handleResize)
-    return () => vv.removeEventListener('resize', handleResize)
-  }, [isFullscreen])
+    vv.addEventListener('scroll', handleResize)
+    
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId)
+      vv.removeEventListener('resize', handleResize)
+      vv.removeEventListener('scroll', handleResize)
+    }
+  }, [isFullscreen, isNearBottom])
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -283,14 +306,15 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
 
   return (
     <div 
-      className={`animate-fade-in-up transition-all duration-300 ${
+      className={`animate-fade-in-up ${
         isFullscreen 
-          ? 'fixed left-0 right-0 top-0 z-50 bg-bg flex flex-col' 
-          : 'glow-card overflow-hidden'
+          ? 'fixed left-0 right-0 top-0 z-50 bg-bg flex flex-col will-change-[height]' 
+          : 'glow-card overflow-hidden transition-all duration-300'
       }`}
       style={isFullscreen ? { 
         height: viewportHeight,
-        paddingBottom: 'env(safe-area-inset-bottom, 0)'
+        paddingBottom: 'env(safe-area-inset-bottom, 0)',
+        transition: 'none'
       } : undefined}
       onClick={isFullscreen && showMenu ? () => setShowMenu(false) : undefined}
     >
@@ -772,6 +796,10 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 autoCapitalize="sentences"
                 spellCheck="true"
                 enterKeyHint="send"
+                data-form-type="other"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                aria-autocomplete="none"
                 value={text}
                 onChange={handleTyping}
                 placeholder={disabled ? 'Connect to chat' : 'Message...'}
