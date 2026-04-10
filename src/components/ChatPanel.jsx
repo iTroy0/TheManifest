@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, Minimize2 } from 'lucide-react'
+import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, Minimize2, MoreVertical } from 'lucide-react'
 import { sounds, canNotify, requestNotificationPermission, alertNewMessage } from '../utils/notifications'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
@@ -59,6 +59,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [notifyEnabled, setNotifyEnabled] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [showMenu, setShowMenu] = useState(false)
+  const [viewportHeight, setViewportHeight] = useState('100dvh')
   const scrollRef = useRef(null)
   const prevLen = useRef(messages.length)
   const imageInputRef = useRef(null)
@@ -127,6 +129,28 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       document.body.style.overflow = ''
     }
     return () => { document.body.style.overflow = '' }
+  }, [isFullscreen])
+
+  // Handle visual viewport changes (keyboard open/close on mobile)
+  useEffect(() => {
+    if (!isFullscreen) return
+    const vv = window.visualViewport
+    if (!vv) return
+    
+    function handleResize() {
+      // When keyboard opens, visualViewport.height shrinks
+      setViewportHeight(`${vv.height}px`)
+      // Scroll to bottom when keyboard opens to keep input visible
+      if (scrollRef.current) {
+        setTimeout(() => {
+          scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'instant' })
+        }, 50)
+      }
+    }
+    
+    handleResize()
+    vv.addEventListener('resize', handleResize)
+    return () => vv.removeEventListener('resize', handleResize)
   }, [isFullscreen])
 
   const scrollToBottom = useCallback(() => {
@@ -258,46 +282,135 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   }, [messages])
 
   return (
-    <div className={`animate-fade-in-up transition-all duration-300 ${
-      isFullscreen 
-        ? 'fixed inset-0 z-50 bg-bg flex flex-col safe-area-inset' 
-        : 'glow-card overflow-hidden'
-    }`}
-    style={isFullscreen ? { paddingBottom: 'env(safe-area-inset-bottom, 0)' } : undefined}>
-      {/* Header - messaging app style when fullscreen */}
+    <div 
+      className={`animate-fade-in-up transition-all duration-300 ${
+        isFullscreen 
+          ? 'fixed left-0 right-0 top-0 z-50 bg-bg flex flex-col' 
+          : 'glow-card overflow-hidden'
+      }`}
+      style={isFullscreen ? { 
+        height: viewportHeight,
+        paddingBottom: 'env(safe-area-inset-bottom, 0)'
+      } : undefined}
+      onClick={isFullscreen && showMenu ? () => setShowMenu(false) : undefined}
+    >
+      {/* Header - native messaging app style when fullscreen */}
       {isFullscreen ? (
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0 bg-surface/50"
-          style={{ paddingTop: 'max(env(safe-area-inset-top, 0), 12px)' }}>
-          {/* Left: Close button */}
+        <div 
+          className="flex items-center justify-between px-2 border-b border-border shrink-0 bg-surface/80 backdrop-blur-sm"
+          style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 8px)', paddingBottom: '8px' }}
+        >
+          {/* Left: Back button */}
           <button
             onClick={() => setIsFullscreen(false)}
-            className="p-2 -ml-2 rounded-xl text-muted hover:text-accent hover:bg-accent/10 transition-colors"
-            title="Exit fullscreen"
+            className="flex items-center gap-0.5 px-2 py-2 rounded-xl text-accent active:bg-accent/10 transition-colors"
           >
-            <Minimize2 className="w-5 h-5" />
+            <ChevronDown className="w-5 h-5 rotate-90" />
+            <span className="font-mono text-sm font-medium">Back</span>
           </button>
           
           {/* Center: Title and online count */}
-          <div className="flex flex-col items-center">
-            <span className="font-mono text-sm text-text font-semibold">Chat</span>
+          <div className="absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none">
+            <span className="font-mono text-base text-text font-semibold">Chat</span>
             {onlineCount > 0 && (
               <div className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+                <span className="w-1.5 h-1.5 rounded-full bg-accent" />
                 <span className="font-mono text-[10px] text-muted">{onlineCount} online</span>
               </div>
             )}
           </div>
           
-          {/* Right: Clear messages */}
-          <div className="w-9 flex justify-end">
-            {onClearMessages && messages.length > 0 && (
-              <button
-                onClick={onClearMessages}
-                className="p-2 -mr-2 rounded-xl text-muted hover:text-danger hover:bg-danger/10 transition-colors"
-                title="Clear messages"
+          {/* Right: Three-dot menu */}
+          <div className="relative">
+            <button
+              onClick={(e) => { e.stopPropagation(); setShowMenu(m => !m) }}
+              className="p-2.5 rounded-xl text-muted active:bg-surface-2 transition-colors"
+            >
+              <MoreVertical className="w-5 h-5" />
+            </button>
+            
+            {/* Dropdown menu */}
+            {showMenu && (
+              <div 
+                className="absolute right-0 top-full mt-1 w-56 bg-surface border border-border rounded-xl shadow-xl overflow-hidden animate-fade-in-up z-50"
+                onClick={(e) => e.stopPropagation()}
               >
-                <Trash2 className="w-4 h-4" />
-              </button>
+                {/* Nickname section */}
+                {onNicknameChange && (
+                  <div className="p-3 border-b border-border">
+                    <label className="font-mono text-[10px] text-muted uppercase tracking-wide mb-2 block">Nickname</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && nameChanged && handleSetName()}
+                        maxLength={20}
+                        placeholder="Enter name"
+                        className="flex-1 min-w-0 bg-bg border border-border rounded-lg px-2.5 py-2 font-mono text-sm text-text placeholder:text-muted/50 focus:outline-none focus:border-accent/50"
+                      />
+                      {nameChanged && (
+                        <button
+                          onClick={() => { handleSetName(); setShowMenu(false) }}
+                          className="shrink-0 p-2 rounded-lg bg-accent text-bg active:scale-95 transition-transform"
+                        >
+                          <Check className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+                
+                {/* Toggle options */}
+                <div className="py-1">
+                  <button
+                    onClick={() => setSoundEnabled(s => !s)}
+                    className="w-full flex items-center justify-between px-4 py-3 active:bg-surface-2 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      {soundEnabled ? <Volume2 className="w-4 h-4 text-accent" /> : <VolumeX className="w-4 h-4 text-muted" />}
+                      <span className="font-mono text-sm text-text">Sound</span>
+                    </div>
+                    <div className={`w-10 h-6 rounded-full transition-colors ${soundEnabled ? 'bg-accent' : 'bg-border'}`}>
+                      <div className={`w-5 h-5 mt-0.5 rounded-full bg-white shadow transition-transform ${soundEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  
+                  <button
+                    onClick={async () => {
+                      if (!notifyEnabled && !canNotify()) {
+                        const granted = await requestNotificationPermission()
+                        if (granted) setNotifyEnabled(true)
+                      } else {
+                        setNotifyEnabled(n => !n)
+                      }
+                    }}
+                    className="w-full flex items-center justify-between px-4 py-3 active:bg-surface-2 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      {notifyEnabled ? <Bell className="w-4 h-4 text-accent" /> : <BellOff className="w-4 h-4 text-muted" />}
+                      <span className="font-mono text-sm text-text">Notifications</span>
+                    </div>
+                    <div className={`w-10 h-6 rounded-full transition-colors ${notifyEnabled ? 'bg-accent' : 'bg-border'}`}>
+                      <div className={`w-5 h-5 mt-0.5 rounded-full bg-white shadow transition-transform ${notifyEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                </div>
+                
+                {/* Clear messages */}
+                {onClearMessages && messages.length > 0 && (
+                  <>
+                    <div className="border-t border-border" />
+                    <button
+                      onClick={() => { onClearMessages(); setShowMenu(false) }}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-danger active:bg-danger/10 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      <span className="font-mono text-sm">Clear Messages</span>
+                    </button>
+                  </>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -357,8 +470,9 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       }`}>
         <div className={isFullscreen ? 'flex-1 flex flex-col overflow-hidden' : 'overflow-hidden'}>
           <div className={`${isFullscreen ? 'flex-1 flex flex-col overflow-hidden' : 'px-3 sm:px-4 pb-4 space-y-3'}`}>
-            {/* Nickname editor + settings */}
-            <div className={`flex items-center justify-between gap-2 ${isFullscreen ? 'px-4 py-3 border-b border-border bg-surface/50 shrink-0' : ''}`}>
+            {/* Nickname editor + settings - hidden in fullscreen (moved to menu) */}
+            {!isFullscreen && (
+            <div className="flex items-center justify-between gap-2">
               {onNicknameChange && (
                 <div className="flex items-center gap-2">
                   <div className="flex items-center gap-2 p-2 bg-surface-2 rounded-lg border border-border">
@@ -411,17 +525,18 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 </button>
               </div>
             </div>
+            )}
 
             {/* Messages */}
             <div
               ref={scrollRef}
               onScroll={handleScroll}
-              className={`relative overflow-y-auto space-y-3 scrollbar-thin ${
+              className={`relative overflow-y-auto space-y-3 scrollbar-thin overscroll-contain ${
                 isFullscreen 
-                  ? 'flex-1 min-h-0 px-4 py-3' 
+                  ? 'flex-1 min-h-0 px-4 py-3 bg-bg' 
                   : 'max-h-[min(55vh,450px)] min-h-[180px] pr-1'
               }`}
-              onClick={() => { setReactingIdx(null); setActiveMsg(null) }}
+              onClick={() => { setReactingIdx(null); setActiveMsg(null); if (showMenu) setShowMenu(false) }}
             >
               {messages.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -588,7 +703,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             </div>
 
             {/* Input section - sticky bottom in fullscreen */}
-            <div className={`shrink-0 ${isFullscreen ? 'bg-surface/50 border-t border-border' : 'space-y-2'}`}>
+            <div className={`shrink-0 ${isFullscreen ? 'bg-surface/80 backdrop-blur-sm border-t border-border' : 'space-y-2'}`}>
               {/* Typing indicator */}
               {typingText && (
                 <div className={`flex items-center gap-2 ${isFullscreen ? 'px-4 py-1.5' : 'px-1'}`}>
