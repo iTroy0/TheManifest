@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
 import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { STUN_ONLY } from '../utils/iceServers'
+import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { generateThumbnailAsync, generateVideoThumbnail, generateTextPreview, generateThumbnailsBatch } from '../utils/thumbnailWorker'
 
 async function buildManifestData(files, chatOnly) {
@@ -60,7 +61,6 @@ export function useSender() {
   const connectionsRef = useRef(new Map())
   const passwordRef = useRef(null)
   const chatOnlyRef = useRef(false)
-  const rttRef = useRef(null)
   // Blob URLs minted for chat images (local echo + relayed images) so we
   // can revoke them on session reset and avoid leaking memory.
   const imageBlobUrlsRef = useRef([])
@@ -152,58 +152,27 @@ export function useSender() {
         if (destroyed) return
         setStatus('connected')
 
-        // Start RTT polling + heartbeat
-        if (!rttRef.current) {
-          rttRef.current = setInterval(() => {
-            const conns = Array.from(connectionsRef.current.values())
-            const c = conns.find(cs => cs.conn?.peerConnection)
-            if (!c) return
-            c.conn.peerConnection.getStats().then(stats => {
-              stats.forEach(r => {
-                if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.currentRoundTripTime != null) {
-                  setRtt(Math.round(r.currentRoundTripTime * 1000))
-                }
-              })
-            }).catch(() => {})
-          }, 3000)
-        }
+        // RTT polling (one poller per connection — the first active one sets the UI)
+        connState.rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
 
-        // Heartbeat mechanism - send ping every 5s to detect zombie connections
-        connState.heartbeatInterval = setInterval(() => {
-          try {
-            conn.send({ type: 'ping', ts: Date.now() })
-          } catch {
-            // Connection dead, will be cleaned up by ICE state change
-          }
-        }, 5000)
-        // Treat any incoming traffic as proof of life — pongs alone are
-        // unreliable when the connection is busy ferrying large messages
-        // (e.g. multi-MB GIFs) on a slow relay path.
-        connState.lastSeen = Date.now()
-
-        // Check for missed activity (zombie connection detection) — generous
-        // 30s window so weak peers / slow relays don't get killed mid-transfer.
-        connState.heartbeatCheck = setInterval(() => {
-          if (Date.now() - connState.lastSeen > 30000) {
+        // Heartbeat — per-connection zombie detection
+        connState.heartbeat = setupHeartbeat(conn, {
+          onDead: () => {
             connState.abort.aborted = true
             const name = connState.nickname || 'A recipient'
             connectionsRef.current.delete(connId)
             setRecipientCount(connectionsRef.current.size)
             setMessages(prev => [...prev, { text: `${name} connection lost`, from: 'system', time: Date.now(), self: false }])
-            // Broadcast the corrected count to remaining receivers
             const newCount = connectionsRef.current.size + 1
             connectionsRef.current.forEach(cs => {
               try { cs.conn.send({ type: 'online-count', count: newCount }) } catch {}
             })
-            clearInterval(connState.heartbeatInterval)
-            clearInterval(connState.heartbeatCheck)
             if (connectionsRef.current.size === 0) {
-              if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
               setRtt(null)
               setStatus(prev => prev === 'done' ? prev : 'waiting')
             }
-          }
-        }, 5000)
+          },
+        })
 
         // Fast disconnect detection via ICE state
         const pc = conn.peerConnection
@@ -224,7 +193,7 @@ export function useSender() {
                 } catch {}
               })
               if (connectionsRef.current.size === 0) {
-                if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
+  
                 setRtt(null)
                 setStatus(prev => prev === 'done' ? prev : 'waiting')
               }
@@ -240,7 +209,7 @@ export function useSender() {
       conn.on('data', async (data) => {
         if (destroyed) return
         // Any incoming traffic from this connection is proof it's alive.
-        connState.lastSeen = Date.now()
+        if (connState.heartbeat) connState.heartbeat.markAlive()
 
         // Binary chunk packet — currently only chat-image chunks (the host
         // doesn't accept arbitrary file uploads from recipients). Dispatch
@@ -293,14 +262,9 @@ export function useSender() {
         }
 
         if (data.type === 'typing') {
-          const nick = data.nickname
-          setTypingUsers(prev => prev.includes(nick) ? prev : [...prev, nick])
-          clearTimeout(typingTimeouts.current[nick])
-          typingTimeouts.current[nick] = setTimeout(() => {
-            setTypingUsers(prev => prev.filter(n => n !== nick))
-          }, 3000)
+          handleTypingMessage(data.nickname, setTypingUsers, typingTimeouts.current)
           connectionsRef.current.forEach((cs, id) => {
-            if (id !== connId) { try { cs.conn.send({ type: 'typing', nickname: nick }) } catch {} }
+            if (id !== connId) { try { cs.conn.send({ type: 'typing', nickname: data.nickname }) } catch {} }
           })
           return
         }
@@ -422,10 +386,11 @@ export function useSender() {
           for (const [otherId, otherCs] of connectionsRef.current) {
             if (otherId === connId) continue
             if (otherCs.nickname !== data.nickname) continue
-            if (now - (otherCs.lastSeen || 0) < 10000) continue
+            const lastSeen = otherCs.heartbeat ? otherCs.heartbeat.getLastSeen() : 0
+            if (now - lastSeen < 10000) continue
             otherCs.abort.aborted = true
-            if (otherCs.heartbeatInterval) clearInterval(otherCs.heartbeatInterval)
-            if (otherCs.heartbeatCheck) clearInterval(otherCs.heartbeatCheck)
+            if (otherCs.heartbeat) otherCs.heartbeat.cleanup()
+            if (otherCs.rttPoller) otherCs.rttPoller.cleanup()
             try { otherCs.conn.close() } catch {}
             connectionsRef.current.delete(otherId)
           }
@@ -565,8 +530,8 @@ export function useSender() {
         if (destroyed) return
         connState.abort.aborted = true
         // Clean up heartbeat intervals
-        if (connState.heartbeatInterval) clearInterval(connState.heartbeatInterval)
-        if (connState.heartbeatCheck) clearInterval(connState.heartbeatCheck)
+        if (connState.heartbeat) connState.heartbeat.cleanup()
+        if (connState.rttPoller) connState.rttPoller.cleanup()
         const name = connState.nickname || 'A recipient'
         if (name && typingTimeouts.current[name]) {
           clearTimeout(typingTimeouts.current[name])
@@ -585,7 +550,6 @@ export function useSender() {
           } catch {}
         })
         if (connectionsRef.current.size === 0) {
-          if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
           setRtt(null)
           setStatus(prev => prev === 'done' ? prev : 'waiting')
         }
@@ -623,7 +587,8 @@ export function useSender() {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility)
       destroyed = true
-      if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
+      // Per-connection cleanup (heartbeat, RTT poller) happens via
+      // conn.on('close') when peer.destroy() fires below.
       connectionsRef.current.forEach(cs => { cs.abort.aborted = true })
       connectionsRef.current.clear()
       peer.destroy()
@@ -719,7 +684,6 @@ export function useSender() {
   }, [])
 
   const reset = useCallback(() => {
-    if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
     connectionsRef.current.forEach(cs => { cs.abort.aborted = true })
     connectionsRef.current.clear()
     if (peerRef.current) peerRef.current.destroy()

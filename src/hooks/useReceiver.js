@@ -1,10 +1,11 @@
 import Peer from 'peerjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { parseChunkPacket, buildChunkPacket, waitForBufferDrain, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker } from '../utils/fileChunker'
-import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
+import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { createFileStream } from '../utils/streamWriter'
 import { createStreamingZip } from '../utils/zipBuilder'
 import { STUN_ONLY, WITH_TURN } from '../utils/iceServers'
+import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 
 const ANIMALS = ['Fox', 'Wolf', 'Bear', 'Hawk', 'Lynx', 'Owl', 'Crow', 'Deer', 'Hare', 'Pike']
 const ADJECTIVES = ['Swift', 'Bold', 'Calm', 'Keen', 'Wild', 'Wise', 'Dark', 'Bright']
@@ -65,7 +66,6 @@ export function useReceiver(peerId) {
   const wasTransferringRef = useRef(false)
   const reconnectCountRef = useRef(0)
   const useTurnRef = useRef(false)
-  const rttRef = useRef(null)
   // Sequential chunk processing queue. Decrypt + stream-write must happen in
   // order, otherwise concurrent writes from multiple in-flight handleChunk
   // calls can interleave and corrupt the file.
@@ -119,49 +119,20 @@ export function useReceiver(peerId) {
           clearTimeout(timeoutRef.current)
           reconnectCountRef.current = 0
 
-          // RTT polling + ICE state monitoring for fast disconnect detection
-          if (rttRef.current) clearInterval(rttRef.current)
-          rttRef.current = setInterval(() => {
-            const pc = conn.peerConnection
-            if (!pc) return
-            pc.getStats().then(stats => {
-              stats.forEach(r => {
-                if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.currentRoundTripTime != null) {
-                  setRtt(Math.round(r.currentRoundTripTime * 1000))
-                }
-              })
-            }).catch(() => {})
-          }, 3000)
+          // Heartbeat + RTT (shared utilities)
+          if (conn._rttPoller) conn._rttPoller.cleanup()
+          conn._rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
 
-          // Heartbeat mechanism - send ping every 5s
-          const heartbeatInterval = setInterval(() => {
-            try { conn.send({ type: 'ping', ts: Date.now() }) } catch {}
-          }, 5000)
-          // Treat any incoming traffic as proof of life — pongs alone are
-          // unreliable when the connection is busy ferrying large messages
-          // (e.g. multi-MB GIFs) on a slow relay path, since the pong gets
-          // queued behind the data and arrives too late.
-          let lastSeen = Date.now()
-
-          // Check for zombie connections — generous 30s window so a slow
-          // relay or weak peer doesn't get killed mid-transfer.
-          const heartbeatCheck = setInterval(() => {
-            if (Date.now() - lastSeen > 30000 && !destroyedRef.current) {
-              clearInterval(heartbeatInterval)
-              clearInterval(heartbeatCheck)
-              if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
+          const heartbeat = setupHeartbeat(conn, {
+            onDead: () => {
+              if (destroyedRef.current) return
+              if (conn._rttPoller) { conn._rttPoller.cleanup(); conn._rttPoller = null }
               setRtt(null)
               setMessages(prev => [...prev, { text: 'Connection lost', from: 'system', time: Date.now(), self: false }])
-              if (!wasTransferringRef.current) {
-                setStatus('closed')
-              }
-            }
-          }, 5000)
-
-          // Store for cleanup
-          conn._heartbeatInterval = heartbeatInterval
-          conn._heartbeatCheck = heartbeatCheck
-          conn._markAlive = () => { lastSeen = Date.now() }
+              if (!wasTransferringRef.current) setStatus('closed')
+            },
+          })
+          conn._heartbeat = heartbeat
 
           // Fast disconnect detection via ICE state
           const pc = conn.peerConnection
@@ -171,12 +142,10 @@ export function useReceiver(peerId) {
               if (prevHandler) prevHandler()
               const s = pc.iceConnectionState
               if ((s === 'disconnected' || s === 'failed' || s === 'closed') && !destroyedRef.current) {
-                if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
+                if (conn._rttPoller) { conn._rttPoller.cleanup(); conn._rttPoller = null }
                 setRtt(null)
                 setMessages(prev => [...prev, { text: 'Sender disconnected', from: 'system', time: Date.now(), self: false }])
-                if (!wasTransferringRef.current) {
-                  setStatus('closed')
-                }
+                if (!wasTransferringRef.current) setStatus('closed')
               }
             }
           }
@@ -199,10 +168,8 @@ export function useReceiver(peerId) {
 
         conn.on('data', async (data) => {
           if (destroyedRef.current) return
-          // Any incoming traffic is proof the sender is alive — much more
-          // reliable than waiting for a pong, which can sit behind queued
-          // chat data on a slow relay.
-          if (conn._markAlive) conn._markAlive()
+          // Any incoming traffic proves the sender is alive.
+          if (conn._heartbeat) conn._heartbeat.markAlive()
 
           if (data instanceof ArrayBuffer || (data && data.byteLength !== undefined && !(typeof data === 'object' && data.type))) {
             // Chain onto the queue so chunks are decrypted + written strictly
@@ -258,12 +225,7 @@ export function useReceiver(peerId) {
           }
 
           if (data.type === 'typing') {
-            const nick = data.nickname
-            setTypingUsers(prev => prev.includes(nick) ? prev : [...prev, nick])
-            clearTimeout(typingTimeouts.current[nick])
-            typingTimeouts.current[nick] = setTimeout(() => {
-              setTypingUsers(prev => prev.filter(n => n !== nick))
-            }, 3000)
+            handleTypingMessage(data.nickname, setTypingUsers, typingTimeouts.current)
             return
           }
 
@@ -461,9 +423,8 @@ export function useReceiver(peerId) {
         conn.on('close', () => {
           if (destroyedRef.current) return
           clearTimeout(timeoutRef.current)
-          if (conn._heartbeatInterval) clearInterval(conn._heartbeatInterval)
-          if (conn._heartbeatCheck) clearInterval(conn._heartbeatCheck)
-          if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
+          if (conn._heartbeat) conn._heartbeat.cleanup()
+          if (conn._rttPoller) { conn._rttPoller.cleanup(); conn._rttPoller = null }
           // Reset the chunk queue so any stalled writes from the dropped
           // connection don't poison the new chain after reconnect.
           chunkQueueRef.current = Promise.resolve()
@@ -517,7 +478,6 @@ export function useReceiver(peerId) {
     return () => {
       destroyedRef.current = true
       clearTimeout(timeoutRef.current)
-      if (rttRef.current) { clearInterval(rttRef.current); rttRef.current = null }
       decryptKeyRef.current = null
       keyPairRef.current = null
       chunkQueueRef.current = Promise.resolve()
