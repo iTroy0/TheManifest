@@ -210,6 +210,8 @@ export default function FAQ() {
         <div className="max-w-[720px] mx-auto px-6 flex items-center justify-center gap-4 text-xs text-muted">
           <Link to="/" className="hover:text-accent transition-colors">Home</Link>
           <span className="text-border">|</span>
+          <Link to="/privacy" className="hover:text-accent transition-colors">Privacy</Link>
+          <span className="text-border">|</span>
           <a href="https://github.com/iTroy0/TheManifest" target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors">GitHub</a>
           <span className="text-border">|</span>
           <span>Open Source</span>

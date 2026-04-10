@@ -12,14 +12,20 @@ const signalConfig = SIGNAL_HOST ? {
   path: SIGNAL_PATH,
 } : {}
 
+// STUN servers — self-hosted coturn first (same host as TURN, port 3478),
+// Google's public STUN as fallback if our box is unreachable. ICE will try
+// each in order during candidate gathering.
+const stunServers = [
+  ...(TURN_URL ? [{ urls: `stun:${TURN_URL}:3478` }] : []),
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+]
+
 // Direct P2P only — no relay
 export const STUN_ONLY = {
   ...signalConfig,
   config: {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-    ],
+    iceServers: stunServers,
   },
 }
 
@@ -28,8 +34,7 @@ export const WITH_TURN = {
   ...signalConfig,
   config: {
     iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
+      ...stunServers,
       ...(TURN_URL ? [
         { urls: `turn:${TURN_URL}:3478`, username: TURN_USER, credential: TURN_PASS },
         { urls: `turn:${TURN_URL}:3478?transport=tcp`, username: TURN_USER, credential: TURN_PASS },

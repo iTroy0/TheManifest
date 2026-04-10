@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import ErrorBoundary from './components/ErrorBoundary'
 import App from './App'
+// Self-hosted fonts — no requests to fonts.googleapis.com / fonts.gstatic.com
+import '@fontsource-variable/inter'
+import '@fontsource-variable/jetbrains-mono'
 import './index.css'
 
 createRoot(document.getElementById('root')).render(
