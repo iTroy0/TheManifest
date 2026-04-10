@@ -160,7 +160,7 @@ export default function Privacy() {
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
 
       {/* Header */}
-      <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80 sticky top-0 z-10">
+      <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80 sm:sticky sm:top-0 z-10">
         <div className="max-w-[720px] mx-auto px-6 py-5">
           <Link to="/" className="flex items-center gap-2 text-muted hover:text-accent transition-colors mb-3 w-fit group">
             <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
