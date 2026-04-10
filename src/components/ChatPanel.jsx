@@ -587,51 +587,53 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               )}
             </div>
 
-            {/* Typing indicator */}
-            {typingText && (
-              <div className={`flex items-center gap-2 ${isFullscreen ? 'px-4' : 'px-1'}`}>
-                <div className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-surface-2/50 border border-border/50">
-                  <span className="font-mono text-[10px] text-muted-light">{typingText}</span>
-                  <TypingDots />
+            {/* Input section - sticky bottom in fullscreen */}
+            <div className={`shrink-0 ${isFullscreen ? 'bg-surface/50 border-t border-border' : 'space-y-2'}`}>
+              {/* Typing indicator */}
+              {typingText && (
+                <div className={`flex items-center gap-2 ${isFullscreen ? 'px-4 py-1.5' : 'px-1'}`}>
+                  <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface-2/50 border border-border/50">
+                    <span className="font-mono text-[10px] text-muted-light">{typingText}</span>
+                    <TypingDots />
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* Reply preview */}
-            {replyTo && (
-              <div className={`flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-3 py-2 animate-fade-in-up ${isFullscreen ? 'mx-4' : ''}`}>
-                <div className="w-1 h-8 bg-accent/60 rounded-full shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="font-mono text-[10px] text-accent font-medium">Replying to {replyTo.from}</p>
-                  <p className="text-xs text-muted truncate mt-0.5">{replyTo.text || 'Image'}</p>
+              {/* Reply preview */}
+              {replyTo && (
+                <div className={`flex items-center gap-2 bg-accent/5 animate-fade-in-up ${isFullscreen ? 'px-4 py-2 border-b border-accent/20' : 'px-3 py-2 border border-accent/20 rounded-xl'}`}>
+                  <div className="w-1 h-8 bg-accent/60 rounded-full shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-mono text-[10px] text-accent font-medium">Replying to {replyTo.from}</p>
+                    <p className="text-xs text-muted truncate mt-0.5">{replyTo.text || 'Image'}</p>
+                  </div>
+                  <button 
+                    onClick={() => setReplyTo(null)} 
+                    className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
-                <button 
-                  onClick={() => setReplyTo(null)} 
-                  className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            )}
+              )}
 
-            {/* Image preview */}
-            {imagePreview && (
-              <div className={`relative inline-block animate-fade-in-up ${isFullscreen ? 'mx-4' : ''}`}>
-                <img src={imagePreview.url || imagePreview} alt="Upload preview" className="h-24 rounded-xl border border-border shadow-sm object-cover" />
-                <button
-                  onClick={() => {
-                    if (imagePreview?.url?.startsWith('blob:')) URL.revokeObjectURL(imagePreview.url)
-                    setImagePreview(null)
-                  }}
-                  className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-danger text-white flex items-center justify-center shadow-md hover:bg-danger/90 transition-colors"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )}
+              {/* Image preview */}
+              {imagePreview && (
+                <div className={`relative inline-block animate-fade-in-up ${isFullscreen ? 'mx-4 my-2' : ''}`}>
+                  <img src={imagePreview.url || imagePreview} alt="Upload preview" className="h-20 rounded-xl border border-border shadow-sm object-cover" />
+                  <button
+                    onClick={() => {
+                      if (imagePreview?.url?.startsWith('blob:')) URL.revokeObjectURL(imagePreview.url)
+                      setImagePreview(null)
+                    }}
+                    className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-danger text-white flex items-center justify-center shadow-md hover:bg-danger/90 transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
 
-            {/* Input */}
-            <form onSubmit={handleSend} className={`flex gap-1.5 sm:gap-2 items-end shrink-0 ${isFullscreen ? 'px-4 py-3 border-t border-border bg-surface/50' : ''}`}>
+              {/* Input form */}
+              <form onSubmit={handleSend} className={`flex gap-1.5 sm:gap-2 items-end ${isFullscreen ? 'px-3 py-2' : ''}`}>
               <input ref={imageInputRef} type="file" accept="image/*" onChange={handleImagePick} className="hidden" />
               <button
                 type="button"
@@ -675,6 +677,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 <Send className="w-4 h-4" />
               </button>
             </form>
+            </div>
           </div>
         </div>
       </div>
