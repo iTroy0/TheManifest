@@ -1,9 +1,3 @@
-/**
- * Thumbnail generation utilities with Web Worker support
- * Offloads image processing to prevent UI blocking
- */
-
-// Inline worker code for thumbnail generation
 const workerCode = `
 self.onmessage = async function(e) {
   const { id, imageBlob, maxDim } = e.data;
@@ -154,13 +148,6 @@ export async function generateVideoThumbnail(file, maxDim = 80) {
   });
 }
 
-// Generate PDF thumbnail (first page)
-export async function generatePdfThumbnail(file, maxDim = 80) {
-  // PDFs require external library - return placeholder
-  return null;
-}
-
-// Generate text file preview
 export async function generateTextPreview(file, maxChars = 200) {
   try {
     const text = await file.slice(0, maxChars + 100).text();

@@ -16,7 +16,7 @@ import { ComponentErrorBoundary } from '../components/ErrorBoundary'
 export default function Home() {
   const [files, setFilesState] = useState([])
   const [error, setError] = useState(null)
-  const { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, setChatOnly, broadcastManifest, messages, sendMessage, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction } = useSender()
+  const { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, setChatOnly, broadcastManifest, messages, sendMessage, clearMessages, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction } = useSender()
   const addInputRef = useRef(null)
   const [passwordInput, setPasswordInput] = useState('')
   const [filesOpen, setFilesOpen] = useState(true)
@@ -293,7 +293,7 @@ export default function Home() {
 {/* Chat */}
   {(recipientCount > 0 || chatMode) && !isFinished && (
     <ComponentErrorBoundary name="Chat">
-      <ChatPanel messages={messages} onSend={sendMessage} disabled={recipientCount === 0} onlineCount={recipientCount + 1} nickname={senderName} onNicknameChange={changeSenderName} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
+      <ChatPanel messages={messages} onSend={sendMessage} onClearMessages={clearMessages} disabled={recipientCount === 0} onlineCount={recipientCount + 1} nickname={senderName} onNicknameChange={changeSenderName} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
     </ComponentErrorBoundary>
   )}
           </>

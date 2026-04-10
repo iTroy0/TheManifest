@@ -839,12 +839,18 @@ export function useReceiver(peerId) {
     }
   }
 
+  const clearMessages = useCallback(() => {
+    setMessages([])
+    imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch {} })
+    imageBlobUrlsRef.current = []
+  }, [])
+
   return {
     manifest, status, progress, overallProgress, speed, eta,
     pendingFiles, completedFiles, requestFile, requestAllAsZip,
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
     passwordRequired, passwordError, submitPassword,
-    messages, sendMessage, rtt, nickname, changeNickname, onlineCount,
+    messages, sendMessage, clearMessages, rtt, nickname, changeNickname, onlineCount,
     typingUsers, sendTyping, sendReaction, cancelFile, cancelAll, pauseFile, resumeFile, pausedFiles,
   }
 }

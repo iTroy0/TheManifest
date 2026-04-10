@@ -4,28 +4,19 @@ import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDra
 import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { STUN_ONLY } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
-import { generateThumbnailAsync, generateVideoThumbnail, generateTextPreview, generateThumbnailsBatch } from '../utils/thumbnailWorker'
+import { generateVideoThumbnail, generateTextPreview, generateThumbnailsBatch } from '../utils/thumbnailWorker'
 
 async function buildManifestData(files, chatOnly) {
-  // Generate thumbnails in batch using web worker (non-blocking)
   const thumbnails = await generateThumbnailsBatch(files, 80, 3)
-  
   const fileEntries = await Promise.all(files.map(async (f, i) => {
     const entry = { name: f.name, size: f.size, type: f.type }
-    
-    // Add image thumbnail
     if (thumbnails[i]) {
       entry.thumbnail = thumbnails[i]
-    }
-    // Add video thumbnail
-    else if (f.type?.startsWith('video/') && f instanceof File) {
+    } else if (f.type?.startsWith('video/') && f instanceof File) {
       try { entry.thumbnail = await generateVideoThumbnail(f, 80) } catch {}
-    }
-    // Add text preview
-    else if (f.type?.startsWith('text/') || f.type === 'application/json') {
+    } else if (f.type?.startsWith('text/') || f.type === 'application/json') {
       try { entry.textPreview = await generateTextPreview(f, 150) } catch {}
     }
-    
     return entry
   }))
   
@@ -743,7 +734,13 @@ export function useSender() {
     setSessionKey(k => k + 1)
   }, [])
 
-  return { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, setChatOnly, broadcastManifest, messages, sendMessage, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction }
+  const clearMessages = useCallback(() => {
+    setMessages([])
+    imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch {} })
+    imageBlobUrlsRef.current = []
+  }, [])
+
+  return { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, setChatOnly, broadcastManifest, messages, sendMessage, clearMessages, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction }
 }
 
 async function sendSingleFile(conn, files, index, startChunk, connState, encryptKey, aggregateUI) {

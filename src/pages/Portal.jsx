@@ -18,7 +18,7 @@ export default function Portal() {
     pendingFiles, completedFiles, requestFile, requestAllAsZip,
     retryCount, useRelay, enableRelay, zipMode, fingerprint,
     passwordRequired, passwordError, submitPassword,
-    messages, sendMessage, rtt, nickname, changeNickname, onlineCount,
+    messages, sendMessage, clearMessages, rtt, nickname, changeNickname, onlineCount,
     typingUsers, sendTyping, sendReaction, cancelFile, cancelAll, pauseFile, resumeFile, pausedFiles,
   } = useReceiver(peerId)
   const [passwordInput, setPasswordInput] = useState('')
@@ -326,7 +326,7 @@ export default function Portal() {
 {/* Chat */}
   {showManifest && !isDead && (
     <ComponentErrorBoundary name="Chat">
-      <ChatPanel messages={messages} onSend={sendMessage} disabled={isDead} nickname={nickname} onNicknameChange={changeNickname} onlineCount={onlineCount} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
+      <ChatPanel messages={messages} onSend={sendMessage} onClearMessages={clearMessages} disabled={isDead} nickname={nickname} onNicknameChange={changeNickname} onlineCount={onlineCount} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
     </ComponentErrorBoundary>
   )}
 

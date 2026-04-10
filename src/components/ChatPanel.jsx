@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff } from 'lucide-react'
+import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2 } from 'lucide-react'
 import { sounds, canNotify, requestNotificationPermission, alertNewMessage } from '../utils/notifications'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
@@ -30,17 +30,21 @@ function formatRelativeTime(timestamp) {
   return new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
+const TYPING_DELAY_0 = { animationDelay: '0ms' }
+const TYPING_DELAY_1 = { animationDelay: '150ms' }
+const TYPING_DELAY_2 = { animationDelay: '300ms' }
+
 function TypingDots() {
   return (
     <span className="inline-flex gap-0.5 ml-1">
-      <span className="w-1 h-1 bg-accent/60 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-      <span className="w-1 h-1 bg-accent/60 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-      <span className="w-1 h-1 bg-accent/60 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+      <span className="w-1 h-1 bg-accent/60 rounded-full animate-bounce" style={TYPING_DELAY_0} />
+      <span className="w-1 h-1 bg-accent/60 rounded-full animate-bounce" style={TYPING_DELAY_1} />
+      <span className="w-1 h-1 bg-accent/60 rounded-full animate-bounce" style={TYPING_DELAY_2} />
     </span>
   )
 }
 
-export default function ChatPanel({ messages, onSend, disabled, nickname, onNicknameChange, onlineCount, onTyping, typingUsers, onReaction }) {
+export default function ChatPanel({ messages, onSend, onClearMessages, disabled, nickname, onNicknameChange, onlineCount, onTyping, typingUsers, onReaction }) {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
   const [unread, setUnread] = useState(0)
@@ -267,7 +271,18 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
             )}
           </div>
         </div>
-        <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
+        <div className="flex items-center gap-1">
+          {onClearMessages && messages.length > 0 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onClearMessages() }}
+              className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
+              title="Clear messages"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+          <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
+        </div>
       </button>
 
       <div className={`grid transition-all duration-400 ease-in-out ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
@@ -531,7 +546,10 @@ export default function ChatPanel({ messages, onSend, disabled, nickname, onNick
               <div className="relative inline-block animate-fade-in-up">
                 <img src={imagePreview.url || imagePreview} alt="Upload preview" className="h-24 rounded-xl border border-border shadow-sm object-cover" />
                 <button
-                  onClick={() => setImagePreview(null)}
+                  onClick={() => {
+                    if (imagePreview?.url?.startsWith('blob:')) URL.revokeObjectURL(imagePreview.url)
+                    setImagePreview(null)
+                  }}
                   className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-danger text-white flex items-center justify-center shadow-md hover:bg-danger/90 transition-colors"
                 >
                   <X className="w-3.5 h-3.5" />
