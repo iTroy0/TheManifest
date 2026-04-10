@@ -92,6 +92,22 @@ export async function decryptChunk(key, data) {
   return plaintext
 }
 
+// Decrypt a base64-encoded encrypted JSON payload and return the parsed object.
+// Consolidates the decryptChunk → decode → JSON.parse boilerplate that was
+// duplicated 5+ times across useReceiver and useSender.
+export async function decryptJSON(key, base64Data) {
+  const decrypted = await decryptChunk(key, base64ToUint8(base64Data))
+  return JSON.parse(new TextDecoder().decode(decrypted))
+}
+
+// Encrypt a JS object as a base64 string ready for conn.send().
+// Inverse of decryptJSON.
+export async function encryptJSON(key, obj) {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj))
+  const encrypted = await encryptChunk(key, bytes)
+  return uint8ToBase64(new Uint8Array(encrypted))
+}
+
 // Generate a shared fingerprint from both public keys for visual verification
 // Both sides produce the same fingerprint by sorting keys before hashing
 export async function getKeyFingerprint(localPubBytes, remotePubBytes) {

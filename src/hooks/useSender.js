@@ -1,7 +1,7 @@
 import Peer from 'peerjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
-import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
+import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { STUN_ONLY } from '../utils/iceServers'
 import { generateThumbnailAsync, generateVideoThumbnail, generateTextPreview, generateThumbnailsBatch } from '../utils/thumbnailWorker'
 
@@ -326,10 +326,8 @@ export function useSender() {
         if (data.type === 'chat-encrypted') {
           let payload = {}
           if (connState.encryptKey && data.data) {
-            try {
-              const decrypted = await decryptChunk(connState.encryptKey, base64ToUint8(data.data))
-              payload = JSON.parse(new TextDecoder().decode(decrypted))
-            } catch { return }
+            try { payload = await decryptJSON(connState.encryptKey, data.data) }
+            catch { return }
           }
           const msg = { text: payload.text || '', image: payload.image, mime: payload.mime, replyTo: payload.replyTo, from: data.nickname || 'Anon', time: data.time, self: false }
           setMessages(prev => [...prev, msg])
@@ -352,10 +350,8 @@ export function useSender() {
         if (data.type === 'chat-image-start-enc') {
           if (!connState.encryptKey || !data.data) return
           let meta
-          try {
-            const decrypted = await decryptChunk(connState.encryptKey, base64ToUint8(data.data))
-            meta = JSON.parse(new TextDecoder().decode(decrypted))
-          } catch { return }
+          try { meta = await decryptJSON(connState.encryptKey, data.data) }
+          catch { return }
           connState.inProgressImage = {
             mime: meta.mime || 'application/octet-stream',
             size: meta.size || 0,

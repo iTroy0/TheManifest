@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   generateKeyPair, exportPublicKey, importPublicKey,
   deriveSharedKey, encryptChunk, decryptChunk,
+  encryptJSON, decryptJSON,
   getKeyFingerprint, uint8ToBase64, base64ToUint8,
 } from './crypto'
 
@@ -167,6 +168,44 @@ describe('Key Fingerprint', () => {
     const fp1 = await getKeyFingerprint(await exportPublicKey(a.publicKey), await exportPublicKey(b.publicKey))
     const fp2 = await getKeyFingerprint(await exportPublicKey(a.publicKey), await exportPublicKey(c.publicKey))
     expect(fp1).not.toBe(fp2)
+  })
+})
+
+describe('encryptJSON / decryptJSON', () => {
+  async function makeKey() {
+    const alice = await generateKeyPair()
+    const bob = await generateKeyPair()
+    const bobPub = await importPublicKey(await exportPublicKey(bob.publicKey))
+    return deriveSharedKey(alice.privateKey, bobPub)
+  }
+
+  it('round-trips a simple object', async () => {
+    const key = await makeKey()
+    const obj = { text: 'hello', count: 42, nested: { a: true } }
+    const encrypted = await encryptJSON(key, obj)
+    expect(typeof encrypted).toBe('string') // base64
+    const decrypted = await decryptJSON(key, encrypted)
+    expect(decrypted).toEqual(obj)
+  })
+
+  it('round-trips an object with unicode', async () => {
+    const key = await makeKey()
+    const obj = { text: 'hello 世界 🎉', emoji: '💯' }
+    const decrypted = await decryptJSON(key, await encryptJSON(key, obj))
+    expect(decrypted).toEqual(obj)
+  })
+
+  it('round-trips an empty object', async () => {
+    const key = await makeKey()
+    const decrypted = await decryptJSON(key, await encryptJSON(key, {}))
+    expect(decrypted).toEqual({})
+  })
+
+  it('rejects wrong key', async () => {
+    const key1 = await makeKey()
+    const key2 = await makeKey()
+    const encrypted = await encryptJSON(key1, { secret: true })
+    await expect(decryptJSON(key2, encrypted)).rejects.toThrow()
   })
 })
 

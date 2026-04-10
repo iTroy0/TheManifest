@@ -1,7 +1,7 @@
 import Peer from 'peerjs'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { parseChunkPacket, buildChunkPacket, waitForBufferDrain, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker } from '../utils/fileChunker'
-import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
+import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { createFileStream } from '../utils/streamWriter'
 import { createStreamingZip } from '../utils/zipBuilder'
 import { STUN_ONLY, WITH_TURN } from '../utils/iceServers'
@@ -290,10 +290,8 @@ export function useReceiver(peerId) {
           if (data.type === 'chat-encrypted') {
             let payload = {}
             if (decryptKeyRef.current && data.data) {
-              try {
-                const decrypted = await decryptChunk(decryptKeyRef.current, base64ToUint8(data.data))
-                payload = JSON.parse(new TextDecoder().decode(decrypted))
-              } catch { return }
+              try { payload = await decryptJSON(decryptKeyRef.current, data.data) }
+              catch { return }
             }
             setMessages(prev => [...prev, { text: payload.text || '', image: payload.image, mime: payload.mime, replyTo: payload.replyTo, from: data.from || 'Sender', time: data.time, self: false }])
             return
@@ -305,10 +303,8 @@ export function useReceiver(peerId) {
           if (data.type === 'chat-image-start-enc') {
             if (!decryptKeyRef.current || !data.data) return
             let meta
-            try {
-              const decrypted = await decryptChunk(decryptKeyRef.current, base64ToUint8(data.data))
-              meta = JSON.parse(new TextDecoder().decode(decrypted))
-            } catch { return }
+            try { meta = await decryptJSON(decryptKeyRef.current, data.data) }
+            catch { return }
             // Discard any previous in-flight image (shouldn't happen in
             // practice — sender serializes — but be defensive against
             // a misbehaving / desynced peer).

@@ -30,6 +30,8 @@ const iconMap = {
   'application/x-7z': Archive,
 }
 
+const DROP_ANIMATION = { duration: 200, easing: 'cubic-bezier(0.32, 0.72, 0, 1)' }
+
 function getIcon(type) {
   if (!type) return File
   for (const [key, Icon] of Object.entries(iconMap)) {
@@ -410,7 +412,7 @@ export default function FileList({ files, onRemove, onReorder, progress, pending
             </div>
           </SortableContext>
 
-          <DragOverlay dropAnimation={{ duration: 200, easing: 'cubic-bezier(0.32, 0.72, 0, 1)' }}>
+          <DragOverlay dropAnimation={DROP_ANIMATION}>
             {activeFile ? (
               <div className="sortable-overlay flex items-center gap-3 rounded-xl px-4 py-3 border border-accent/40 bg-surface">
                 <div className="flex items-center shrink-0 px-1">

@@ -1,8 +1,7 @@
-// Adaptive chunk sizing based on connection quality
-export const MIN_CHUNK_SIZE = 64 * 1024   // 64KB - for poor connections
-export const DEFAULT_CHUNK_SIZE = 256 * 1024 // 256KB - default
-export const MAX_CHUNK_SIZE = 1024 * 1024  // 1MB - for excellent connections
-export const CHUNK_SIZE = DEFAULT_CHUNK_SIZE // For backwards compatibility
+// Chunk size bounds — used internally by AdaptiveChunker.
+const MIN_CHUNK_SIZE = 64 * 1024   // 64KB - for poor connections
+const MAX_CHUNK_SIZE = 1024 * 1024 // 1MB - for excellent connections
+export const CHUNK_SIZE = 256 * 1024 // 256KB default
 
 // Sentinel fileIndex value used by the chat-image binary transport. Real
 // file indices in the manifest are 0..N-1 with N bounded well below this,
@@ -19,7 +18,7 @@ const HEADER_SIZE = 6
 // Adaptive chunk size calculator based on RTT and throughput
 export class AdaptiveChunker {
   constructor() {
-    this.currentChunkSize = DEFAULT_CHUNK_SIZE
+    this.currentChunkSize = CHUNK_SIZE
     this.measurements = []
     this.maxMeasurements = 10
   }
@@ -71,7 +70,7 @@ export class AdaptiveChunker {
 
   reset() {
     this.measurements = []
-    this.currentChunkSize = DEFAULT_CHUNK_SIZE
+    this.currentChunkSize = CHUNK_SIZE
   }
 }
 
@@ -99,22 +98,10 @@ export class ProgressThrottler {
   }
 }
 
-export async function* chunkFile(file, chunkSize = CHUNK_SIZE) {
-  let offset = 0
-  const size = chunkSize || CHUNK_SIZE
-  while (offset < file.size) {
-    const slice = file.slice(offset, offset + size)
-    const buffer = await slice.arrayBuffer()
-    yield buffer
-    offset += size
-  }
-}
-
-// Adaptive chunk generator that uses AdaptiveChunker
 export async function* chunkFileAdaptive(file, chunker) {
   let offset = 0
   while (offset < file.size) {
-    const chunkSize = chunker ? chunker.getChunkSize() : DEFAULT_CHUNK_SIZE
+    const chunkSize = chunker ? chunker.getChunkSize() : CHUNK_SIZE
     const slice = file.slice(offset, offset + chunkSize)
     const buffer = await slice.arrayBuffer()
     yield { buffer, chunkSize, offset }
