@@ -317,7 +317,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         isFullscreen 
           ? 'fixed left-0 right-0 z-50 bg-bg flex flex-col' 
           : isPopout
-            ? 'fixed bottom-4 right-4 w-96 max-w-[calc(100vw-2rem)] h-[600px] max-h-[calc(100vh-2rem)] z-50 rounded-2xl shadow-2xl border border-border bg-bg flex flex-col overflow-hidden'
+            ? 'fixed bottom-4 right-4 min-w-[320px] min-h-[400px] w-96 h-[600px] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] z-50 rounded-2xl shadow-2xl border border-border bg-bg flex flex-col overflow-hidden resize'
             : 'glow-card overflow-hidden transition-all duration-300'
       }`}
       style={isFullscreen ? { 
