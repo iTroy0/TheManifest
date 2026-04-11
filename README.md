@@ -51,6 +51,7 @@
 | End-to-end encrypted | ✅ | ❌ | ❌ | ❌ |
 | Zero server storage | ✅ | ❌ | ❌ | ❌ |
 | Real-time chat | ✅ | ❌ | ❌ | ❌ |
+| No third-party requests | ✅ | ❌ | ❌ | ❌ |
 | Completely free | ✅ | ❌ | ❌ | ❌ |
 
 ---
@@ -58,56 +59,68 @@
 ## Features
 
 ### Security & Privacy
-- **End-to-end encrypted** — ECDH key exchange + AES-256-GCM on every chunk
-- **Zero knowledge** — Files never touch a server, pure P2P via WebRTC DTLS
-- **Password protection** — Optional password gate with encrypted transmission
+- **End-to-end encrypted** — ECDH P-256 key exchange + AES-256-GCM on every chunk
+- **Two encryption layers** — App-level E2E encryption + WebRTC DTLS transport
+- **Zero knowledge** — Files never touch a server, pure P2P via WebRTC
+- **Zero third-party requests** — Self-hosted fonts, self-hosted STUN/TURN, no analytics, no cookies, no tracking
+- **Password protection** — Optional password gate with constant-time verification
 - **Key fingerprints** — Verify connection integrity with visual fingerprints
-- **Ephemeral** — Close the tab and everything is gone
+- **Ephemeral** — Close the tab and everything is gone. No localStorage, no cookies, no data retention
+- **Strict CSP** — Content Security Policy with frame-ancestors, form-action, upgrade-insecure-requests
 
 ### File Transfer
-- **No file size limit** — StreamSaver writes directly to disk
-- **Adaptive chunking** — Auto-adjusts chunk size based on connection quality
+- **No file size limit** — StreamSaver writes directly to disk (tested with 1GB+)
+- **Adaptive chunking** — Auto-adjusts chunk size (64KB-1MB) based on connection quality
+- **Backpressure-aware** — Buffer drain between chunks prevents congestion
 - **Pause, resume, cancel** — Full transfer control per file
+- **Auto-reconnect** — Resumes from last chunk on disconnect
 - **Live file sharing** — Add files while recipients are connected
-- **Bulk zip download** — Download all files as a single archive
-- **File previews** — Image, video thumbnails & text previews
+- **Bulk zip download** — Download all files as a single streaming archive
+- **File previews** — Image/video thumbnails & text previews via Web Worker
 
-### Chat & Collaboration  
+### Chat & Collaboration
 - **Encrypted chat rooms** — Standalone group chat mode
+- **GIF support** — Animated GIFs sent through the binary chunk pipeline (no base64 inflation)
+- **Image sharing** — Drag-and-drop or paste images directly in chat
 - **Typing indicators** — See who's typing in real-time
 - **Emoji reactions** — React to any message
 - **Reply threads** — Quote and reply to messages
-- **Image sharing** — Share images directly in chat
-- **Sound & notifications** — Get alerted for new messages
+- **Sound & notifications** — Configurable alerts for new messages
+- **Fullscreen & popout** — Moveable, resizable popout chat on desktop; fullscreen on mobile
+- **RTL support** — Arabic and other RTL languages work natively
+- **Clear messages** — Local-only clear with confirmation
 
 ### Reliability
 - **Multiple recipients** — Unlimited simultaneous connections
-- **Auto-reconnect** — Resumes from last chunk on disconnect
-- **Heartbeat monitoring** — Detects zombie connections
-- **Chunk verification** — Request retransmission on corruption
+- **Heartbeat monitoring** — 30s timeout with proof-of-life on any incoming traffic
+- **Zombie detection** — ICE state + heartbeat dedup prevents false disconnects
+- **Reconnect dedup** — Nickname-based eviction prevents stale connection accumulation
+- **TURN relay fallback** — Encrypted relay for strict NATs and firewalls
 
 ### Experience
-- **Mobile-friendly** — Touch support, native share API, QR codes
-- **Accessible** — ARIA labels, keyboard navigation, WCAG AA
-- **Connection stats** — Live RTT, P2P/Relay indicator
+- **Mobile-optimized** — iOS viewport fix, non-sticky header on mobile, touch-friendly
+- **Accessible** — ARIA labels, keyboard navigation, role attributes
+- **Connection stats** — Live RTT, P2P/Relay indicator, online count
+- **QR codes** — Share portal links via QR code
+- **Privacy page** — Transparent privacy policy at `/privacy`
+- **FAQ** — Common questions answered at `/faq`
 
 ---
 
 ## Quick Start
 
 ```bash
-# Clone the repo
 git clone https://github.com/iTroy0/TheManifest.git
 cd TheManifest
-
-# Install dependencies
 npm install
-
-# Start development server
 npm run dev
+```
 
-# Run tests
-npm test
+Run the test suite:
+
+```bash
+npm test                        # 104 tests
+npm test -- --reporter=verbose  # see each test name
 ```
 
 ---
@@ -122,13 +135,13 @@ cp .env.example .env
 
 | Variable | Description | Required |
 |----------|-------------|:--------:|
-| `VITE_TURN_URL` | TURN relay hostname | Optional |
+| `VITE_TURN_URL` | TURN/STUN server hostname | Optional |
 | `VITE_TURN_USER` | TURN username | Optional |
 | `VITE_TURN_PASS` | TURN password | Optional |
 | `VITE_SIGNAL_HOST` | PeerJS signaling hostname | Optional |
 | `VITE_SIGNAL_PATH` | PeerJS signaling path | Optional |
 
-> **Note:** The app works without any environment variables using public STUN servers. Configure TURN/signaling for better NAT traversal and privacy.
+> **Note:** The app works without any environment variables using public STUN servers. Configure TURN/signaling for better NAT traversal and full privacy (no third-party requests).
 
 ---
 
@@ -137,12 +150,14 @@ cp .env.example .env
 For true zero-knowledge operation, run your own signaling and relay servers:
 
 ```bash
-# TURN relay for strict NATs
+# TURN/STUN relay (coturn) for strict NATs
 sudo bash turn-setup.sh
 
 # PeerJS signaling server
 sudo bash signal-setup.sh
 ```
+
+With self-hosted infrastructure, the only external connections during a session are between the two peers themselves.
 
 ---
 
@@ -150,16 +165,18 @@ sudo bash signal-setup.sh
 
 <p>
   <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=white" />
-  <img src="https://img.shields.io/badge/Vite-5-646CFF?style=flat-square&logo=vite&logoColor=white" />
+  <img src="https://img.shields.io/badge/Vite-6-646CFF?style=flat-square&logo=vite&logoColor=white" />
   <img src="https://img.shields.io/badge/Tailwind-4-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white" />
   <img src="https://img.shields.io/badge/WebRTC-P2P-333333?style=flat-square&logo=webrtc&logoColor=white" />
   <img src="https://img.shields.io/badge/Web%20Crypto-AES--256-000000?style=flat-square" />
+  <img src="https://img.shields.io/badge/Vitest-104%20tests-6E9F18?style=flat-square&logo=vitest&logoColor=white" />
 </p>
 
-- **Frontend:** React 19, Vite, Tailwind CSS v4
-- **P2P:** PeerJS (WebRTC), Web Crypto API
+- **Frontend:** React 19, Vite 6, Tailwind CSS v4
+- **P2P:** PeerJS (WebRTC), Web Crypto API (ECDH + AES-256-GCM)
 - **Streaming:** StreamSaver.js, fflate (zip)
-- **DnD:** dnd-kit
+- **Fonts:** Self-hosted Inter & JetBrains Mono via @fontsource
+- **Testing:** Vitest (104 tests — crypto, chunking, transfer pipeline, integration)
 
 **No backend. No database. Deploy as a static site.**
 
@@ -173,19 +190,37 @@ sudo bash signal-setup.sh
 │  (Browser)  │                    │  (Browser)  │
 └──────┬──────┘                    └──────┬──────┘
        │                                  │
-       │  1. Exchange keys (ECDH)         │
+       │  1. Exchange keys (ECDH P-256)   │
        │◄────────────────────────────────►│
        │                                  │
-       │  2. Derive shared secret         │
-       │          (AES-256)               │
+       │  2. Derive shared AES-256-GCM   │
+       │          secret key              │
        │                                  │
        │  3. Stream encrypted chunks      │
+       │     (backpressure-aware)         │
        │─────────────────────────────────►│
+       │                                  │
+       │  4. Chat images via binary       │
+       │     chunk pipeline               │
+       │◄────────────────────────────────►│
        │                                  │
        │        WebRTC DataChannel        │
        │      (DTLS encrypted P2P)        │
        │                                  │
 ```
+
+---
+
+## Security
+
+- **Encryption:** ECDH P-256 key exchange + AES-256-GCM with fresh random IV per chunk
+- **Password:** Constant-time XOR comparison prevents timing side-channel attacks
+- **Input validation:** Chunk fileIndex bounds-checked against manifest to prevent injection
+- **Key validation:** Invalid P-256 curve points abort the connection
+- **CSP:** Strict Content-Security-Policy with no external domains
+- **Headers:** X-Frame-Options SAMEORIGIN, HSTS, no-referrer, permissions-policy
+
+The signaling server facilitates the WebRTC handshake only. The fingerprint displayed in the UI lets both sides verify no MITM occurred during key exchange.
 
 ---
 
