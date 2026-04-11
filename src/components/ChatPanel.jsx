@@ -63,12 +63,17 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const [viewportHeight, setViewportHeight] = useState('100dvh')
   const [viewportOffset, setViewportOffset] = useState(0)
   const [isPopout, setIsPopout] = useState(false)
+  const [popoutPos, setPopoutPos] = useState(null) // { x, y } or null for default
+  const [popoutSize, setPopoutSize] = useState({ w: 384, h: 600 }) // w-96 = 384px
   const scrollRef = useRef(null)
   const prevLen = useRef(messages.length)
   const imageInputRef = useRef(null)
   const textInputRef = useRef(null)
   const typingTimer = useRef(null)
   const longPressTimer = useRef(null)
+  const dragRef = useRef(null) // { startX, startY, origX, origY }
+  const popoutRef = useRef(null)
+  const menuRef = useRef(null)
 
   useEffect(() => {
     if (nickname) setEditName(nickname)
@@ -137,6 +142,14 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     if (isPopout) setOpen(true)
   }, [isPopout])
 
+  // Clear inline width/height left by CSS resize when leaving popout
+  // or entering fullscreen — otherwise the stale dimensions override
+  // the new layout mode.
+  function clearResizeStyles() {
+    const el = popoutRef.current
+    if (el) { el.style.width = ''; el.style.height = '' }
+  }
+
   // Handle visual viewport changes (keyboard open/close on mobile)
   // iOS Safari fix: use offsetTop to compensate for page scroll when keyboard opens
   useEffect(() => {
@@ -191,11 +204,32 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
 
   function handleTyping(e) {
     setText(e.target.value)
+    // Auto-resize textarea to fit content
+    const el = e.target
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px'
     if (onTyping) {
       if (!typingTimer.current) onTyping()
       clearTimeout(typingTimer.current)
       typingTimer.current = setTimeout(() => { typingTimer.current = null }, 2000)
     }
+  }
+
+  // Reset textarea height after send
+  useEffect(() => {
+    if (!text && textInputRef.current) {
+      textInputRef.current.style.height = 'auto'
+    }
+  }, [text])
+
+  // Drag-and-drop images onto the chat area
+  const [isDragOver, setIsDragOver] = useState(false)
+  const [showClearConfirm, setShowClearConfirm] = useState(false)
+  function handleDrop(e) {
+    e.preventDefault()
+    setIsDragOver(false)
+    const file = Array.from(e.dataTransfer?.files || []).find(f => f.type.startsWith('image/'))
+    if (file) prepareImage(file).then(img => { if (img) setImagePreview(img) }).catch(() => {})
   }
 
   function handleSend(e) {
@@ -270,6 +304,85 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     clearTimeout(longPressTimer.current)
   }
 
+  // ── Popout drag-to-move ──────────────────────────────────────────────
+  function handleDragStart(e) {
+    if (!isPopout || isFullscreen) return
+    const el = popoutRef.current
+    if (!el) return
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY
+    const rect = el.getBoundingClientRect()
+    dragRef.current = { startX: clientX, startY: clientY, origX: rect.left, origY: rect.top }
+    const onMove = (ev) => {
+      const cx = ev.touches ? ev.touches[0].clientX : ev.clientX
+      const cy = ev.touches ? ev.touches[0].clientY : ev.clientY
+      const dx = cx - dragRef.current.startX
+      const dy = cy - dragRef.current.startY
+      const nx = Math.max(0, Math.min(window.innerWidth - 100, dragRef.current.origX + dx))
+      const ny = Math.max(0, Math.min(window.innerHeight - 50, dragRef.current.origY + dy))
+      setPopoutPos({ x: nx, y: ny })
+    }
+    const onEnd = () => {
+      dragRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onEnd)
+      window.removeEventListener('touchmove', onMove)
+      window.removeEventListener('touchend', onEnd)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onEnd)
+    window.addEventListener('touchmove', onMove, { passive: false })
+    window.addEventListener('touchend', onEnd)
+  }
+
+  // ── Popout resize from top-left corner ───────────────────────────────
+  function handleResizeStart(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    const el = popoutRef.current
+    if (!el) return
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY
+    const rect = el.getBoundingClientRect()
+    const startW = rect.width
+    const startH = rect.height
+    const startRight = rect.right
+    const startBottom = rect.bottom
+    const onMove = (ev) => {
+      ev.preventDefault()
+      const cx = ev.touches ? ev.touches[0].clientX : ev.clientX
+      const cy = ev.touches ? ev.touches[0].clientY : ev.clientY
+      const newW = Math.max(320, Math.min(window.innerWidth - 32, startRight - cx))
+      const newH = Math.max(300, Math.min(window.innerHeight - 32, startBottom - cy))
+      setPopoutSize({ w: newW, h: newH })
+      setPopoutPos({ x: startRight - newW, y: startBottom - newH })
+    }
+    const onEnd = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onEnd)
+      window.removeEventListener('touchmove', onMove)
+      window.removeEventListener('touchend', onEnd)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onEnd)
+    window.addEventListener('touchmove', onMove, { passive: false })
+    window.addEventListener('touchend', onEnd)
+  }
+
+  // Close menu on click outside
+  useEffect(() => {
+    if (!showMenu) return
+    function handleClick(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setShowMenu(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('touchstart', handleClick)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('touchstart', handleClick)
+    }
+  }, [showMenu])
+
   function handleMsgClick(i) {
     // Toggle actions on tap (mobile) or keep hover behavior (desktop)
     setActiveMsg(activeMsg === i ? null : i)
@@ -312,29 +425,52 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   }, [messages])
 
   return (
-    <div 
+    <div
+      ref={popoutRef}
       className={`animate-fade-in-up ${
-        isFullscreen 
-          ? 'fixed left-0 right-0 z-50 bg-bg flex flex-col' 
+        isFullscreen
+          ? 'fixed left-0 right-0 z-50 bg-bg flex flex-col'
           : isPopout
-            ? 'fixed bottom-4 right-4 min-w-[320px] min-h-[400px] w-96 h-[600px] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] z-50 rounded-2xl shadow-2xl border border-border bg-bg flex flex-col overflow-hidden resize'
+            ? 'fixed z-50 rounded-2xl shadow-2xl border border-border bg-bg flex flex-col overflow-hidden'
             : 'glow-card overflow-hidden transition-all duration-300'
       }`}
-      style={isFullscreen ? { 
-        top: `${viewportOffset}px`,
-        height: viewportHeight,
-        paddingBottom: 'env(safe-area-inset-bottom, 0)'
-      } : undefined}
-      onClickCapture={(e) => { 
-        // Close menu when clicking outside, but not when clicking the menu button itself
-        if (showMenu && !e.target.closest('[data-menu-trigger]') && !e.target.closest('[data-menu-content]')) {
-          setShowMenu(false)
+      style={
+        isFullscreen ? {
+          top: `${viewportOffset}px`,
+          height: viewportHeight,
+          paddingBottom: 'env(safe-area-inset-bottom, 0)'
         }
-      }}
+        : isPopout ? {
+          width: `${popoutSize.w}px`,
+          height: `${popoutSize.h}px`,
+          top: popoutPos ? `${popoutPos.y}px` : undefined,
+          left: popoutPos ? `${popoutPos.x}px` : undefined,
+          bottom: popoutPos ? undefined : '1rem',
+          right: popoutPos ? undefined : '1rem',
+        }
+        : undefined
+      }
     >
       {/* Header - popout mode */}
       {isPopout && !isFullscreen && (
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0 bg-surface/80 backdrop-blur-sm cursor-move">
+        <div
+          className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0 bg-surface/80 backdrop-blur-sm cursor-move select-none relative"
+          onMouseDown={handleDragStart}
+          onTouchStart={handleDragStart}
+        >
+          {/* Top-left resize handle */}
+          <div
+            className="absolute -top-1 -left-1 w-5 h-5 cursor-nw-resize z-10 flex items-center justify-center opacity-40 hover:opacity-100 transition-opacity"
+            onMouseDown={handleResizeStart}
+            onTouchStart={handleResizeStart}
+            title="Resize"
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" className="text-muted">
+              <line x1="0" y1="10" x2="10" y2="0" stroke="currentColor" strokeWidth="1.5" />
+              <line x1="0" y1="6" x2="6" y2="0" stroke="currentColor" strokeWidth="1.5" />
+              <line x1="0" y1="2" x2="2" y2="0" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
+          </div>
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center">
               <MessageCircle className="w-4 h-4 text-accent" />
@@ -352,7 +488,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           <div className="flex items-center gap-1">
             {onClearMessages && messages.length > 0 && (
               <button
-                onClick={onClearMessages}
+                onClick={() => setShowClearConfirm(true)}
                 className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
                 title="Clear messages"
               >
@@ -360,14 +496,14 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               </button>
             )}
             <button
-              onClick={() => setIsFullscreen(true)}
+              onClick={() => { clearResizeStyles(); setIsFullscreen(true) }}
               className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
               title="Fullscreen"
             >
               <Maximize2 className="w-4 h-4" />
             </button>
             <button
-              onClick={() => setIsPopout(false)}
+              onClick={() => { clearResizeStyles(); setIsPopout(false); setPopoutPos(null); setPopoutSize({ w: 384, h: 600 }) }}
               className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
               title="Minimize"
             >
@@ -385,7 +521,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         >
           {/* Left: Back/Minimize button */}
           <button
-            onClick={() => { setIsFullscreen(false); if (!isPopout) setOpen(true) }}
+            onClick={() => { clearResizeStyles(); setIsFullscreen(false); if (!isPopout) setOpen(true) }}
             className="flex items-center gap-0.5 px-2 py-2 rounded-xl text-accent active:bg-accent/10 transition-colors"
           >
             {isPopout ? <Minimize2 className="w-5 h-5" /> : <ChevronDown className="w-5 h-5 rotate-90" />}
@@ -417,11 +553,11 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               <MoreVertical className="w-5 h-5" />
             </button>
             
-            {/* Dropdown menu */}
-            {showMenu && (
-              <div 
-                data-menu-content
-                className="absolute right-0 top-full mt-1 w-56 bg-surface border border-border rounded-xl shadow-xl overflow-hidden animate-fade-in-up z-50"
+            {showMenu && createPortal(
+              <div
+                ref={menuRef}
+                className="fixed w-56 bg-surface border border-border rounded-xl shadow-xl overflow-hidden animate-fade-in-up"
+                style={{ top: '56px', right: '12px', zIndex: 9999 }}
                 onClick={(e) => e.stopPropagation()}
               >
                 {/* Nickname section */}
@@ -491,7 +627,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                   <>
                     <div className="border-t border-border" />
                     <button
-                      onClick={() => { onClearMessages(); setShowMenu(false) }}
+                      onClick={() => { setShowClearConfirm(true); setShowMenu(false) }}
                       className="w-full flex items-center gap-3 px-4 py-3 text-danger active:bg-danger/10 transition-colors"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -499,7 +635,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                     </button>
                   </>
                 )}
-              </div>
+              </div>,
+              document.body
             )}
           </div>
         </div>
@@ -532,7 +669,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           <div className="flex items-center gap-1">
             {onClearMessages && messages.length > 0 && (
               <button
-                onClick={(e) => { e.stopPropagation(); onClearMessages() }}
+                onClick={(e) => { e.stopPropagation(); setShowClearConfirm(true) }}
                 className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
                 title="Clear messages"
               >
@@ -549,7 +686,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             </button>
             {/* Fullscreen toggle */}
             <button
-              onClick={(e) => { e.stopPropagation(); setIsFullscreen(true) }}
+              onClick={(e) => { e.stopPropagation(); clearResizeStyles(); setIsFullscreen(true) }}
               className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
               title="Fullscreen chat"
             >
@@ -630,8 +767,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               onScroll={handleScroll}
               className={`relative overflow-y-auto space-y-3 scrollbar-thin overscroll-contain ${
                 isFullscreen || isPopout
-                  ? 'flex-1 min-h-0 px-4 py-3 bg-bg' 
-                  : 'max-h-[min(55vh,450px)] min-h-[180px] pr-1'
+                  ? 'flex-1 min-h-0 px-4 py-3 bg-bg'
+                  : 'h-[320px] pr-1'
               }`}
               onClick={() => { setReactingIdx(null); setActiveMsg(null); if (showMenu) setShowMenu(false) }}
             >
@@ -676,7 +813,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                         const isLast = msgIdx === group.messages.length - 1
 
                         return (
-                          <div key={`${msg.time}-${i}`} className="relative group/msg w-full">
+                          <div key={`${msg.time}-${i}`} className="relative group/msg">
                             <div
                               className={`
                                 px-3 py-2 sm:px-3.5 sm:py-2.5 space-y-1 transition-colors cursor-pointer
@@ -845,24 +982,30 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               )}
 
               {/* Input form */}
-              <form onSubmit={handleSend} className={`flex gap-1.5 sm:gap-2 items-end ${isFullscreen || isPopout ? 'px-3 py-2' : ''}`}>
+              <form
+                onSubmit={handleSend}
+                onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
+                onDragLeave={() => setIsDragOver(false)}
+                onDrop={handleDrop}
+                className={`flex gap-1.5 sm:gap-2 items-end ${isFullscreen || isPopout ? 'px-3 py-2' : ''} ${isDragOver ? 'ring-2 ring-accent/40 rounded-xl' : ''}`}
+              >
               <input ref={imageInputRef} type="file" accept="image/*" onChange={handleImagePick} className="hidden" />
               <button
                 type="button"
                 onClick={() => imageInputRef.current?.click()}
                 disabled={disabled}
                 aria-label="Attach image"
-                className="shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-surface border border-border text-muted 
+                className="shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-surface border border-border text-muted
                   hover:text-accent hover:border-accent/30 active:scale-95 transition-all flex items-center justify-center
-                  disabled:opacity-30 disabled:cursor-not-allowed"
+                  disabled:opacity-30 disabled:cursor-not-allowed self-end"
               >
                 <ImagePlus className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
-              <input
+              <textarea
                 ref={textInputRef}
-                type="search"
-                inputMode="text"
-                autoComplete="one-time-code"
+                dir="auto"
+                rows={1}
+                autoComplete="off"
                 autoCorrect="on"
                 autoCapitalize="sentences"
                 spellCheck="true"
@@ -872,19 +1015,25 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 data-1p-ignore="true"
                 value={text}
                 onChange={handleTyping}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    handleSend(e)
+                  }
+                }}
                 placeholder={disabled ? 'Connect to chat' : 'Message...'}
                 maxLength={2000}
                 disabled={disabled}
                 className="flex-1 min-w-0 bg-bg border border-border rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 font-mono text-sm text-text
                   placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-all
-                  disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px]
-                  [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
+                  disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px] max-h-[120px]
+                  resize-none overflow-y-auto scrollbar-thin"
               />
               <button
                 type="submit"
                 disabled={disabled || (!text.trim() && !imagePreview)}
                 aria-label="Send message"
-                className={`shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center transition-all
+                className={`shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center transition-all self-end
                   ${!disabled && (text.trim() || imagePreview)
                     ? 'bg-accent text-bg hover:bg-accent-dim active:scale-90 shadow-lg shadow-accent/25'
                     : 'bg-surface border border-border text-muted/40 cursor-not-allowed'
@@ -897,30 +1046,93 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           </div>
         </div>
       </div>
-      {viewImage && createPortal(
-        <div className="fixed inset-0 z-[9999] bg-black/90 flex flex-col items-center justify-center p-4" onClick={() => setViewImage(null)} onKeyDown={(e) => e.key === 'Escape' && setViewImage(null)} role="dialog" aria-label="Image preview">
-          <div className="absolute top-4 right-4 flex gap-2 z-10">
-            <a
-              href={viewImage.url || viewImage}
-              download={imageFilename(viewImage.url || viewImage, viewImage.mime)}
-              onClick={(e) => e.stopPropagation()}
-              className="px-4 py-2.5 rounded-lg font-mono text-sm bg-accent text-bg hover:bg-accent-dim transition-colors min-h-[44px] flex items-center"
-            >
-              Save
-            </a>
-            <button
-              onClick={() => setViewImage(null)}
-              autoFocus
-              aria-label="Close preview"
-              className="px-4 py-2.5 rounded-lg font-mono text-sm bg-surface border border-border text-text hover:border-border-hover transition-colors min-h-[44px]"
-            >
-              Close
-            </button>
+      {showClearConfirm && createPortal(
+        <div className="fixed inset-0 z-[9999] bg-black/70 flex items-center justify-center p-4 animate-fade-in-up" onClick={() => setShowClearConfirm(false)}>
+          <div className="bg-surface border border-border rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-danger/10 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-danger" />
+              </div>
+              <div>
+                <p className="font-mono text-sm font-medium text-text">Clear messages?</p>
+                <p className="text-xs text-muted mt-0.5">This will only clear messages on your side. Other participants will still see their messages.</p>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShowClearConfirm(false)}
+                className="px-4 py-2 rounded-xl font-mono text-sm bg-surface border border-border text-muted hover:text-text hover:border-border-hover transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => { onClearMessages(); setShowClearConfirm(false) }}
+                className="px-4 py-2 rounded-xl font-mono text-sm bg-danger text-white hover:bg-danger/90 active:scale-95 transition-all"
+              >
+                Clear
+              </button>
+            </div>
           </div>
-          <img src={viewImage.url || viewImage} alt="Preview" className="max-w-full max-h-[85vh] object-contain rounded-lg" onClick={(e) => e.stopPropagation()} />
         </div>,
         document.body
       )}
+      {viewImage && createPortal(
+        <ImagePreviewOverlay viewImage={viewImage} onClose={() => setViewImage(null)} />,
+        document.body
+      )}
+    </div>
+  )
+}
+
+function ImagePreviewOverlay({ viewImage, onClose }) {
+  const [showControls, setShowControls] = useState(true)
+  const hideTimer = useRef(null)
+
+  // Auto-hide controls after 3s, reset on tap
+  useEffect(() => {
+    hideTimer.current = setTimeout(() => setShowControls(false), 3000)
+    return () => clearTimeout(hideTimer.current)
+  }, [])
+
+  function handleTap(e) {
+    // Don't toggle when tapping the buttons themselves
+    if (e.target.closest('a') || e.target.closest('button')) return
+    clearTimeout(hideTimer.current)
+    if (showControls) {
+      setShowControls(false)
+    } else {
+      setShowControls(true)
+      hideTimer.current = setTimeout(() => setShowControls(false), 3000)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] bg-black/90 flex flex-col items-center justify-center p-4"
+      onClick={handleTap}
+      onKeyDown={(e) => e.key === 'Escape' && onClose()}
+      role="dialog"
+      aria-label="Image preview"
+    >
+      <div className={`absolute top-4 right-4 flex gap-2 z-10 transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+        <a
+          href={viewImage.url || viewImage}
+          download={imageFilename(viewImage.url || viewImage, viewImage.mime)}
+          onClick={(e) => e.stopPropagation()}
+          className="px-4 py-2.5 rounded-lg font-mono text-sm bg-accent text-bg hover:bg-accent-dim transition-colors min-h-[44px] flex items-center"
+        >
+          Save
+        </a>
+        <button
+          onClick={onClose}
+          autoFocus
+          aria-label="Close preview"
+          className="px-4 py-2.5 rounded-lg font-mono text-sm bg-surface border border-border text-text hover:border-border-hover transition-colors min-h-[44px]"
+        >
+          Close
+        </button>
+      </div>
+      <img src={viewImage.url || viewImage} alt="Preview" className="max-w-full max-h-[85vh] object-contain rounded-lg" />
     </div>
   )
 }
