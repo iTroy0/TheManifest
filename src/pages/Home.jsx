@@ -21,9 +21,14 @@ export default function Home() {
   const [passwordInput, setPasswordInput] = useState('')
   const [filesOpen, setFilesOpen] = useState(true)
   const [chatMode, setChatMode] = useState(false)
+  // Tracks whether the user intentionally started a session (added files
+  // or started chat). Stays true even if all files are removed so the
+  // portal link / chat / connection status remain visible. Only resets
+  // on "New Session".
+  const [sessionStarted, setSessionStarted] = useState(false)
 
   const hasFiles = files.length > 0
-  const isActive = hasFiles || chatMode
+  const isActive = hasFiles || chatMode || sessionStarted
   const isTransferring = status === 'transferring'
   const showProgress = status === 'transferring' || status === 'done'
   const isFinished = status === 'done' || status === 'closed' || status === 'error'
@@ -50,6 +55,7 @@ export default function Home() {
 
   const handleFiles = useCallback((newFiles) => {
     setError(null)
+    if (newFiles.length > 0) setSessionStarted(true)
     setFilesState(prev => [...prev, ...newFiles])
   }, [])
 
@@ -76,6 +82,7 @@ export default function Home() {
     setError(null)
     setPasswordInput('')
     setChatMode(false)
+    setSessionStarted(false)
     reset()
   }, [reset])
 
@@ -215,6 +222,17 @@ export default function Home() {
 
             {/* Hidden file input for adding more files */}
             <input ref={addInputRef} type="file" multiple onChange={(e) => { handleFiles(Array.from(e.target.files)); e.target.value = '' }} className="hidden" />
+
+            {/* Add files prompt — when session is active but no files */}
+            {!hasFiles && !chatMode && !isTransferring && !isFinished && (
+              <div
+                onClick={() => addInputRef.current?.click()}
+                className="glow-card flex items-center justify-center gap-3 px-4 py-6 cursor-pointer hover:border-accent/30 transition-colors"
+              >
+                <Upload className="w-5 h-5 text-muted" />
+                <span className="font-mono text-sm text-muted">Add files to share</span>
+              </div>
+            )}
 
             {/* File list (collapsible) — only when files exist */}
             {hasFiles && <div className="glow-card overflow-hidden">

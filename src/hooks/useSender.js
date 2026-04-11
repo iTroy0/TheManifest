@@ -700,7 +700,7 @@ export function useSender() {
   }, [senderName])
 
   const broadcastManifest = useCallback(async () => {
-    if (filesRef.current.length === 0 || connectionsRef.current.size === 0) return
+    if (connectionsRef.current.size === 0) return
     const manifest = await buildManifestData(filesRef.current, chatOnlyRef.current)
     connectionsRef.current.forEach(cs => {
       try { cs.conn.send(manifest) } catch {}

@@ -213,7 +213,7 @@ export default function Portal() {
         )}
 
         {/* Manifest + file list — hidden in chat-only mode */}
-        {showManifest && manifest && !isChatOnly && (
+        {showManifest && manifest && !isChatOnly && manifest.files?.length > 0 && (
           <div className="space-y-4 animate-fade-in-up">
             <div className="glow-card overflow-hidden">
               {/* Collapsible header */}
