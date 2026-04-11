@@ -663,9 +663,12 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           </div>
         </div>
       ) : !isPopout ? (
-        <button
+        <div
+          role="button"
+          tabIndex={0}
           onClick={() => setOpen(o => !o)}
-          className="w-full flex items-center justify-between p-4 text-left group hover:bg-surface-2/30 transition-colors"
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && setOpen(o => !o)}
+          className="w-full flex items-center justify-between p-4 text-left group hover:bg-surface-2/30 transition-colors cursor-pointer"
         >
           <div className="flex items-center gap-3">
             <div className="relative">
@@ -721,7 +724,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             </button>
             <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
           </div>
-        </button>
+        </div>
       ) : null}
 
       <div className={`transition-all duration-400 ease-in-out ${
