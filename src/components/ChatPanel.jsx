@@ -492,10 +492,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             )}
           </div>
         </div>
-      )}
-
-      {/* Header - collapsed panel (not fullscreen, not popout) */}
-      {!isFullscreen && !isPopout && (
+      ) : !isPopout ? (
         <button
           onClick={() => setOpen(o => !o)}
           className="w-full flex items-center justify-between p-4 text-left group hover:bg-surface-2/30 transition-colors"
@@ -550,7 +547,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
           </div>
         </button>
-      )}
+      ) : null}
 
       <div className={`transition-all duration-400 ease-in-out ${
         isFullscreen || isPopout
