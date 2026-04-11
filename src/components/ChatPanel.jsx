@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, Minimize2, MoreVertical, ExternalLink } from 'lucide-react'
+import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, Minimize2, MoreVertical } from 'lucide-react'
 import { sounds, canNotify, requestNotificationPermission, alertNewMessage } from '../utils/notifications'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
@@ -74,6 +74,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const dragRef = useRef(null) // { startX, startY, origX, origY }
   const popoutRef = useRef(null)
   const menuRef = useRef(null)
+  const menuTriggerRef = useRef(null)
+  const [menuPos, setMenuPos] = useState({ top: 0, right: 0 })
 
   useEffect(() => {
     if (nickname) setEditName(nickname)
@@ -225,11 +227,27 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   // Drag-and-drop images onto the chat area
   const [isDragOver, setIsDragOver] = useState(false)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
+
+  // Reset drag highlight if user drags out of the window entirely
+  useEffect(() => {
+    if (!isDragOver) return
+    const reset = () => setIsDragOver(false)
+    window.addEventListener('dragend', reset)
+    window.addEventListener('drop', reset)
+    return () => { window.removeEventListener('dragend', reset); window.removeEventListener('drop', reset) }
+  }, [isDragOver])
+  const [dropError, setDropError] = useState(null)
   function handleDrop(e) {
     e.preventDefault()
     setIsDragOver(false)
-    const file = Array.from(e.dataTransfer?.files || []).find(f => f.type.startsWith('image/'))
-    if (file) prepareImage(file).then(img => { if (img) setImagePreview(img) }).catch(() => {})
+    const files = Array.from(e.dataTransfer?.files || [])
+    const file = files.find(f => f.type.startsWith('image/'))
+    if (file) {
+      prepareImage(file).then(img => { if (img) setImagePreview(img) }).catch(() => {})
+    } else if (files.length > 0) {
+      setDropError('Only images are supported in chat')
+      setTimeout(() => setDropError(null), 3000)
+    }
   }
 
   function handleSend(e) {
@@ -542,10 +560,14 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           {/* Right: Three-dot menu */}
           <div className="relative">
             <button
+              ref={menuTriggerRef}
               data-menu-trigger
-              onClick={(e) => { 
+              onClick={(e) => {
                 e.stopPropagation()
-                setShowMenu(m => !m) 
+                // Compute menu position relative to the trigger button
+                const rect = e.currentTarget.getBoundingClientRect()
+                setMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+                setShowMenu(m => !m)
               }}
               className="p-2.5 rounded-xl text-muted active:bg-surface-2 transition-colors"
               type="button"
@@ -557,7 +579,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               <div
                 ref={menuRef}
                 className="fixed w-56 bg-surface border border-border rounded-xl shadow-xl overflow-hidden animate-fade-in-up"
-                style={{ top: '56px', right: '12px', zIndex: 9999 }}
+                style={{ top: `${menuPos.top}px`, right: `${menuPos.right}px`, zIndex: 9999 }}
                 onClick={(e) => e.stopPropagation()}
               >
                 {/* Nickname section */}
@@ -678,7 +700,12 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             )}
             {/* Pop-out button - desktop only */}
             <button
-              onClick={(e) => { e.stopPropagation(); setIsPopout(true); setOpen(true) }}
+              onClick={(e) => {
+                e.stopPropagation()
+                setPopoutPos({ x: Math.round((window.innerWidth - 384) / 2), y: Math.round((window.innerHeight - 600) / 2) })
+                setIsPopout(true)
+                setOpen(true)
+              }}
               className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors hidden sm:flex"
               title="Pop out chat"
             >
@@ -948,6 +975,14 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 </div>
               )}
 
+              {/* Drop error toast */}
+              {dropError && (
+                <div className={`flex items-center gap-2 bg-danger/10 border border-danger/20 animate-fade-in-up ${isFullscreen || isPopout ? 'mx-4 my-2 px-3 py-2 rounded-xl' : 'px-3 py-2 rounded-xl'}`}>
+                  <X className="w-3.5 h-3.5 text-danger shrink-0" />
+                  <span className="font-mono text-xs text-danger">{dropError}</span>
+                </div>
+              )}
+
               {/* Reply preview */}
               {replyTo && (
                 <div className={`flex items-center gap-2 bg-accent/5 animate-fade-in-up ${isFullscreen || isPopout ? 'px-4 py-2 border-b border-accent/20' : 'px-3 py-2 border border-accent/20 rounded-xl'}`}>
@@ -1047,7 +1082,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         </div>
       </div>
       {showClearConfirm && createPortal(
-        <div className="fixed inset-0 z-[9999] bg-black/70 flex items-center justify-center p-4 animate-fade-in-up" onClick={() => setShowClearConfirm(false)}>
+        <div className="fixed inset-0 z-[10000] bg-black/70 flex items-center justify-center p-4 animate-fade-in-up" onClick={() => setShowClearConfirm(false)}>
           <div className="bg-surface border border-border rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-danger/10 flex items-center justify-center shrink-0">
