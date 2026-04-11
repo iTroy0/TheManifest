@@ -1,0 +1,939 @@
+import Peer, { DataConnection } from 'peerjs'
+import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
+import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
+import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
+import { STUN_ONLY } from '../utils/iceServers'
+import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
+import { generateVideoThumbnail, generateTextPreview, generateThumbnailsBatch } from '../utils/thumbnailWorker'
+import { ChatMessage, FileEntry, ManifestData } from '../types'
+
+// ── Types ────────────────────────────────────────────────────────────────
+
+interface InProgressImage {
+  mime: string
+  size: number
+  text: string
+  replyTo: { text: string; from: string; time: number } | null
+  time: number
+  from: string
+  chunks: Uint8Array[]
+  receivedBytes: number
+}
+
+interface ConnState {
+  conn: DataConnection
+  encryptKey: CryptoKey | null
+  keyPair: CryptoKeyPair | null
+  abort: { aborted: boolean }
+  progress: Record<string, number>
+  totalSent: number
+  startTime: number | null
+  transferTotalSize: number
+  speed: number
+  currentFileIndex: number
+  transferring: boolean
+  inProgressImage: InProgressImage | null
+  chunkQueue: Promise<void>
+  imageSendQueue: Promise<void>
+  nickname?: string
+  heartbeat?: ReturnType<typeof setupHeartbeat>
+  rttPoller?: ReturnType<typeof setupRTTPolling>
+  disconnectHandled?: boolean
+  pendingJoinAnnounce?: boolean
+  passwordAttempts?: number
+  pauseResolvers?: Record<number, () => void>
+  cancelledFiles?: Set<number>
+  pausedFiles?: Set<number>
+  chunker?: InstanceType<typeof AdaptiveChunker>
+  progressThrottler?: InstanceType<typeof ProgressThrottler>
+}
+
+// ── Transfer reducer ─────────────────────────────────────────────────────
+
+interface TransferState {
+  progress: Record<string, number>
+  overallProgress: number
+  speed: number
+  eta: number | null
+  currentFileIndex: number
+  totalSent: number
+}
+
+type TransferAction =
+  | { type: 'SET'; payload: Partial<TransferState> }
+  | { type: 'RESET' }
+
+const initialTransfer: TransferState = {
+  progress: {},
+  overallProgress: 0,
+  speed: 0,
+  eta: null,
+  currentFileIndex: -1,
+  totalSent: 0,
+}
+
+function transferReducer(state: TransferState, action: TransferAction): TransferState {
+  switch (action.type) {
+    case 'SET': return { ...state, ...action.payload }
+    case 'RESET': return initialTransfer
+    default: return state
+  }
+}
+
+// ── Connection reducer ───────────────────────────────────────────────────
+
+interface ConnectionState {
+  peerId: string | null
+  status: string
+  fingerprint: string | null
+  recipientCount: number
+}
+
+type ConnectionAction =
+  | { type: 'SET'; payload: Partial<ConnectionState> }
+  | { type: 'SET_STATUS'; payload: string | ((prev: string) => string) }
+  | { type: 'RESET' }
+
+const initialConnection: ConnectionState = {
+  peerId: null,
+  status: 'initializing',
+  fingerprint: null,
+  recipientCount: 0,
+}
+
+function connectionReducer(state: ConnectionState, action: ConnectionAction): ConnectionState {
+  switch (action.type) {
+    case 'SET': return { ...state, ...action.payload }
+    case 'SET_STATUS': {
+      const next = typeof action.payload === 'function' ? action.payload(state.status) : action.payload
+      return next === state.status ? state : { ...state, status: next }
+    }
+    case 'RESET': return initialConnection
+    default: return state
+  }
+}
+
+// ── Manifest builder ─────────────────────────────────────────────────────
+
+async function buildManifestData(files: File[], chatOnly: boolean): Promise<ManifestData> {
+  const thumbnails = await generateThumbnailsBatch(files, 80, 3)
+  const fileEntries: FileEntry[] = await Promise.all(files.map(async (f, i) => {
+    const entry: FileEntry = { name: f.name, size: f.size, type: f.type }
+    if (thumbnails[i]) {
+      entry.thumbnail = thumbnails[i]
+    } else if (f.type?.startsWith('video/') && f instanceof File) {
+      try { entry.thumbnail = await generateVideoThumbnail(f, 80) } catch {}
+    } else if (f.type?.startsWith('text/') || f.type === 'application/json') {
+      try { entry.textPreview = await generateTextPreview(f, 150) ?? undefined } catch {}
+    }
+    return entry
+  }))
+
+  return {
+    type: 'manifest',
+    chatOnly,
+    files: fileEntries,
+    totalSize: files.reduce((sum, f) => sum + f.size, 0),
+    sentAt: new Date().toISOString(),
+  }
+}
+
+// ── Hook ─────────────────────────────────────────────────────────────────
+
+export function useSender() {
+  const [transfer, dispatchTransfer] = useReducer(transferReducer, initialTransfer)
+  const [conn, dispatchConn] = useReducer(connectionReducer, initialConnection)
+  const [sessionKey, setSessionKey] = useState<number>(0)
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [rtt, setRtt] = useState<number | null>(null)
+  const [senderName, setSenderName] = useState<string>('Host')
+  const [typingUsers, setTypingUsers] = useState<string[]>([])
+  const typingTimeouts = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  const lastMsgTime = useRef<number>(0)
+  const peerRef = useRef<InstanceType<typeof Peer> | null>(null)
+  const filesRef = useRef<File[]>([])
+  const connectionsRef = useRef<Map<string, ConnState>>(new Map())
+  const passwordRef = useRef<string | null>(null)
+  const chatOnlyRef = useRef<boolean>(false)
+  const imageBlobUrlsRef = useRef<string[]>([])
+
+  const setFiles = useCallback((files: File[]): void => {
+    filesRef.current = files
+  }, [])
+
+  const setPassword = useCallback((pwd: string): void => {
+    passwordRef.current = pwd || null
+  }, [])
+
+  const setChatOnly = useCallback((val: boolean): void => {
+    chatOnlyRef.current = val
+  }, [])
+
+  useEffect(() => {
+    if (!window.crypto?.subtle) { dispatchConn({ type: 'SET_STATUS', payload: 'error' }); return }
+    let destroyed = false
+    const peer = new Peer(STUN_ONLY)
+    peerRef.current = peer
+
+    peer.on('open', (id: string) => {
+      if (destroyed) return
+      dispatchConn({ type: 'SET', payload: { peerId: id, status: 'waiting' } })
+    })
+
+    peer.on('connection', (conn: DataConnection) => {
+      if (destroyed) return
+
+      const MAX_CONNECTIONS = 20
+      if (connectionsRef.current.size >= MAX_CONNECTIONS) {
+        conn.close()
+        return
+      }
+
+      const connId = conn.peer + '-' + Date.now()
+      const connState: ConnState = {
+        conn, encryptKey: null, keyPair: null, abort: { aborted: false },
+        progress: {}, totalSent: 0, startTime: null, transferTotalSize: 0,
+        speed: 0, currentFileIndex: -1, transferring: false,
+        inProgressImage: null,
+        chunkQueue: Promise.resolve(),
+        imageSendQueue: Promise.resolve(),
+      }
+      connectionsRef.current.set(connId, connState)
+
+      function announceJoin(cs: ConnState, cId: string): void {
+        dispatchConn({ type: 'SET', payload: { status: 'connected', recipientCount: connectionsRef.current.size } })
+        setMessages(prev => [...prev, { text: `${cs.nickname} joined`, from: 'system', time: Date.now(), self: false }].slice(-500))
+        const count = connectionsRef.current.size + 1
+        connectionsRef.current.forEach((other, id) => {
+          try { other.conn.send({ type: 'online-count', count }) } catch {}
+          if (id !== cId) {
+            try { other.conn.send({ type: 'system-msg', text: `${cs.nickname} joined`, time: Date.now() }) } catch {}
+          }
+        })
+      }
+
+      function aggregateUI(): void {
+        const conns = Array.from(connectionsRef.current.values())
+        const active = conns.filter(cs => cs.transferring)
+
+        const merged: Record<string, number> = {}
+        for (const cs of active) {
+          for (const [name, pct] of Object.entries(cs.progress || {})) {
+            if (merged[name] === undefined) merged[name] = pct
+            else merged[name] = Math.min(merged[name], pct)
+          }
+        }
+
+        const activeWithFile = active.find(cs => cs.currentFileIndex >= 0)
+
+        if (active.length === 0) {
+          dispatchTransfer({ type: 'SET', payload: { progress: merged, currentFileIndex: -1, totalSent: 0, overallProgress: 0, speed: 0, eta: null } })
+          return
+        }
+
+        const sent = active.reduce((s, cs) => s + cs.totalSent, 0)
+        const total = active.reduce((s, cs) => s + cs.transferTotalSize, 0)
+        const spd = active.reduce((s, cs) => s + cs.speed, 0)
+        dispatchTransfer({ type: 'SET', payload: {
+          progress: merged,
+          currentFileIndex: activeWithFile ? activeWithFile.currentFileIndex : -1,
+          totalSent: sent,
+          overallProgress: total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : 0,
+          speed: spd,
+          eta: spd > 0 ? Math.max(0, (total - sent) / spd) : null,
+        }})
+      }
+
+      async function sendManifest(c: DataConnection): Promise<void> {
+        const manifest = await buildManifestData(filesRef.current, chatOnlyRef.current)
+        // Security note: manifest is sent unencrypted over the data channel.
+        // The WebRTC data channel is already DTLS-encrypted at the transport layer.
+        // Application-level encryption of the manifest would require a protocol
+        // version negotiation step and is left as a future improvement (TODO).
+        c.send(manifest)
+      }
+
+      conn.on('open', async () => {
+        if (destroyed) return
+        if (!passwordRef.current) dispatchConn({ type: 'SET_STATUS', payload: 'connected' })
+
+        connState.rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
+
+        function handlePeerDisconnect(reason: string): void {
+          if (connState.disconnectHandled || destroyed) return
+          connState.disconnectHandled = true
+          connState.abort.aborted = true
+          if (connState.heartbeat) connState.heartbeat.cleanup()
+          if (connState.rttPoller) connState.rttPoller.cleanup()
+          const name = connState.nickname || 'A recipient'
+          connectionsRef.current.delete(connId)
+          dispatchConn({ type: 'SET', payload: { recipientCount: connectionsRef.current.size } })
+          setMessages(prev => [...prev, { text: `${name} ${reason}`, from: 'system', time: Date.now(), self: false }].slice(-500))
+          const newCount = connectionsRef.current.size + 1
+          connectionsRef.current.forEach(cs => {
+            try {
+              cs.conn.send({ type: 'online-count', count: newCount })
+              cs.conn.send({ type: 'system-msg', text: `${name} ${reason}`, time: Date.now() })
+            } catch {}
+          })
+          if (connectionsRef.current.size === 0) {
+            setRtt(null)
+            dispatchConn({ type: 'SET_STATUS', payload: (prev: string) => prev === 'done' ? prev : 'waiting' })
+          }
+        }
+
+        connState.heartbeat = setupHeartbeat(conn, {
+          onDead: () => handlePeerDisconnect('connection lost'),
+        })
+
+        const pc = conn.peerConnection
+        if (pc) {
+          pc.oniceconnectionstatechange = () => {
+            const s = pc.iceConnectionState
+            if (s === 'disconnected' || s === 'failed' || s === 'closed') {
+              handlePeerDisconnect('left')
+            }
+          }
+        }
+
+        connState.keyPair = await generateKeyPair()
+        const pubKeyBytes = await exportPublicKey(connState.keyPair.publicKey)
+        conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
+      })
+
+      conn.on('data', async (data: unknown) => {
+        if (destroyed) return
+        if (connState.heartbeat) connState.heartbeat.markAlive()
+
+        const msg = data as Record<string, unknown>
+
+        if (data instanceof ArrayBuffer || (data && (data as ArrayBuffer).byteLength !== undefined && !(typeof data === 'object' && msg.type))) {
+          connState.chunkQueue = connState.chunkQueue
+            .then(() => handleHostChunk(connState, data as ArrayBuffer))
+            .catch(() => {})
+          return
+        }
+
+        if (msg.type === 'pong') return
+        if (msg.type === 'ping') {
+          try { conn.send({ type: 'pong', ts: msg.ts }) } catch {}
+          return
+        }
+
+        if (msg.type === 'public-key') {
+          try {
+            const remotePubKey = await importPublicKey(new Uint8Array(msg.key as number[]))
+            connState.encryptKey = await deriveSharedKey(connState.keyPair!.privateKey, remotePubKey)
+            const localPubBytes = await exportPublicKey(connState.keyPair!.publicKey)
+            const fp = await getKeyFingerprint(localPubBytes, new Uint8Array(msg.key as number[]))
+            dispatchConn({ type: 'SET', payload: { fingerprint: fp } })
+
+            if (passwordRef.current) {
+              conn.send({ type: 'password-required' })
+            } else {
+              await sendManifest(conn)
+            }
+          } catch {
+            conn.close()
+          }
+          return
+        }
+
+        if (msg.type === 'password-encrypted') {
+          connState.passwordAttempts = (connState.passwordAttempts || 0) + 1
+          if (connState.passwordAttempts > 5) {
+            conn.send({ type: 'password-locked' })
+            conn.close()
+            return
+          }
+          let password = ''
+          if (connState.encryptKey && msg.data) {
+            try {
+              const decrypted = await decryptChunk(connState.encryptKey, base64ToUint8(msg.data as string))
+              password = new TextDecoder().decode(decrypted)
+            } catch { conn.send({ type: 'password-wrong' }); return }
+          }
+          const a = new TextEncoder().encode(password)
+          const b = new TextEncoder().encode(passwordRef.current || '')
+          const maxLen = Math.max(a.length, b.length)
+          let match = a.length === b.length ? 0 : 1
+          for (let i = 0; i < maxLen; i++) match |= (a[i] ?? 0) ^ (b[i] ?? 0)
+
+          if (match === 0 && a.length > 0) {
+            conn.send({ type: 'password-accepted' })
+            if (connState.pendingJoinAnnounce) {
+              connState.pendingJoinAnnounce = false
+              announceJoin(connState, connId)
+            }
+            await sendManifest(conn)
+          } else {
+            conn.send({ type: 'password-wrong' })
+          }
+          return
+        }
+
+        if (msg.type === 'typing') {
+          handleTypingMessage(msg.nickname as string, setTypingUsers, typingTimeouts.current)
+          connectionsRef.current.forEach((cs, id) => {
+            if (id !== connId) { try { cs.conn.send({ type: 'typing', nickname: msg.nickname }) } catch {} }
+          })
+          return
+        }
+
+        if (msg.type === 'reaction') {
+          setMessages(prev => prev.map(m => {
+            if (`${m.time}` === msg.msgId) {
+              const reactions = { ...(m.reactions || {}) }
+              if (!reactions[msg.emoji as string]) reactions[msg.emoji as string] = []
+              if (!reactions[msg.emoji as string].includes(msg.nickname as string)) {
+                reactions[msg.emoji as string] = [...reactions[msg.emoji as string], msg.nickname as string]
+              }
+              return { ...m, reactions }
+            }
+            return m
+          }))
+          connectionsRef.current.forEach((cs, id) => {
+            if (id !== connId) { try { cs.conn.send(data) } catch {} }
+          })
+          return
+        }
+
+        if (msg.type === 'chat-encrypted') {
+          let payload: Record<string, unknown> = {}
+          if (connState.encryptKey && msg.data) {
+            try { payload = await decryptJSON(connState.encryptKey, msg.data as string) }
+            catch { return }
+          }
+          const chatMsg: ChatMessage = { text: payload.text as string || '', image: payload.image as string | undefined, mime: payload.mime as string | undefined, replyTo: payload.replyTo as ChatMessage['replyTo'], from: msg.nickname as string || 'Anon', time: msg.time as number, self: false }
+          setMessages(prev => [...prev, chatMsg].slice(-500))
+          const relayPayload = JSON.stringify(payload)
+          for (const [id, cs] of connectionsRef.current) {
+            if (id !== connId && cs.encryptKey) {
+              try {
+                const encrypted = await encryptChunk(cs.encryptKey, new TextEncoder().encode(relayPayload))
+                cs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: msg.nickname || 'Anon', time: msg.time })
+              } catch {}
+            }
+          }
+          return
+        }
+
+        if (msg.type === 'chat-image-start-enc') {
+          if (!connState.encryptKey || !msg.data) return
+          let meta: Record<string, unknown>
+          try { meta = await decryptJSON(connState.encryptKey, msg.data as string) }
+          catch { return }
+          connState.inProgressImage = {
+            mime: meta.mime as string || 'application/octet-stream',
+            size: meta.size as number || 0,
+            text: meta.text as string || '',
+            replyTo: meta.replyTo as InProgressImage['replyTo'] || null,
+            time: meta.time as number || Date.now(),
+            from: msg.from as string || connState.nickname || 'Anon',
+            chunks: [],
+            receivedBytes: 0,
+          }
+          return
+        }
+
+        if (msg.type === 'chat-image-end-enc') {
+          await connState.chunkQueue
+          const inFlight = connState.inProgressImage
+          connState.inProgressImage = null
+          if (!inFlight) return
+
+          const totalLen = inFlight.chunks.reduce((s, c) => s + c.byteLength, 0)
+          const fullBytes = new Uint8Array(totalLen)
+          let off = 0
+          for (const c of inFlight.chunks) { fullBytes.set(c, off); off += c.byteLength }
+
+          const blob = new Blob([fullBytes], { type: inFlight.mime })
+          const url = URL.createObjectURL(blob)
+          imageBlobUrlsRef.current.push(url)
+          setMessages(prev => [...prev, {
+            text: inFlight.text,
+            image: url,
+            mime: inFlight.mime,
+            replyTo: inFlight.replyTo,
+            from: inFlight.from,
+            time: inFlight.time,
+            self: false,
+          }].slice(-500))
+
+          for (const [otherId, otherCs] of connectionsRef.current) {
+            if (otherId === connId || !otherCs.encryptKey) continue
+            otherCs.imageSendQueue = otherCs.imageSendQueue
+              .then(() => streamImageToConn(
+                otherCs.conn, otherCs.encryptKey!, fullBytes,
+                inFlight.mime, inFlight.text, inFlight.replyTo,
+                inFlight.from, inFlight.time
+              ))
+              .catch(() => {})
+          }
+          return
+        }
+
+        if (msg.type === 'join') {
+          connState.nickname = msg.nickname as string
+          const now = Date.now()
+          for (const [otherId, otherCs] of connectionsRef.current) {
+            if (otherId === connId) continue
+            if (otherCs.nickname !== msg.nickname) continue
+            const lastSeen = otherCs.heartbeat ? otherCs.heartbeat.getLastSeen() : 0
+            if (now - lastSeen < 10000) continue
+            otherCs.abort.aborted = true
+            if (otherCs.heartbeat) otherCs.heartbeat.cleanup()
+            if (otherCs.rttPoller) otherCs.rttPoller.cleanup()
+            try { otherCs.conn.close() } catch {}
+            connectionsRef.current.delete(otherId)
+          }
+
+          if (passwordRef.current) {
+            connState.pendingJoinAnnounce = true
+          } else {
+            announceJoin(connState, connId)
+          }
+          return
+        }
+
+        if (msg.type === 'nickname-change') {
+          const oldName = connState.nickname || msg.oldName as string
+          connState.nickname = msg.newName as string
+          const changeMsg = `${oldName} is now ${msg.newName}`
+          setMessages(prev => [...prev, { text: changeMsg, from: 'system', time: Date.now(), self: false }].slice(-500))
+          connectionsRef.current.forEach((cs, id) => {
+            if (id !== connId) {
+              try { cs.conn.send({ type: 'system-msg', text: changeMsg, time: Date.now() }) } catch {}
+            }
+          })
+          return
+        }
+
+        if (msg.type === 'cancel-all') {
+          connState.abort = { aborted: true }
+          connState.transferring = false
+          connState.progress = {}
+          connState.totalSent = 0
+          connState.speed = 0
+          if (connState.pauseResolvers) {
+            Object.values(connState.pauseResolvers).forEach(r => r())
+            connState.pauseResolvers = {}
+          }
+          aggregateUI()
+          const anyActive = Array.from(connectionsRef.current.values()).some(cs => cs.transferring)
+          if (!anyActive) dispatchConn({ type: 'SET_STATUS', payload: 'connected' })
+          return
+        }
+
+        if (msg.type === 'cancel-file') {
+          if (!connState.cancelledFiles) connState.cancelledFiles = new Set()
+          connState.cancelledFiles.add(msg.index as number)
+          connState.pausedFiles?.delete(msg.index as number)
+          if (connState.pauseResolvers?.[msg.index as number]) {
+            connState.pauseResolvers[msg.index as number]()
+          }
+          return
+        }
+
+        if (msg.type === 'pause-file') {
+          if (!connState.pausedFiles) connState.pausedFiles = new Set()
+          connState.pausedFiles.add(msg.index as number)
+          return
+        }
+
+        if (msg.type === 'resume-file') {
+          connState.pausedFiles?.delete(msg.index as number)
+          if (connState.pauseResolvers?.[msg.index as number]) {
+            connState.pauseResolvers[msg.index as number]()
+          }
+          return
+        }
+
+        function startTransfer(transferSize: number): void {
+          connState.abort = { aborted: false }
+          connState.totalSent = 0
+          connState.startTime = Date.now()
+          connState.progress = {}
+          connState.speed = 0
+          connState.transferTotalSize = transferSize
+          connState.transferring = true
+          dispatchConn({ type: 'SET_STATUS', payload: 'transferring' })
+        }
+
+        function endTransfer(): void {
+          connState.transferring = false
+          connState.currentFileIndex = -1
+          aggregateUI()
+          const anyActive = Array.from(connectionsRef.current.values()).some(cs => cs.transferring)
+          if (!anyActive) dispatchConn({ type: 'SET_STATUS', payload: 'connected' })
+        }
+
+        if (msg.type === 'request-file') {
+          const file = filesRef.current[msg.index as number]
+          if (!file) return
+          const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+          const resumeChunk = Math.min(Math.max(0, (msg.resumeChunk as number) || 0), totalChunks)
+          startTransfer(file.size)
+          await sendSingleFile(conn, filesRef.current, msg.index as number, resumeChunk, connState, connState.encryptKey, aggregateUI)
+          if (!connState.abort.aborted) endTransfer()
+        }
+
+        if (msg.type === 'request-all') {
+          const indices: number[] = (msg.indices as number[]) || filesRef.current.map((_, i) => i)
+          const transferSize = indices.reduce((sum, i) => sum + (filesRef.current[i]?.size || 0), 0)
+          startTransfer(transferSize)
+          for (const idx of indices) {
+            if (connState.abort.aborted) break
+            try { await sendSingleFile(conn, filesRef.current, idx, 0, connState, connState.encryptKey, aggregateUI) } catch { /* skip failed file, continue batch */ }
+          }
+          if (!connState.abort.aborted) {
+            conn.send({ type: 'batch-done' })
+            endTransfer()
+          }
+        }
+
+        if (msg.type === 'ready') {
+          const transferSize = filesRef.current.reduce((sum, f) => sum + f.size, 0)
+          startTransfer(transferSize)
+          for (let i = 0; i < filesRef.current.length; i++) {
+            if (connState.abort.aborted) break
+            try { await sendSingleFile(conn, filesRef.current, i, 0, connState, connState.encryptKey, aggregateUI) } catch { /* skip failed file */ }
+          }
+          if (!connState.abort.aborted) {
+            conn.send({ type: 'done' })
+            connState.transferring = false
+            dispatchConn({ type: 'SET_STATUS', payload: 'done' })
+          }
+        }
+
+        if (msg.type === 'resume') {
+          const transferSize = filesRef.current[msg.fileIndex as number]?.size || 0
+          startTransfer(transferSize)
+          await sendSingleFile(conn, filesRef.current, msg.fileIndex as number, msg.chunkIndex as number, connState, connState.encryptKey, aggregateUI)
+          if (!connState.abort.aborted) endTransfer()
+        }
+      })
+
+      conn.on('close', () => {
+        if (destroyed) return
+        connState.abort.aborted = true
+        if (connState.heartbeat) connState.heartbeat.cleanup()
+        if (connState.rttPoller) connState.rttPoller.cleanup()
+        const name = connState.nickname || 'A recipient'
+        if (name && typingTimeouts.current[name]) {
+          clearTimeout(typingTimeouts.current[name])
+          delete typingTimeouts.current[name]
+        }
+        setTypingUsers(prev => prev.filter(n => n !== name))
+        connectionsRef.current.delete(connId)
+        dispatchConn({ type: 'SET', payload: { recipientCount: connectionsRef.current.size } })
+        setMessages(prev => [...prev, { text: `${name} left`, from: 'system', time: Date.now(), self: false }].slice(-500))
+        const count = connectionsRef.current.size + 1
+        connectionsRef.current.forEach(cs => {
+          try {
+            cs.conn.send({ type: 'online-count', count })
+            cs.conn.send({ type: 'system-msg', text: `${name} left`, time: Date.now() })
+          } catch {}
+        })
+        if (connectionsRef.current.size === 0) {
+          setRtt(null)
+          dispatchConn({ type: 'SET_STATUS', payload: (prev: string) => prev === 'done' ? prev : 'waiting' })
+        }
+      })
+
+      conn.on('error', () => {
+        if (destroyed) return
+        connState.abort.aborted = true
+        connectionsRef.current.delete(connId)
+        dispatchConn({ type: 'SET', payload: { recipientCount: connectionsRef.current.size } })
+      })
+    })
+
+    peer.on('disconnected', () => {
+      if (destroyed) return
+      if (!peer.destroyed) peer.reconnect()
+    })
+
+    peer.on('error', (err: { type: string }) => {
+      if (destroyed) return
+      if (err.type === 'unavailable-id') {
+        peer.destroy()
+      } else if (err.type === 'disconnected' || err.type === 'network') {
+        return
+      }
+      dispatchConn({ type: 'SET_STATUS', payload: 'error' })
+    })
+
+    function handleVisibility(): void {
+      if (document.visibilityState === 'visible' && !destroyed && peer.disconnected && !peer.destroyed) {
+        peer.reconnect()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility)
+      destroyed = true
+      connectionsRef.current.forEach(cs => { cs.abort.aborted = true })
+      connectionsRef.current.clear()
+      peer.destroy()
+    }
+  }, [sessionKey])
+
+  const sendMessage = useCallback(async (text: string, image?: { bytes: Uint8Array; mime: string } | string, replyTo?: ChatMessage['replyTo']): Promise<void> => {
+    if (!text && !image) return
+    const now = Date.now()
+    if (now - lastMsgTime.current < 100) return
+    lastMsgTime.current = now
+    const time = Date.now()
+
+    if (image && typeof image === 'object' && (image as { bytes: Uint8Array; mime: string }).bytes) {
+      const imgObj = image as { bytes: Uint8Array; mime: string }
+      const bytes = imgObj.bytes instanceof Uint8Array ? imgObj.bytes : new Uint8Array(imgObj.bytes)
+      const mime = imgObj.mime || 'application/octet-stream'
+      const localBlob = new Blob([bytes as unknown as BlobPart], { type: mime })
+      const localUrl = URL.createObjectURL(localBlob)
+      imageBlobUrlsRef.current.push(localUrl)
+      setMessages(prev => [...prev, { text: text || '', image: localUrl, mime, replyTo, from: 'You', time, self: true }].slice(-500))
+
+      for (const cs of connectionsRef.current.values()) {
+        if (!cs.encryptKey) continue
+        const key = cs.encryptKey
+        cs.imageSendQueue = cs.imageSendQueue
+          .then(() => streamImageToConn(cs.conn, key, bytes, mime, text || '', replyTo ?? null, senderName, time))
+          .catch(() => {})
+      }
+      return
+    }
+
+    const imgStr = image as string | undefined
+    setMessages(prev => [...prev, { text, image: imgStr, replyTo, from: 'You', time, self: true }].slice(-500))
+    const payload = JSON.stringify({ text, image: imgStr, replyTo })
+    for (const cs of connectionsRef.current.values()) {
+      try {
+        if (cs.encryptKey) {
+          const encrypted = await encryptChunk(cs.encryptKey, new TextEncoder().encode(payload))
+          cs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: senderName, time })
+        }
+      } catch {}
+    }
+  }, [senderName])
+
+  const sendTyping = useCallback((): void => {
+    connectionsRef.current.forEach(cs => {
+      try { cs.conn.send({ type: 'typing', nickname: senderName }) } catch {}
+    })
+  }, [senderName])
+
+  const sendReaction = useCallback((msgId: string, emoji: string): void => {
+    setMessages(prev => prev.map(m => {
+      if (`${m.time}` === msgId) {
+        const reactions = { ...(m.reactions || {}) }
+        if (!reactions[emoji]) reactions[emoji] = []
+        if (reactions[emoji].includes('You')) {
+          reactions[emoji] = reactions[emoji].filter(n => n !== 'You')
+          if (reactions[emoji].length === 0) delete reactions[emoji]
+        } else {
+          reactions[emoji] = [...reactions[emoji], 'You']
+        }
+        return { ...m, reactions }
+      }
+      return m
+    }))
+    connectionsRef.current.forEach(cs => {
+      try { cs.conn.send({ type: 'reaction', msgId, emoji, nickname: senderName }) } catch {}
+    })
+  }, [senderName])
+
+  const changeSenderName = useCallback((newName: string): void => {
+    if (!newName.trim()) return
+    const oldName = senderName
+    setSenderName(newName.trim())
+    const msg = `${oldName} is now ${newName.trim()}`
+    setMessages(prev => [...prev, { text: msg, from: 'system', time: Date.now(), self: false }].slice(-500))
+    connectionsRef.current.forEach(cs => {
+      try { cs.conn.send({ type: 'system-msg', text: msg, time: Date.now() }) } catch {}
+    })
+  }, [senderName])
+
+  const broadcastManifest = useCallback(async (): Promise<void> => {
+    if (connectionsRef.current.size === 0) return
+    const manifest = await buildManifestData(filesRef.current, chatOnlyRef.current)
+    connectionsRef.current.forEach(cs => {
+      try { cs.conn.send(manifest) } catch {}
+    })
+  }, [])
+
+  const reset = useCallback((): void => {
+    connectionsRef.current.forEach(cs => { cs.abort.aborted = true })
+    connectionsRef.current.clear()
+    if (peerRef.current) peerRef.current.destroy()
+    imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch {} })
+    imageBlobUrlsRef.current = []
+    filesRef.current = []
+    passwordRef.current = null
+    chatOnlyRef.current = false
+    dispatchTransfer({ type: 'RESET' })
+    dispatchConn({ type: 'RESET' })
+    setMessages([])
+    setRtt(null)
+    setSenderName('Host')
+    setTypingUsers([])
+    setSessionKey(k => k + 1)
+  }, [])
+
+  const clearMessages = useCallback((): void => {
+    setMessages([])
+    imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch {} })
+    imageBlobUrlsRef.current = []
+  }, [])
+
+  return { peerId: conn.peerId, status: conn.status, progress: transfer.progress, overallProgress: transfer.overallProgress, speed: transfer.speed, eta: transfer.eta, setFiles, reset, currentFileIndex: transfer.currentFileIndex, totalSent: transfer.totalSent, fingerprint: conn.fingerprint, recipientCount: conn.recipientCount, setPassword, setChatOnly, broadcastManifest, messages, sendMessage, clearMessages, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction }
+}
+
+// ── sendSingleFile ────────────────────────────────────────────────────────
+
+async function sendSingleFile(
+  conn: DataConnection,
+  files: File[],
+  index: number,
+  startChunk: number,
+  connState: ConnState,
+  encryptKey: CryptoKey | null,
+  aggregateUI: () => void
+): Promise<void> {
+  const file = files[index]
+  if (!file) return
+
+  if (!connState.chunker) connState.chunker = new AdaptiveChunker()
+  if (!connState.progressThrottler) connState.progressThrottler = new ProgressThrottler(80)
+
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+
+  connState.currentFileIndex = index
+  conn.send({ type: 'file-start', name: file.name, size: file.size, index, totalChunks, resumeFrom: startChunk })
+
+  let chunkIndex = 0
+  let fileSent = startChunk * CHUNK_SIZE
+  let chunkStartTime = 0
+
+  for await (const { buffer: chunkData } of chunkFileAdaptive(file, connState.chunker)) {
+    if (connState.abort.aborted) return
+    if (connState.cancelledFiles?.has(index)) {
+      conn.send({ type: 'file-cancelled', index })
+      connState.cancelledFiles.delete(index)
+      return
+    }
+    if (connState.pausedFiles?.has(index)) {
+      if (!connState.pauseResolvers) connState.pauseResolvers = {}
+      await new Promise<void>(r => { connState.pauseResolvers![index] = r })
+      delete connState.pauseResolvers![index]
+      if (connState.abort.aborted) return
+      if (connState.cancelledFiles?.has(index)) {
+        conn.send({ type: 'file-cancelled', index })
+        connState.cancelledFiles.delete(index)
+        return
+      }
+    }
+
+    if (chunkIndex < startChunk) {
+      chunkIndex++
+      continue
+    }
+
+    chunkStartTime = Date.now()
+
+    const dataToSend: ArrayBuffer = encryptKey
+      ? await encryptChunk(encryptKey, chunkData)
+      : chunkData
+
+    const packet = buildChunkPacket(index, chunkIndex, dataToSend)
+    conn.send(packet)
+    await waitForBufferDrain(conn)
+
+    const transferTime = Date.now() - chunkStartTime
+    connState.chunker.recordTransfer(chunkData.byteLength, transferTime)
+
+    chunkIndex++
+    fileSent += chunkData.byteLength
+    connState.totalSent += chunkData.byteLength
+    connState.progress[file.name] = Math.round((fileSent / file.size) * 100)
+
+    if (connState.progressThrottler.shouldUpdate()) {
+      const now = Date.now()
+      const elapsed = (now - connState.startTime!) / 1000
+      if (elapsed > 0.5) connState.speed = connState.totalSent / elapsed
+      aggregateUI()
+    }
+  }
+
+  if (!connState.abort.aborted) {
+    conn.send({ type: 'file-end', index })
+    connState.progress[file.name] = 100
+    connState.progressThrottler!.forceUpdate()
+    aggregateUI()
+  }
+}
+
+// ── handleHostChunk ───────────────────────────────────────────────────────
+
+async function handleHostChunk(connState: ConnState, rawData: ArrayBuffer | ArrayBufferView): Promise<void> {
+  if (!connState.encryptKey) return
+  const buffer = rawData instanceof ArrayBuffer
+    ? rawData
+    : ((rawData as ArrayBufferView).buffer as ArrayBuffer)
+  let parsed: { fileIndex: number; chunkIndex: number; data: ArrayBuffer }
+  try { parsed = parseChunkPacket(buffer) } catch { return }
+  if (parsed.fileIndex !== CHAT_IMAGE_FILE_INDEX) return
+  let plain: ArrayBuffer | Uint8Array
+  try { plain = await decryptChunk(connState.encryptKey, parsed.data) }
+  catch { return }
+  const inFlight = connState.inProgressImage
+  if (!inFlight) return
+  const bytes = plain instanceof Uint8Array ? plain : new Uint8Array(plain)
+  inFlight.chunks.push(bytes)
+  inFlight.receivedBytes += bytes.byteLength
+}
+
+// ── streamImageToConn ────────────────────────────────────────────────────
+
+async function streamImageToConn(
+  conn: DataConnection,
+  key: CryptoKey,
+  bytes: Uint8Array,
+  mime: string,
+  text: string,
+  replyTo: InProgressImage['replyTo'],
+  from: string,
+  time: number
+): Promise<void> {
+  if (!conn || conn.open === false || !key) return
+  try {
+    const startPayload = JSON.stringify({ mime, size: bytes.byteLength, text, replyTo, time })
+    const encStart = await encryptChunk(key, new TextEncoder().encode(startPayload))
+    conn.send({ type: 'chat-image-start-enc', data: uint8ToBase64(new Uint8Array(encStart)), from, time })
+  } catch { return }
+
+  const chunker = new AdaptiveChunker()
+  let offset = 0
+  let chunkIndex = 0
+  while (offset < bytes.byteLength) {
+    if (!conn.open) return
+    const chunkSize = Math.min(chunker.getChunkSize(), bytes.byteLength - offset)
+    const slice = bytes.subarray(offset, offset + chunkSize)
+    const tStart = Date.now()
+    let encChunk: ArrayBuffer
+    try { encChunk = await encryptChunk(key, slice) } catch { return }
+    const packet = buildChunkPacket(CHAT_IMAGE_FILE_INDEX, chunkIndex, encChunk)
+    try { conn.send(packet) } catch { return }
+    try { await waitForBufferDrain(conn) } catch { return }
+    chunker.recordTransfer(slice.byteLength, Date.now() - tStart)
+    offset += chunkSize
+    chunkIndex++
+  }
+
+  try {
+    const encEnd = await encryptChunk(key, new TextEncoder().encode('{}'))
+    conn.send({ type: 'chat-image-end-enc', data: uint8ToBase64(new Uint8Array(encEnd)) })
+  } catch { /* receiver will see incomplete image; the next start clears it */ }
+}
