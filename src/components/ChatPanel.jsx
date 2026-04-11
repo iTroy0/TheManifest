@@ -373,7 +373,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       )}
 
       {/* Header - native messaging app style when fullscreen */}
-      {isFullscreen && (
+      {isFullscreen ? (
         <div 
           className="flex items-center justify-between px-2 border-b border-border shrink-0 bg-surface/80 backdrop-blur-sm"
           style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 8px)', paddingBottom: '8px' }}
