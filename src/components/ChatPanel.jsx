@@ -325,7 +325,12 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         height: viewportHeight,
         paddingBottom: 'env(safe-area-inset-bottom, 0)'
       } : undefined}
-      onClick={isFullscreen && showMenu ? () => setShowMenu(false) : undefined}
+      onClickCapture={(e) => { 
+        // Close menu when clicking outside, but not when clicking the menu button itself
+        if (showMenu && !e.target.closest('[data-menu-trigger]') && !e.target.closest('[data-menu-content]')) {
+          setShowMenu(false)
+        }
+      }}
     >
       {/* Header - popout mode */}
       {isPopout && !isFullscreen && (
@@ -401,8 +406,13 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           {/* Right: Three-dot menu */}
           <div className="relative">
             <button
-              onClick={(e) => { e.stopPropagation(); setShowMenu(m => !m) }}
+              data-menu-trigger
+              onClick={(e) => { 
+                e.stopPropagation()
+                setShowMenu(m => !m) 
+              }}
               className="p-2.5 rounded-xl text-muted active:bg-surface-2 transition-colors"
+              type="button"
             >
               <MoreVertical className="w-5 h-5" />
             </button>
@@ -410,6 +420,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             {/* Dropdown menu */}
             {showMenu && (
               <div 
+                data-menu-content
                 className="absolute right-0 top-full mt-1 w-56 bg-surface border border-border rounded-xl shadow-xl overflow-hidden animate-fade-in-up z-50"
                 onClick={(e) => e.stopPropagation()}
               >
