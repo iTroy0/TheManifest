@@ -1062,7 +1062,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 placeholder={disabled ? 'Connect to chat' : 'Message...'}
                 maxLength={2000}
                 disabled={disabled}
-                className="flex-1 min-w-0 bg-bg border border-border rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 font-mono text-sm text-text
+                className="flex-1 min-w-0 bg-bg border border-border rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 font-mono text-[16px] sm:text-sm text-text
                   placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-all
                   disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px] max-h-[120px]
                   resize-none overflow-y-auto scrollbar-thin"
