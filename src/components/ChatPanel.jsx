@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, MoreVertical } from 'lucide-react'
+import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, Minimize2, MoreVertical, ExternalLink } from 'lucide-react'
 import { sounds, canNotify, requestNotificationPermission, alertNewMessage } from '../utils/notifications'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
@@ -61,6 +61,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [showMenu, setShowMenu] = useState(false)
   const [viewportHeight, setViewportHeight] = useState('100dvh')
+  const [viewportOffset, setViewportOffset] = useState(0)
+  const [isPopout, setIsPopout] = useState(false)
   const scrollRef = useRef(null)
   const prevLen = useRef(messages.length)
   const imageInputRef = useRef(null)
@@ -119,11 +121,10 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     if (open) setUnread(0)
   }, [open])
 
-  // Lock body scroll when fullscreen on mobile
+  // Lock body scroll when fullscreen on mobile (not for desktop popout)
   useEffect(() => {
     if (isFullscreen) {
       document.body.style.overflow = 'hidden'
-      // Auto-open the panel when entering fullscreen
       setOpen(true)
     } else {
       document.body.style.overflow = ''
@@ -131,56 +132,54 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     return () => { document.body.style.overflow = '' }
   }, [isFullscreen])
 
+  // Auto-open when popout is enabled
+  useEffect(() => {
+    if (isPopout) setOpen(true)
+  }, [isPopout])
+
   // Handle visual viewport changes (keyboard open/close on mobile)
+  // iOS Safari fix: use offsetTop to compensate for page scroll when keyboard opens
   useEffect(() => {
     if (!isFullscreen) return
     const vv = window.visualViewport
-    if (!vv) return
-    
-    // Detect iOS
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
-      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+    if (!vv) {
+      // Fallback for browsers without visualViewport
+      setViewportHeight('100dvh')
+      setViewportOffset(0)
+      return
+    }
     
     let rafId = null
-    let initialHeight = window.innerHeight
     
-    function handleResize() {
+    function handleViewportChange() {
       if (rafId) cancelAnimationFrame(rafId)
       
       rafId = requestAnimationFrame(() => {
-        if (isIOS) {
-          // iOS: Use 100dvh and let CSS handle it - don't fight the browser
-          // Just ensure the container uses dynamic viewport units
-          setViewportHeight('100dvh')
-        } else {
-          // Android: Use visualViewport height directly
-          setViewportHeight(`${vv.height}px`)
-        }
+        // Height accounts for keyboard, offsetTop accounts for iOS scroll
+        setViewportHeight(`${vv.height}px`)
+        setViewportOffset(vv.offsetTop)
         
-        // Scroll to bottom after keyboard change settles
+        // Scroll messages to bottom after keyboard change
         if (scrollRef.current && isNearBottom) {
-          setTimeout(() => {
-            scrollRef.current?.scrollTo({ 
-              top: scrollRef.current.scrollHeight, 
-              behavior: 'instant' 
-            })
-          }, 50)
+          scrollRef.current.scrollTo({ 
+            top: scrollRef.current.scrollHeight, 
+            behavior: 'instant' 
+          })
         }
       })
     }
     
-    // Set initial height
-    if (isIOS) {
-      setViewportHeight('100dvh')
-    } else {
-      setViewportHeight(`${vv.height}px`)
-    }
+    // Set initial values
+    setViewportHeight(`${vv.height}px`)
+    setViewportOffset(vv.offsetTop)
     
-    vv.addEventListener('resize', handleResize)
+    vv.addEventListener('resize', handleViewportChange)
+    vv.addEventListener('scroll', handleViewportChange)
     
     return () => {
       if (rafId) cancelAnimationFrame(rafId)
-      vv.removeEventListener('resize', handleResize)
+      vv.removeEventListener('resize', handleViewportChange)
+      vv.removeEventListener('scroll', handleViewportChange)
     }
   }, [isFullscreen, isNearBottom])
 
@@ -316,29 +315,81 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     <div 
       className={`animate-fade-in-up ${
         isFullscreen 
-          ? 'fixed inset-0 z-50 bg-bg flex flex-col' 
-          : 'glow-card overflow-hidden transition-all duration-300'
+          ? 'fixed left-0 right-0 z-50 bg-bg flex flex-col' 
+          : isPopout
+            ? 'fixed bottom-4 right-4 min-w-[320px] min-h-[400px] w-96 h-[600px] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] z-50 rounded-2xl shadow-2xl border border-border bg-bg flex flex-col overflow-hidden resize'
+            : 'glow-card overflow-hidden transition-all duration-300'
       }`}
       style={isFullscreen ? { 
+        top: `${viewportOffset}px`,
         height: viewportHeight,
-        maxHeight: viewportHeight,
         paddingBottom: 'env(safe-area-inset-bottom, 0)'
       } : undefined}
-      onClick={isFullscreen && showMenu ? () => setShowMenu(false) : undefined}
+      onClickCapture={(e) => { 
+        // Close menu when clicking outside, but not when clicking the menu button itself
+        if (showMenu && !e.target.closest('[data-menu-trigger]') && !e.target.closest('[data-menu-content]')) {
+          setShowMenu(false)
+        }
+      }}
     >
+      {/* Header - popout mode */}
+      {isPopout && !isFullscreen && (
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0 bg-surface/80 backdrop-blur-sm cursor-move">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center">
+              <MessageCircle className="w-4 h-4 text-accent" />
+            </div>
+            <div>
+              <span className="font-mono text-sm text-text font-medium">Chat</span>
+              {onlineCount > 0 && (
+                <div className="flex items-center gap-1 mt-0.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-accent" />
+                  <span className="font-mono text-[10px] text-muted">{onlineCount} online</span>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            {onClearMessages && messages.length > 0 && (
+              <button
+                onClick={onClearMessages}
+                className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
+                title="Clear messages"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+            <button
+              onClick={() => setIsFullscreen(true)}
+              className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
+              title="Fullscreen"
+            >
+              <Maximize2 className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setIsPopout(false)}
+              className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
+              title="Minimize"
+            >
+              <Minimize2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Header - native messaging app style when fullscreen */}
       {isFullscreen ? (
         <div 
           className="flex items-center justify-between px-2 border-b border-border shrink-0 bg-surface/80 backdrop-blur-sm"
           style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 8px)', paddingBottom: '8px' }}
         >
-          {/* Left: Back button */}
+          {/* Left: Back/Minimize button */}
           <button
-            onClick={() => setIsFullscreen(false)}
+            onClick={() => { setIsFullscreen(false); if (!isPopout) setOpen(true) }}
             className="flex items-center gap-0.5 px-2 py-2 rounded-xl text-accent active:bg-accent/10 transition-colors"
           >
-            <ChevronDown className="w-5 h-5 rotate-90" />
-            <span className="font-mono text-sm font-medium">Back</span>
+            {isPopout ? <Minimize2 className="w-5 h-5" /> : <ChevronDown className="w-5 h-5 rotate-90" />}
+            <span className="font-mono text-sm font-medium">{isPopout ? 'Minimize' : 'Back'}</span>
           </button>
           
           {/* Center: Title and online count */}
@@ -355,8 +406,13 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           {/* Right: Three-dot menu */}
           <div className="relative">
             <button
-              onClick={(e) => { e.stopPropagation(); setShowMenu(m => !m) }}
+              data-menu-trigger
+              onClick={(e) => { 
+                e.stopPropagation()
+                setShowMenu(m => !m) 
+              }}
               className="p-2.5 rounded-xl text-muted active:bg-surface-2 transition-colors"
+              type="button"
             >
               <MoreVertical className="w-5 h-5" />
             </button>
@@ -364,6 +420,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             {/* Dropdown menu */}
             {showMenu && (
               <div 
+                data-menu-content
                 className="absolute right-0 top-full mt-1 w-56 bg-surface border border-border rounded-xl shadow-xl overflow-hidden animate-fade-in-up z-50"
                 onClick={(e) => e.stopPropagation()}
               >
@@ -446,7 +503,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             )}
           </div>
         </div>
-      ) : (
+      ) : !isPopout ? (
         <button
           onClick={() => setOpen(o => !o)}
           className="w-full flex items-center justify-between p-4 text-left group hover:bg-surface-2/30 transition-colors"
@@ -482,10 +539,18 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
             )}
-            {/* Fullscreen toggle - mobile only */}
+            {/* Pop-out button - desktop only */}
+            <button
+              onClick={(e) => { e.stopPropagation(); setIsPopout(true); setOpen(true) }}
+              className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors hidden sm:flex"
+              title="Pop out chat"
+            >
+              <ExternalLink className="w-4 h-4" />
+            </button>
+            {/* Fullscreen toggle */}
             <button
               onClick={(e) => { e.stopPropagation(); setIsFullscreen(true) }}
-              className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors sm:hidden"
+              className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
               title="Fullscreen chat"
             >
               <Maximize2 className="w-4 h-4" />
@@ -493,15 +558,15 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
           </div>
         </button>
-      )}
+      ) : null}
 
       <div className={`transition-all duration-400 ease-in-out ${
-        isFullscreen 
+        isFullscreen || isPopout
           ? 'flex-1 flex flex-col overflow-hidden' 
           : `grid ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`
       }`}>
-        <div className={isFullscreen ? 'flex-1 flex flex-col overflow-hidden' : 'overflow-hidden'}>
-          <div className={`${isFullscreen ? 'flex-1 flex flex-col overflow-hidden' : 'px-3 sm:px-4 pb-4 space-y-3'}`}>
+        <div className={isFullscreen || isPopout ? 'flex-1 flex flex-col overflow-hidden' : 'overflow-hidden'}>
+          <div className={`${isFullscreen || isPopout ? 'flex-1 flex flex-col overflow-hidden' : 'px-3 sm:px-4 pb-4 space-y-3'}`}>
             {/* Nickname editor + settings - hidden in fullscreen (moved to menu) */}
             {!isFullscreen && (
             <div className="flex items-center justify-between gap-2">
@@ -564,7 +629,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               ref={scrollRef}
               onScroll={handleScroll}
               className={`relative overflow-y-auto space-y-3 scrollbar-thin overscroll-contain ${
-                isFullscreen 
+                isFullscreen || isPopout
                   ? 'flex-1 min-h-0 px-4 py-3 bg-bg' 
                   : 'max-h-[min(55vh,450px)] min-h-[180px] pr-1'
               }`}
@@ -734,11 +799,11 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               )}
             </div>
 
-            {/* Input section - sticky bottom in fullscreen */}
-            <div className={`shrink-0 ${isFullscreen ? 'bg-surface/80 backdrop-blur-sm border-t border-border' : 'space-y-2'}`}>
+            {/* Input section - sticky bottom in fullscreen/popout */}
+            <div className={`shrink-0 ${isFullscreen || isPopout ? 'bg-surface/80 backdrop-blur-sm border-t border-border' : 'space-y-2'}`}>
               {/* Typing indicator */}
               {typingText && (
-                <div className={`flex items-center gap-2 ${isFullscreen ? 'px-4 py-1.5' : 'px-1'}`}>
+                <div className={`flex items-center gap-2 ${isFullscreen || isPopout ? 'px-4 py-1.5' : 'px-1'}`}>
                   <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface-2/50 border border-border/50">
                     <span className="font-mono text-[10px] text-muted-light">{typingText}</span>
                     <TypingDots />
@@ -748,7 +813,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
 
               {/* Reply preview */}
               {replyTo && (
-                <div className={`flex items-center gap-2 bg-accent/5 animate-fade-in-up ${isFullscreen ? 'px-4 py-2 border-b border-accent/20' : 'px-3 py-2 border border-accent/20 rounded-xl'}`}>
+                <div className={`flex items-center gap-2 bg-accent/5 animate-fade-in-up ${isFullscreen || isPopout ? 'px-4 py-2 border-b border-accent/20' : 'px-3 py-2 border border-accent/20 rounded-xl'}`}>
                   <div className="w-1 h-8 bg-accent/60 rounded-full shrink-0" />
                   <div className="flex-1 min-w-0">
                     <p className="font-mono text-[10px] text-accent font-medium">Replying to {replyTo.from}</p>
@@ -765,7 +830,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
 
               {/* Image preview */}
               {imagePreview && (
-                <div className={`relative inline-block animate-fade-in-up ${isFullscreen ? 'mx-4 my-2' : ''}`}>
+                <div className={`relative inline-block animate-fade-in-up ${isFullscreen || isPopout ? 'mx-4 my-2' : ''}`}>
                   <img src={imagePreview.url || imagePreview} alt="Upload preview" className="h-20 rounded-xl border border-border shadow-sm object-cover" />
                   <button
                     onClick={() => {
@@ -780,7 +845,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               )}
 
               {/* Input form */}
-              <form onSubmit={handleSend} className={`flex gap-1.5 sm:gap-2 items-end ${isFullscreen ? 'px-3 py-2' : ''}`}>
+              <form onSubmit={handleSend} className={`flex gap-1.5 sm:gap-2 items-end ${isFullscreen || isPopout ? 'px-3 py-2' : ''}`}>
               <input ref={imageInputRef} type="file" accept="image/*" onChange={handleImagePick} className="hidden" />
               <button
                 type="button"
@@ -807,18 +872,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 data-1p-ignore="true"
                 value={text}
                 onChange={handleTyping}
-                onFocus={() => {
-                  // On iOS, scroll input into view after keyboard appears
-                  if (isFullscreen) {
-                    setTimeout(() => {
-                      textInputRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
-                      // Also scroll messages to bottom
-                      if (scrollRef.current) {
-                        scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'instant' })
-                      }
-                    }, 300)
-                  }
-                }}
                 placeholder={disabled ? 'Connect to chat' : 'Message...'}
                 maxLength={2000}
                 disabled={disabled}
