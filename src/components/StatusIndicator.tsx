@@ -45,9 +45,10 @@ const statusConfig: Record<StatusKey, StatusConfig> = {
 interface StatusIndicatorProps {
   status: StatusKey | string
   children?: React.ReactNode
+  embedded?: boolean
 }
 
-export default function StatusIndicator({ status, children }: StatusIndicatorProps) {
+export default function StatusIndicator({ status, children, embedded }: StatusIndicatorProps) {
   const config = statusConfig[status as StatusKey] || statusConfig.error
   const isGood = status === 'connected' || status === 'manifest-received' || status === 'done'
   const isActive = status === 'transferring' || status === 'receiving'
@@ -58,11 +59,13 @@ export default function StatusIndicator({ status, children }: StatusIndicatorPro
       role="status"
       aria-live="polite"
       className={`
-      flex items-center gap-3 rounded-xl px-4 py-3 flex-wrap transition-colors duration-300
-      ${isGood ? 'bg-accent/5 border border-accent/20' :
+      flex items-center gap-3 flex-wrap transition-colors duration-300
+      ${embedded ? '' : `rounded-xl px-4 py-3 ${
+        isGood ? 'bg-accent/5 border border-accent/20' :
         isActive ? 'bg-info/5 border border-info/20' :
         isBad ? 'bg-danger/5 border border-danger/20' :
-        'bg-surface border border-border'}
+        'bg-surface border border-border'
+      }`}
     `}>
       <span className="relative flex h-3 w-3 shrink-0">
         {config.pulse && (

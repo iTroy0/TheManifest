@@ -105,26 +105,9 @@ export default function Portal() {
       {/* Main */}
       <main className="flex-1 max-w-[720px] w-full mx-auto px-6 py-8 space-y-6">
 
-        <StatusIndicator status={isChatOnly && status === 'manifest-received' ? 'connected' : status}>
-          {showManifest && (
-            <>
-              <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${useRelay ? 'bg-warning/5 border-warning/20' : 'bg-accent/5 border-accent/20'}`} title={useRelay ? 'Files pass through an encrypted relay server' : 'Files transfer directly between browsers'}>
-                <Wifi className={`w-3 h-3 ${useRelay ? 'text-warning' : 'text-accent'}`} />
-                <span className={`font-mono text-[10px] ${useRelay ? 'text-warning' : 'text-accent'}`}>{useRelay ? 'Relay' : 'P2P'}</span>
-              </div>
-              {rtt !== null && (
-                <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`} title={`Round-trip latency: ${rtt}ms${rtt < 100 ? ' (excellent)' : rtt < 300 ? ' (good)' : ' (slow)'}`}>
-                  <span className={`font-mono text-[10px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
-                </div>
-              )}
-              <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5 cursor-default" title={fingerprint ? `Verify fingerprint: ${fingerprint}` : 'E2E encrypted'}>
-                <Shield className="w-3 h-3 text-accent" />
-                <span className="font-mono text-[10px] text-accent">E2E</span>
-                {fingerprint && <code className="font-mono text-[9px] text-accent/50 hidden sm:inline">{fingerprint}</code>}
-              </div>
-            </>
-          )}
-        </StatusIndicator>
+        {!showManifest && (
+          <StatusIndicator status={status} />
+        )}
 
         {/* Dead states */}
         {status === 'closed' && !manifest && (
@@ -238,125 +221,131 @@ export default function Portal() {
           </div>
         )}
 
-        {/* Chat room label */}
-        {showManifest && isChatOnly && (
-          <div className="flex items-center gap-2 bg-accent/5 border border-accent/20 rounded-xl px-4 py-3 animate-fade-in-up">
-            <MessagesSquare className="w-4 h-4 text-accent" />
-            <span className="font-mono text-sm text-accent font-medium">Chat Room</span>
-          </div>
-        )}
-
-        {/* Manifest + file list — hidden in chat-only mode */}
-        {showManifest && manifest && !isChatOnly && manifest.files?.length > 0 && (
-          <div className="space-y-4 animate-fade-in-up">
-            <div className="glow-card overflow-hidden">
-              {/* Collapsible header */}
-              <button
-                onClick={() => setFilesOpen(o => !o)}
-                aria-expanded={filesOpen}
-                className="w-full flex items-center justify-between px-4 py-3 text-left group"
-              >
+        {/* ── Session card: status + files or chat label ── */}
+        {showManifest && (
+          <div className="glow-card overflow-hidden animate-fade-in-up">
+            {/* Header: status + badges */}
+            <div className="px-4 py-3 space-y-2">
+              {isChatOnly && (
                 <div className="flex items-center gap-2">
-                  <Download className="w-3.5 h-3.5 text-accent" />
-                  <span className="font-mono text-sm text-text-bright font-bold">{manifest.files.length}</span>
-                  <span className="text-xs text-muted">
-                    file{manifest.files.length !== 1 ? 's' : ''} &middot; {formatBytes(manifest.totalSize)}
-                    {completedCount > 0 && <> &middot; {completedCount} saved</>}
-                  </span>
-                </div>
-                <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesOpen ? 'rotate-180' : ''}`} />
-              </button>
-
-              {/* Collapsible body */}
-              <div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-                <div className="overflow-hidden">
-                  <div className="px-4 pb-4 space-y-3">
-                    {/* Single file download */}
-                    {!allDone && !isDead && manifest.files.length === 1 && !completedFiles[0] && !pendingFiles[0] && (
-                      <button
-                        onClick={() => requestFile(0)}
-                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs bg-accent text-bg font-medium hover:bg-accent-dim transition-colors"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        Download File
-                      </button>
-                    )}
-
-                    {/* Transfer info */}
-                    {hasPending && (
-                      <div className="flex items-center gap-2 bg-info/5 border border-info/15 rounded-lg px-3 py-2">
-                        <Info className="w-3.5 h-3.5 text-info shrink-0" />
-                        <p className="flex-1 font-mono text-[10px] text-info/80 leading-relaxed">
-                          {zipMode
-                            ? 'Downloading all files as zip.'
-                            : 'Downloading to your device.'}
-                        </p>
-                        <button
-                          onClick={cancelAll}
-                          className="shrink-0 px-2 py-1 rounded-lg font-mono text-[10px] bg-danger/10 text-danger hover:bg-danger/20 transition-colors"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    )}
-
-                    <ComponentErrorBoundary name="Files">
-                      <FileList
-                        files={manifest.files}
-                        progress={progress}
-                        pendingFiles={pendingFiles}
-                        pausedFiles={pausedFiles}
-                        onRequest={isDead || hasPending ? null : requestFile}
-                        onCancel={hasPending ? cancelFile : null}
-                        onPause={hasPending ? pauseFile : null}
-                        onResume={resumeFile}
-                        currentFileIndex={currentFileIndex}
-                      />
-                    </ComponentErrorBoundary>
-                  </div>
-                </div>
-              </div>
-              {/* Progress bar — attached to file list */}
-              {(hasPending || completedCount > 0) && (
-                <div className="px-4 pb-3 space-y-2 border-t border-border">
-                  <div className="pt-3">
-                    <ProgressBar percent={overallProgress} label="Overall progress" />
-                  </div>
-                  <div className="flex justify-between font-mono text-[10px] text-muted">
-                    <span>{formatSpeed(speed)}</span>
-                    <span>{allDone ? `${formatBytes(totalReceived)} in ${formatElapsed(elapsed)}` : `ETA: ${formatTime(eta ?? 0)}`}</span>
-                  </div>
-                  {hasPending && (
-                    <div className="flex justify-between font-mono text-[10px] text-muted/60">
-                      <span>{formatBytes(totalReceived)} received</span>
-                      <span>Elapsed: {formatElapsed(elapsed)}</span>
-                    </div>
-                  )}
+                  <MessagesSquare className="w-4 h-4 text-accent" />
+                  <span className="font-mono text-sm text-accent font-medium">Chat Room</span>
                 </div>
               )}
+              <StatusIndicator status={isChatOnly && status === 'manifest-received' ? 'connected' : status} embedded>
+                <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${useRelay ? 'bg-warning/5 border-warning/20' : 'bg-accent/5 border-accent/20'}`} title={useRelay ? 'Files pass through an encrypted relay server' : 'Files transfer directly between browsers'}>
+                  <Wifi className={`w-3 h-3 ${useRelay ? 'text-warning' : 'text-accent'}`} />
+                  <span className={`font-mono text-[10px] ${useRelay ? 'text-warning' : 'text-accent'}`}>{useRelay ? 'Relay' : 'P2P'}</span>
+                </div>
+                {rtt !== null && (
+                  <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`} title={`Round-trip latency: ${rtt}ms${rtt < 100 ? ' (excellent)' : rtt < 300 ? ' (good)' : ' (slow)'}`}>
+                    <span className={`font-mono text-[10px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
+                  </div>
+                )}
+                <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5 cursor-default" title={fingerprint ? `Verify fingerprint: ${fingerprint}` : 'E2E encrypted'}>
+                  <Shield className="w-3 h-3 text-accent" />
+                  <span className="font-mono text-[10px] text-accent">E2E</span>
+                  {fingerprint && <code className="font-mono text-[9px] text-accent/50 hidden sm:inline">{fingerprint}</code>}
+                </div>
+              </StatusIndicator>
             </div>
 
-            {/* Download all bar */}
-            {!allDone && !isDead && !hasPending && manifest.files.length > 1 && (
-              <div className="sticky bottom-4 z-10">
-                <div className="flex items-center justify-center gap-4 bg-surface/95 backdrop-blur-md border border-accent/20 rounded-2xl px-5 py-3 shadow-xl shadow-black/40">
-                  <button
-                    onClick={requestAllAsZip}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all"
-                  >
-                    <Archive className="w-4 h-4" />
-                    Download All as Zip
-                  </button>
-                  {completedCount > 0 && (
-                    <span className="font-mono text-xs text-muted">
-                      {completedCount}/{manifest.files.length} saved
+            {/* File list */}
+            {!isChatOnly && manifest && manifest.files?.length > 0 && (
+              <div className="border-t border-border">
+                {/* Collapsible header */}
+                <button
+                  onClick={() => setFilesOpen(o => !o)}
+                  aria-expanded={filesOpen}
+                  className="w-full flex items-center justify-between px-4 py-3 text-left group"
+                >
+                  <div className="flex items-center gap-2">
+                    <Download className="w-3.5 h-3.5 text-accent" />
+                    <span className="font-mono text-sm text-text-bright font-bold">{manifest.files.length}</span>
+                    <span className="text-xs text-muted">
+                      file{manifest.files.length !== 1 ? 's' : ''} &middot; {formatBytes(manifest.totalSize)}
+                      {completedCount > 0 && <> &middot; {completedCount} saved</>}
                     </span>
-                  )}
+                  </div>
+                  <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesOpen ? 'rotate-180' : ''}`} />
+                </button>
+
+                {/* Collapsible body */}
+                <div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                  <div className="overflow-hidden">
+                    <div className="px-4 pb-4 space-y-3">
+                      {!allDone && !isDead && !hasPending && (
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={manifest.files.length === 1 ? () => requestFile(0) : requestAllAsZip}
+                            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-colors"
+                          >
+                            {manifest.files.length === 1
+                              ? <><Download className="w-3.5 h-3.5" /> Download</>
+                              : <><Archive className="w-3.5 h-3.5" /> Download All as Zip</>
+                            }
+                          </button>
+                          {completedCount > 0 && (
+                            <span className="font-mono text-[10px] text-muted">{completedCount}/{manifest.files.length} saved</span>
+                          )}
+                        </div>
+                      )}
+
+                      {hasPending && (
+                        <div className="flex items-center gap-2 bg-info/5 border border-info/15 rounded-lg px-3 py-2">
+                          <Info className="w-3.5 h-3.5 text-info shrink-0" />
+                          <p className="flex-1 font-mono text-[10px] text-info/80 leading-relaxed">
+                            {zipMode
+                              ? 'Downloading all files as zip.'
+                              : 'Downloading to your device.'}
+                          </p>
+                          <button
+                            onClick={cancelAll}
+                            className="shrink-0 px-2 py-1 rounded-lg font-mono text-[10px] bg-danger/10 text-danger hover:bg-danger/20 transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+
+                      <ComponentErrorBoundary name="Files">
+                        <FileList
+                          files={manifest.files}
+                          progress={progress}
+                          pendingFiles={pendingFiles}
+                          pausedFiles={pausedFiles}
+                          onRequest={isDead || hasPending ? null : requestFile}
+                          onCancel={hasPending ? cancelFile : null}
+                          onPause={hasPending ? pauseFile : null}
+                          onResume={resumeFile}
+                          currentFileIndex={currentFileIndex}
+                        />
+                      </ComponentErrorBoundary>
+                    </div>
+                  </div>
                 </div>
+                {(hasPending || completedCount > 0) && (
+                  <div className="px-4 pb-3 space-y-2 border-t border-border">
+                    <div className="pt-3">
+                      <ProgressBar percent={overallProgress} label="Overall progress" />
+                    </div>
+                    <div className="flex justify-between font-mono text-[10px] text-muted">
+                      <span>{formatSpeed(speed)}</span>
+                      <span>{allDone ? `${formatBytes(totalReceived)} in ${formatElapsed(elapsed)}` : `ETA: ${formatTime(eta ?? 0)}`}</span>
+                    </div>
+                    {hasPending && (
+                      <div className="flex justify-between font-mono text-[10px] text-muted/60">
+                        <span>{formatBytes(totalReceived)} received</span>
+                        <span>Elapsed: {formatElapsed(elapsed)}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
         )}
+
 
         {/* Chat */}
         {showManifest && !isDead && (
