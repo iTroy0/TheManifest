@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { Copy, Share2, QrCode } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import Toast from './Toast'
@@ -49,10 +49,7 @@ export default function PortalLink({ peerId }: PortalLinkProps) {
         <div className="flex items-center gap-2 bg-surface-2/50 border border-border rounded-xl p-2 hover:border-accent/30 transition-colors group">
           <code
             onClick={handleCopy}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleCopy() } }}
-            className="flex-1 font-mono text-xs text-accent truncate px-2 py-1 min-w-0 cursor-pointer hover:text-accent/80 transition-colors rounded-lg hover:bg-accent/5"
+            className="flex-1 font-mono text-xs text-accent truncate px-2 py-1 min-w-0 cursor-pointer hover:text-accent/80 transition-colors rounded-lg hover:bg-accent/5 select-all"
           >
             {url}
           </code>

@@ -43,10 +43,12 @@ export function setupHeartbeat(conn: DataConnection, { onDead, interval = 5000, 
     }
   }, interval)
 
-  // Reset lastSeen on wake to prevent false-positive death after sleep
+  // Reset lastSeen and ping failure counter on wake to prevent false-positive
+  // death after sleep (setInterval paused during sleep, then fires immediately)
   const handleVisibility = (): void => {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
       lastSeen = Date.now()
+      consecutivePingFailures = 0
     }
   }
   if (typeof document !== 'undefined') {

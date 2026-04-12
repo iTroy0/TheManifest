@@ -36,25 +36,44 @@ export const STUN_ONLY = {
 }
 
 // Fetch ephemeral TURN credentials from the server-side API.
-// Credentials are HMAC-based and expire after 24 hours.
-// Falls back to STUN-only if the API is unavailable.
+// Credentials are HMAC-based and expire after 2 hours.
+// Retries once on transient failure, then falls back to STUN-only.
+async function fetchTurnCredentials(signal: AbortSignal): Promise<{ username: string; credential: string; urls: string[] } | null> {
+  try {
+    const res = await fetch('/api/turn-credentials', { signal })
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
 export async function getWithTurn(): Promise<typeof STUN_ONLY> {
   if (!TURN_URL) return STUN_ONLY
 
-  try {
-    const res = await fetch('/api/turn-credentials')
-    if (!res.ok) return STUN_ONLY
-    const { username, credential, urls } = await res.json()
-    return {
-      ...signalConfig,
-      config: {
-        iceServers: [
-          ...stunServers,
-          ...((urls as string[]) || []).map((url: string) => ({ urls: url, username, credential })),
-        ],
-      },
+  // Try twice with a 5-second timeout each attempt
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 5000)
+    try {
+      const creds = await fetchTurnCredentials(controller.signal)
+      clearTimeout(timeout)
+      if (creds) {
+        return {
+          ...signalConfig,
+          config: {
+            iceServers: [
+              ...stunServers,
+              ...((creds.urls as string[]) || []).map((url: string) => ({ urls: url, username: creds.username, credential: creds.credential })),
+            ],
+          },
+        }
+      }
+    } catch {
+      clearTimeout(timeout)
     }
-  } catch {
-    return STUN_ONLY
   }
+
+  console.warn('TURN credential fetch failed after 2 attempts — falling back to STUN-only')
+  return STUN_ONLY
 }

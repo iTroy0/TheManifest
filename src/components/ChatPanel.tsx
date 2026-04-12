@@ -11,6 +11,18 @@ interface LinkifyProps {
   text: string
 }
 
+function safeUrl(raw: string): string {
+  try {
+    const u = new URL(raw)
+    // Allowlist — regex already restricts to http(s), but defense-in-depth in
+    // case the regex is ever relaxed.
+    if (u.protocol === 'http:' || u.protocol === 'https:') return u.toString()
+    return '#'
+  } catch {
+    return '#'
+  }
+}
+
 function Linkify({ text }: LinkifyProps) {
   if (!text) return null
   const parts = text.split(URL_REGEX)
@@ -18,7 +30,7 @@ function Linkify({ text }: LinkifyProps) {
     <>
       {parts.map((part, i) =>
         URL_REGEX.test(part)
-          ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-info underline hover:text-info/80 break-all">{part}</a>
+          ? <a key={i} href={safeUrl(part)} target="_blank" rel="noopener noreferrer" className="text-info underline hover:text-info/80 break-all">{part}</a>
           : part
       )}
     </>
@@ -561,7 +573,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     }
   }, [])
 
-  function handleSend(e: React.FormEvent<HTMLFormElement> | React.KeyboardEvent<HTMLTextAreaElement>) {
+  function handleSend(e: { preventDefault: () => void }) {
     e.preventDefault()
     if ((!text.trim() && !imagePreview) || disabled) return
     if (soundEnabled) sounds.messageSent()

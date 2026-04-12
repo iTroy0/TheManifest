@@ -53,10 +53,6 @@ function isVideoType(type: string | undefined): boolean {
   return !!type && type.startsWith('video/')
 }
 
-function isTextType(type: string | undefined): boolean {
-  return !!type && (type.startsWith('text/') || type === 'application/json' || type === 'application/javascript')
-}
-
 interface ImageThumbProps {
   file: File | FileEntry
 }
@@ -362,14 +358,11 @@ interface FileListProps {
   onCancel?: ((index: number) => void) | null
   onPause?: ((index: number) => void) | null
   onResume?: ((index: number) => void) | null
-  onSave?: (() => void) | null
   currentFileIndex?: number | null
 }
 
-export default function FileList({ files, onRemove, onReorder, progress, pendingFiles, pausedFiles, onRequest, onCancel, onPause, onResume, onSave, currentFileIndex }: FileListProps) {
+export default function FileList({ files, onRemove, onReorder, progress, pendingFiles, pausedFiles, onRequest, onCancel, onPause, onResume, currentFileIndex }: FileListProps) {
   const totalSize = files.reduce((sum, f) => sum + f.size, 0)
-  const completedCount = files.filter((_, i) => progress?.[files[i]?.name] === 100).length
-  void completedCount
   const canDrag = !!onReorder && files.length > 1
   const [activeId, setActiveId] = useState<string | null>(null)
 

@@ -8,7 +8,7 @@ import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import ChatPanel from '../components/ChatPanel'
 import { ComponentErrorBoundary } from '../components/ErrorBoundary'
-import { useState, useEffect, type FormEvent, type ChangeEvent } from 'react'
+import { useState, useEffect, type ChangeEvent } from 'react'
 import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Wifi, Archive, Lock, ChevronDown, MessagesSquare, Loader2 } from 'lucide-react'
 
 export default function Portal() {
@@ -153,7 +153,7 @@ export default function Portal() {
                 <p className="text-sm text-muted">Enter the password to access this portal.</p>
               </div>
               <form
-                onSubmit={(e: FormEvent<HTMLFormElement>) => {
+                onSubmit={(e) => {
                   e.preventDefault()
                   setPasswordLoading(true)
                   submitPassword(passwordInput)
@@ -250,6 +250,13 @@ export default function Portal() {
               </StatusIndicator>
             </div>
 
+            {/* Empty manifest state — sender has no files queued */}
+            {!isChatOnly && manifest && (!manifest.files || manifest.files.length === 0) && (
+              <div className="border-t border-border px-4 py-6 text-center">
+                <p className="font-mono text-xs text-muted">Waiting for sender to queue files...</p>
+              </div>
+            )}
+
             {/* File list */}
             {!isChatOnly && manifest && manifest.files?.length > 0 && (
               <div className="border-t border-border">
@@ -274,22 +281,31 @@ export default function Portal() {
                 <div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                   <div className="overflow-hidden">
                     <div className="px-4 pb-4 space-y-3">
-                      {!allDone && !isDead && !hasPending && (
-                        <div className="flex items-center gap-3">
-                          <button
-                            onClick={manifest.files.length === 1 ? () => requestFile(0) : requestAllAsZip}
-                            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-colors"
-                          >
-                            {manifest.files.length === 1
-                              ? <><Download className="w-3.5 h-3.5" /> Download</>
-                              : <><Archive className="w-3.5 h-3.5" /> Download All as Zip</>
-                            }
-                          </button>
-                          {completedCount > 0 && (
-                            <span className="font-mono text-[10px] text-muted">{completedCount}/{manifest.files.length} saved</span>
-                          )}
-                        </div>
-                      )}
+                      {(() => {
+                        if (allDone || isDead || hasPending) return null
+                        // Count what's actually left — a partial-completed manifest
+                        // should drive the button based on remaining, not total.
+                        const remainingIndices = manifest.files.map((_, i) => i).filter(i => !completedFiles[i])
+                        if (remainingIndices.length === 0) return null
+                        const singleRemaining = remainingIndices.length === 1
+                        const onlyIdx = remainingIndices[0]
+                        return (
+                          <div className="flex items-center gap-3">
+                            <button
+                              onClick={singleRemaining ? () => requestFile(onlyIdx) : requestAllAsZip}
+                              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-colors"
+                            >
+                              {singleRemaining
+                                ? <><Download className="w-3.5 h-3.5" /> Download</>
+                                : <><Archive className="w-3.5 h-3.5" /> Download {remainingIndices.length} Files as Zip</>
+                              }
+                            </button>
+                            {completedCount > 0 && (
+                              <span className="font-mono text-[10px] text-muted">{completedCount}/{manifest.files.length} saved</span>
+                            )}
+                          </div>
+                        )
+                      })()}
 
                       {hasPending && (
                         <div className="flex items-center gap-2 bg-info/5 border border-info/15 rounded-lg px-3 py-2">
@@ -347,8 +363,8 @@ export default function Portal() {
         )}
 
 
-        {/* Chat */}
-        {showManifest && !isDead && (
+        {/* Chat — keep visible after disconnect so the user can still read history */}
+        {(showManifest || (manifest && isDead)) && (
           <ComponentErrorBoundary name="Chat">
             <ChatPanel messages={messages} onSend={sendMessage} onClearMessages={clearMessages} disabled={isDead} nickname={nickname} onNicknameChange={changeNickname} onlineCount={onlineCount} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
           </ComponentErrorBoundary>

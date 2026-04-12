@@ -1,5 +1,5 @@
 import Peer, { DataConnection } from 'peerjs'
-import { useState, useReducer, useEffect, useRef, useCallback, MutableRefObject } from 'react'
+import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
 import { parseChunkPacket, buildChunkPacket, waitForBufferDrain, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker } from '../utils/fileChunker'
 import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, getKeyFingerprint, uint8ToBase64 } from '../utils/crypto'
 import { createFileStream } from '../utils/streamWriter'
@@ -203,11 +203,26 @@ export function useReceiver(peerId: string) {
   const manifestTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingResumeRef = useRef<{ index: number; resumeChunk: number } | null>(null)
   const keyExchangeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const originalFingerprintRef = useRef<string | null>(null)
+  const isMountedRef = useRef<boolean>(true)
+  const reconnectTokenRef = useRef<symbol>(Symbol('reconnect'))
+  // Buffers a manifest-enc message that arrives before key exchange completes.
+  // This race is real: the sender sends manifest-enc the moment it derives
+  // encryptKey after receiving the receiver's public-key, but the receiver is
+  // still awaiting its own deriveSharedKey when the message arrives.
+  const pendingManifestRef = useRef<string | null>(null)
 
   const startConnection = useCallback((withTurn: boolean, isReconnect: boolean = false): void => {
     if (!window.crypto?.subtle) { dispatchConn({ type: 'SET_STATUS', payload: 'error' }); return }
+    // Don't restart after unmount — guards against setTimeout-queued reconnects
+    // racing the useEffect cleanup. `destroyedRef` alone is not enough because
+    // startConnection used to clobber it back to false.
+    if (!isMountedRef.current) return
     destroyedRef.current = false
     attemptRef.current = 0
+    // Rotate reconnect token — queued reconnects from older sessions will see
+    // a different token and abort before touching a dead component.
+    reconnectTokenRef.current = Symbol('reconnect')
     dispatchConn({ type: 'SET', payload: { retryCount: 0 } })
     if (!isReconnect) {
       dispatchConn({ type: 'SET', payload: { useRelay: withTurn } })
@@ -254,6 +269,12 @@ export function useReceiver(peerId: string) {
             if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
             if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
             try { conn.removeAllListeners() } catch {}
+            // Null the ICE handler to release the closure
+            if (conn.peerConnection) {
+              try { conn.peerConnection.oniceconnectionstatechange = null } catch {}
+            }
+            // Clear stale pendingResume if the transfer completed between disconnects
+            if (!wasTransferringRef.current) pendingResumeRef.current = null
             setRtt(null)
             setMessages(prev => [...prev, { text: reason, from: 'system', time: Date.now(), self: false }])
             if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
@@ -267,7 +288,12 @@ export function useReceiver(peerId: string) {
               chunksRef.current = {}
               reconnectCountRef.current++
               peer.destroy()
-              setTimeout(() => { if (!destroyedRef.current) startConnection(useTurnRef.current, true) }, RECONNECT_DELAY)
+              const token = reconnectTokenRef.current
+              setTimeout(() => {
+                // Verify the reconnect is still valid — unmount or newer reconnect invalidates it
+                if (!isMountedRef.current || destroyedRef.current || reconnectTokenRef.current !== token) return
+                startConnection(useTurnRef.current, true)
+              }, RECONNECT_DELAY)
             } else {
               Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
               dispatchConn({ type: 'SET_STATUS', payload: 'closed' })
@@ -340,6 +366,13 @@ export function useReceiver(peerId: string) {
           }
 
           if (msg.type === 'public-key') {
+            // Guard against unsolicited mid-session key rotation from a malicious peer.
+            // Allow ONLY if no shared key exists yet (first handshake or post-reconnect
+            // when handleDisconnect has cleared decryptKeyRef).
+            if (decryptKeyRef.current) {
+              console.warn('Ignoring unsolicited public-key message after key established')
+              return
+            }
             try {
               if (!keyPairRef.current) {
                 keyPairRef.current = await generateKeyPair()
@@ -351,6 +384,33 @@ export function useReceiver(peerId: string) {
               if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
               const fp = await getKeyFingerprint(pubKeyBytes, new Uint8Array(msg.key as number[]))
               dispatchConn({ type: 'SET', payload: { fingerprint: fp } })
+
+              // Fingerprint rotation warning — surface any change to the user so
+              // a silent mid-session MitM swap is visible. On a legit reconnect this
+              // is informative; on a MitM takeover it is critical.
+              if (originalFingerprintRef.current && originalFingerprintRef.current !== fp) {
+                setMessages(prev => [...prev, {
+                  text: `Encryption re-established with new fingerprint: ${fp}. Verify with the sender if unexpected.`,
+                  from: 'system',
+                  time: Date.now(),
+                  self: false,
+                }])
+              }
+              originalFingerprintRef.current = fp
+
+              // Process any manifest that arrived before the key was ready
+              if (pendingManifestRef.current) {
+                const data = pendingManifestRef.current
+                pendingManifestRef.current = null
+                try {
+                  const manifest = await decryptJSON<ManifestData>(decryptKeyRef.current, data)
+                  dispatchConn({ type: 'SET', payload: { manifest } })
+                  manifestRef.current = manifest
+                  dispatchConn({ type: 'SET_STATUS', payload: (prev: string) => prev === 'receiving' ? prev : 'manifest-received' })
+                } catch (e) {
+                  console.warn('Failed to decrypt deferred manifest:', e)
+                }
+              }
 
               // Resume deferred transfer now that we have the new decryption key
               if (pendingResumeRef.current) {
@@ -459,10 +519,32 @@ export function useReceiver(peerId: string) {
             return
           }
 
+          // Reject any unencrypted manifest to prevent MITM injection. Only
+          // 'manifest-enc' is trusted — it proves the sender holds the shared
+          // ECDH-derived AES key.
           if (msg.type === 'manifest') {
-            dispatchConn({ type: 'SET', payload: { manifest: msg as unknown as ManifestData } })
-            manifestRef.current = msg as unknown as ManifestData
-            dispatchConn({ type: 'SET_STATUS', payload: (prev: string) => prev === 'receiving' ? prev : 'manifest-received' })
+            console.warn('Rejected unencrypted manifest — possible MITM attempt')
+            return
+          }
+
+          if (msg.type === 'manifest-enc') {
+            if (!msg.data) return
+            // If the key is still being derived, buffer the message; the
+            // public-key handler will process it once decryptKeyRef is set.
+            if (!decryptKeyRef.current) {
+              pendingManifestRef.current = msg.data as string
+              return
+            }
+            try {
+              const manifest = await decryptJSON<ManifestData>(decryptKeyRef.current, msg.data as string)
+              dispatchConn({ type: 'SET', payload: { manifest } })
+              manifestRef.current = manifest
+              dispatchConn({ type: 'SET_STATUS', payload: (prev: string) => prev === 'receiving' ? prev : 'manifest-received' })
+            } catch (e) {
+              console.warn('Failed to decrypt manifest:', e)
+              dispatchConn({ type: 'SET_STATUS', payload: 'error' })
+            }
+            return
           }
 
           if (msg.type === 'file-cancelled') {
@@ -540,6 +622,9 @@ export function useReceiver(peerId: string) {
             await chunkQueueRef.current
 
             wasTransferringRef.current = false
+            pendingResumeRef.current = null
+            // Reset reconnect budget — a successful transfer restores the full retry count
+            reconnectCountRef.current = 0
             dispatchTransfer({ type: 'SET', payload: { pendingFiles: {}, overallProgress: 100, speed: 0, eta: null } })
             dispatchConn({ type: 'SET_STATUS', payload: 'manifest-received' })
 
@@ -558,9 +643,14 @@ export function useReceiver(peerId: string) {
           if (disconnectHandled) return
           disconnectHandled = true
           try { conn.removeAllListeners() } catch {}
+          if (conn.peerConnection) {
+            try { conn.peerConnection.oniceconnectionstatechange = null } catch {}
+          }
           if (heartbeatRef.current) heartbeatRef.current.cleanup()
           if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
           if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
+          // Clear stale pendingResume if the transfer had completed
+          if (!wasTransferringRef.current) pendingResumeRef.current = null
           chunkQueueRef.current = Promise.resolve()
           imageSendQueueRef.current = Promise.resolve()
           inProgressImageRef.current = null
@@ -572,7 +662,11 @@ export function useReceiver(peerId: string) {
             chunksRef.current = {}
             reconnectCountRef.current++
             peer.destroy()
-            setTimeout(() => { if (!destroyedRef.current) startConnection(useTurnRef.current, true) }, RECONNECT_DELAY)
+            const token = reconnectTokenRef.current
+            setTimeout(() => {
+              if (!isMountedRef.current || destroyedRef.current || reconnectTokenRef.current !== token) return
+              startConnection(useTurnRef.current, true)
+            }, RECONNECT_DELAY)
             return
           }
           Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
@@ -615,13 +709,20 @@ export function useReceiver(peerId: string) {
 
   useEffect(() => {
     if (!peerId) return
+    // Reset mount flag on (re-)mount — cleanup from a prior run may have set
+    // it to false, which would make startConnection's mounted-guard bail.
+    isMountedRef.current = true
+    reconnectTokenRef.current = Symbol('reconnect')
 
     const handleBeforeUnload = (): void => {
       try { connRef.current?.send({ type: 'closing' }) } catch {}
     }
     window.addEventListener('beforeunload', handleBeforeUnload)
+    // iOS Safari does not reliably fire beforeunload — pagehide is the correct event
+    window.addEventListener('pagehide', handleBeforeUnload)
 
     const handleOnline = (): void => {
+      if (!isMountedRef.current) return
       if (connRef.current && !connRef.current.open && reconnectCountRef.current < MAX_RECONNECTS) {
         startConnection(useTurnRef.current, true)
       }
@@ -630,7 +731,11 @@ export function useReceiver(peerId: string) {
 
     startConnection(false)
     return () => {
+      // Mark unmounted BEFORE other cleanup to short-circuit any racing reconnects
+      isMountedRef.current = false
+      reconnectTokenRef.current = Symbol('unmounted')
       window.removeEventListener('beforeunload', handleBeforeUnload)
+      window.removeEventListener('pagehide', handleBeforeUnload)
       window.removeEventListener('online', handleOnline)
       Object.values(typingTimeouts.current).forEach(clearTimeout)
       typingTimeouts.current = {}
@@ -662,7 +767,11 @@ export function useReceiver(peerId: string) {
     if (peerRef.current) peerRef.current.destroy()
     useTurnRef.current = true
     dispatchConn({ type: 'SET', payload: { useRelay: true } })
-    setTimeout(() => { startConnection(true) }, 500)
+    const token = reconnectTokenRef.current
+    setTimeout(() => {
+      if (!isMountedRef.current || reconnectTokenRef.current !== token) return
+      startConnection(true)
+    }, 500)
   }, [startConnection])
 
   const cancelFile = useCallback((index: number): void => {
@@ -933,7 +1042,7 @@ async function streamImageToHost(
   replyTo: { text: string; from: string; time: number } | null,
   time: number,
   nickname: string,
-  destroyedRef: MutableRefObject<boolean>,
+  destroyedRef: { current: boolean },
   duration?: number
 ): Promise<void> {
   if (!conn || conn.open === false || !key) return

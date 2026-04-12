@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef, type ChangeEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, MessageCircle, MessagesSquare, Plus, type LucideIcon } from 'lucide-react'
+import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, MessagesSquare, Plus, type LucideIcon } from 'lucide-react'
 import { useSender } from '../hooks/useSender'
 import { formatSpeed, formatTime, formatBytes } from '../utils/formatBytes'
 import { usePageTitle } from '../hooks/usePageTitle'
@@ -187,7 +187,7 @@ export default function Home() {
         )}
 
         {/* ── Active session UI ── */}
-        {isActive && (
+        {isActive && !isFinished && (
           <>
             {/* Hidden file input */}
             <input
@@ -254,23 +254,24 @@ export default function Home() {
                 <div className="border-t border-border">
                   {hasFiles ? (
                     <>
-                      <button
-                        onClick={() => setFilesOpen(o => !o)}
-                        aria-expanded={filesOpen}
-                        className="w-full flex items-center justify-between px-4 py-3 text-left group"
-                      >
-                        <div className="flex items-center gap-2">
-                          <Upload className="w-3.5 h-3.5 text-accent" />
+                      <div className="w-full flex items-center justify-between px-4 py-3 group">
+                        <button
+                          type="button"
+                          onClick={() => setFilesOpen(o => !o)}
+                          aria-expanded={filesOpen}
+                          className="flex items-center gap-2 text-left flex-1 min-w-0"
+                        >
+                          <Upload className="w-3.5 h-3.5 text-accent shrink-0" />
                           <span className="font-mono text-sm text-text-bright font-bold">{files.length}</span>
-                          <span className="text-xs text-muted">
+                          <span className="text-xs text-muted truncate">
                             file{files.length !== 1 ? 's' : ''} &middot; {formatBytes(files.reduce((s, f) => s + f.size, 0))}
                           </span>
-                        </div>
-                        <div className="flex items-center gap-1">
+                        </button>
+                        <div className="flex items-center gap-1 shrink-0">
                           {!isTransferring && !isFinished && (
                             <button
                               type="button"
-                              onClick={(e) => { e.stopPropagation(); addInputRef.current?.click() }}
+                              onClick={() => addInputRef.current?.click()}
                               className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
                               title="Add more files"
                               aria-label="Add more files"
@@ -278,9 +279,16 @@ export default function Home() {
                               <Plus className="w-4 h-4" />
                             </button>
                           )}
-                          <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesOpen ? 'rotate-180' : ''}`} />
+                          <button
+                            type="button"
+                            onClick={() => setFilesOpen(o => !o)}
+                            aria-label={filesOpen ? 'Collapse file list' : 'Expand file list'}
+                            className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
+                          >
+                            <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${filesOpen ? 'rotate-180' : ''}`} />
+                          </button>
                         </div>
-                      </button>
+                      </div>
                       <div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                         <div className="overflow-hidden">
                           <div className="px-4 pb-3">

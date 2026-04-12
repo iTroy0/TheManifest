@@ -1,7 +1,7 @@
 import Peer, { DataConnection } from 'peerjs'
 import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
 import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
-import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
+import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { STUN_ONLY } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { generateVideoThumbnail, generateTextPreview, generateThumbnailsBatch } from '../utils/thumbnailWorker'
@@ -250,13 +250,16 @@ export function useSender() {
         }})
       }
 
-      async function sendManifest(c: DataConnection): Promise<void> {
+      async function sendManifest(c: DataConnection, key: CryptoKey): Promise<void> {
         const manifest = await buildManifestData(filesRef.current, chatOnlyRef.current)
-        // Security note: manifest is sent unencrypted over the data channel.
-        // The WebRTC data channel is already DTLS-encrypted at the transport layer.
-        // Application-level encryption of the manifest would require a protocol
-        // version negotiation step and is left as a future improvement (TODO).
-        c.send(manifest)
+        // Encrypt the manifest with the ECDH-derived shared key so a MITM cannot
+        // inject attacker-controlled filenames/sizes before trust is established.
+        try {
+          const encrypted = await encryptJSON(key, manifest)
+          c.send({ type: 'manifest-enc', data: encrypted })
+        } catch (e) {
+          console.warn('Failed to encrypt manifest:', e)
+        }
       }
 
       conn.on('open', async () => {
@@ -277,6 +280,10 @@ export function useSender() {
             connState.pauseResolvers = {}
           }
           try { conn.removeAllListeners() } catch {}
+          // Null ICE handler to release the closure holding connState
+          if (conn.peerConnection) {
+            try { conn.peerConnection.oniceconnectionstatechange = null } catch {}
+          }
           const name = connState.nickname || 'A recipient'
           connectionsRef.current.delete(connId)
           dispatchConn({ type: 'SET', payload: { recipientCount: connectionsRef.current.size } })
@@ -335,7 +342,7 @@ export function useSender() {
             if (passwordRef.current) {
               conn.send({ type: 'password-required' })
             } else {
-              await sendManifest(conn)
+              await sendManifest(conn, connState.encryptKey)
             }
           } catch {
             conn.close()
@@ -381,7 +388,7 @@ export function useSender() {
             if (passwordRef.current) {
               conn.send({ type: 'password-required' })
             } else {
-              await sendManifest(conn)
+              await sendManifest(conn, connState.encryptKey)
             }
           } catch {
             conn.close()
@@ -391,14 +398,16 @@ export function useSender() {
 
         if (msg.type === 'password-encrypted') {
           const now = Date.now()
-          if (now - lastPasswordAttemptTime.current < 2000) {
+          // Exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 30s
+          const backoffMs = Math.min(30_000, 1000 * Math.pow(2, Math.max(0, globalPasswordAttempts.current - 1)))
+          if (now - lastPasswordAttemptTime.current < backoffMs) {
             try { conn.send({ type: 'password-rate-limited' }) } catch {}
             return
           }
           lastPasswordAttemptTime.current = now
           globalPasswordAttempts.current += 1
           connState.passwordAttempts = (connState.passwordAttempts || 0) + 1
-          if (globalPasswordAttempts.current > 20 || connState.passwordAttempts > 5) {
+          if (globalPasswordAttempts.current > 8 || connState.passwordAttempts > 5) {
             conn.send({ type: 'password-locked' })
             conn.close()
             return
@@ -422,7 +431,7 @@ export function useSender() {
               connState.pendingJoinAnnounce = false
               announceJoin(connState, connId)
             }
-            await sendManifest(conn)
+            if (connState.encryptKey) await sendManifest(conn, connState.encryptKey)
           } else {
             conn.send({ type: 'password-wrong' })
           }
@@ -631,10 +640,19 @@ export function useSender() {
           const file = filesRef.current[msg.index as number]
           if (!file) return
           const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
-          const resumeChunk = Math.min(Math.max(0, (msg.resumeChunk as number) || 0), totalChunks)
+          // Clamp to totalChunks - 1 so request for the last chunk still sends it.
+          // A resumeChunk === totalChunks would skip the whole file but still send file-end.
+          const resumeChunk = Math.min(Math.max(0, (msg.resumeChunk as number) || 0), Math.max(0, totalChunks - 1))
           startTransfer(file.size)
-          await sendSingleFile(conn, filesRef.current, msg.index as number, resumeChunk, connState, connState.encryptKey, aggregateUI)
-          if (!connState.abort.aborted) endTransfer()
+          try {
+            await sendSingleFile(conn, filesRef.current, msg.index as number, resumeChunk, connState, connState.encryptKey, aggregateUI)
+            if (!connState.abort.aborted) endTransfer()
+          } catch (e) {
+            console.warn('sendSingleFile failed:', e)
+            connState.abort.aborted = true
+            endTransfer()
+            try { conn.close() } catch {}
+          }
         }
 
         if (msg.type === 'request-all') {
@@ -677,6 +695,9 @@ export function useSender() {
         if (destroyed || connState.disconnectHandled) return
         connState.disconnectHandled = true
         try { conn.removeAllListeners() } catch {}
+        if (conn.peerConnection) {
+          try { conn.peerConnection.oniceconnectionstatechange = null } catch {}
+        }
         connState.abort.aborted = true
         if (connState.heartbeat) connState.heartbeat.cleanup()
         if (connState.rttPoller) connState.rttPoller.cleanup()
@@ -740,10 +761,13 @@ export function useSender() {
       })
     }
     window.addEventListener('beforeunload', handleBeforeUnload)
+    // iOS Safari does not reliably fire beforeunload — pagehide is the correct event
+    window.addEventListener('pagehide', handleBeforeUnload)
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility)
       window.removeEventListener('beforeunload', handleBeforeUnload)
+      window.removeEventListener('pagehide', handleBeforeUnload)
       Object.values(typingTimeouts.current).forEach(clearTimeout)
       typingTimeouts.current = {}
       destroyed = true
@@ -836,9 +860,13 @@ export function useSender() {
   const broadcastManifest = useCallback(async (): Promise<void> => {
     if (connectionsRef.current.size === 0) return
     const manifest = await buildManifestData(filesRef.current, chatOnlyRef.current)
-    connectionsRef.current.forEach(cs => {
-      try { cs.conn.send(manifest) } catch {}
-    })
+    for (const cs of connectionsRef.current.values()) {
+      if (!cs.encryptKey) continue
+      try {
+        const encrypted = await encryptJSON(cs.encryptKey, manifest)
+        cs.conn.send({ type: 'manifest-enc', data: encrypted })
+      } catch (e) { console.warn('Failed to broadcast manifest:', e) }
+    }
   }, [])
 
   const reset = useCallback((): void => {
@@ -959,6 +987,8 @@ async function sendSingleFile(
 
 // ── handleHostChunk ───────────────────────────────────────────────────────
 
+const MAX_CHAT_IMAGE_SIZE_SENDER = 10 * 1024 * 1024 // 10MB ceiling
+
 async function handleHostChunk(connState: ConnState, rawData: ArrayBuffer | ArrayBufferView): Promise<void> {
   if (!connState.encryptKey) return
   const buffer = rawData instanceof ArrayBuffer
@@ -969,10 +999,21 @@ async function handleHostChunk(connState: ConnState, rawData: ArrayBuffer | Arra
   if (parsed.fileIndex !== CHAT_IMAGE_FILE_INDEX) return
   let plain: ArrayBuffer | Uint8Array
   try { plain = await decryptChunk(connState.encryptKey, parsed.data) }
-  catch { return }
+  catch (e) {
+    // Decrypt failure — drop the in-flight image to prevent memory buildup
+    console.warn('handleHostChunk decrypt failed:', e)
+    connState.inProgressImage = null
+    return
+  }
   const inFlight = connState.inProgressImage
   if (!inFlight) return
   const bytes = plain instanceof Uint8Array ? plain : new Uint8Array(plain)
+  // Enforce size cap even on the relay path to prevent a malicious peer from exhausting host memory
+  if (inFlight.receivedBytes + bytes.byteLength > MAX_CHAT_IMAGE_SIZE_SENDER) {
+    console.warn('handleHostChunk: chat image exceeds size cap, dropping')
+    connState.inProgressImage = null
+    return
+  }
   inFlight.chunks.push(bytes)
   inFlight.receivedBytes += bytes.byteLength
 }

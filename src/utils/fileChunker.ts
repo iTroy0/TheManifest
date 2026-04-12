@@ -98,12 +98,10 @@ export class AdaptiveChunker {
 export class ProgressThrottler {
   private updateIntervalMs: number
   private lastUpdate: number
-  pendingUpdate: null
 
   constructor(updateIntervalMs = 80) { // ~12fps default
     this.updateIntervalMs = updateIntervalMs
     this.lastUpdate = 0
-    this.pendingUpdate = null
   }
 
   shouldUpdate(): boolean {
@@ -174,7 +172,7 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
   if (!dc || dc.readyState === 'closed' || dc.readyState === 'closing') return
   if (dc.bufferedAmount <= BUFFER_THRESHOLD) return
 
-  return new Promise<void>((resolve) => {
+  return new Promise<void>((resolve, reject) => {
     let settled = false
     const done = () => { if (!settled) { settled = true; cleanup(); resolve() } }
 
@@ -201,8 +199,16 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
     dc.addEventListener('close', onClose)
     dc.addEventListener('error', onClose)
 
-    // Race 3: timeout to prevent infinite hang on zombie channels
-    drainTimeout = setTimeout(done, 30_000)
+    // Race 3: timeout to prevent infinite hang on zombie channels.
+    // Rejects (not resolves) so the caller can detect the stalled channel
+    // and abort the file transfer instead of piling chunks into a dead buffer.
+    drainTimeout = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        cleanup()
+        reject(new Error('Buffer drain timeout — channel may be stalled'))
+      }
+    }, 30_000)
 
     function cleanup(): void {
       if (!dc) return

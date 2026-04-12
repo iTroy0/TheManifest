@@ -122,7 +122,7 @@ describe('File Transfer Pipeline (encrypt → chunk → packet → parse → dec
   })
 
   it('handles empty file', async () => {
-    const { senderKey, receiverKey } = await makeSharedKeys()
+    const { senderKey } = await makeSharedKeys()
     const original = new Uint8Array(0)
 
     const packets = await chunkAndEncrypt(original, 0, senderKey)

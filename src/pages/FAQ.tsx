@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { ArrowLeft, ChevronDown, Shield, Zap, Lock, Globe, Eye, Server, HelpCircle, type LucideIcon } from 'lucide-react'
+import { ArrowLeft, ChevronDown, Shield, Zap, Globe, HelpCircle, type LucideIcon } from 'lucide-react'
 import { useState } from 'react'
 import { usePageTitle } from '../hooks/usePageTitle'
 
