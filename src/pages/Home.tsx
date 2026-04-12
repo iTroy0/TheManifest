@@ -77,6 +77,7 @@ export default function Home() {
   const startChatRoom = useCallback((): void => {
     setChatMode(true)
     setChatOnly(true)
+    setSessionStarted(true)
   }, [setChatOnly])
 
   const performReset = useCallback((): void => {
