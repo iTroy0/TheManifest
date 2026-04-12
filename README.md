@@ -51,6 +51,7 @@
 | End-to-end encrypted | ✅ | ❌ | ❌ | ❌ |
 | Zero server storage | ✅ | ❌ | ❌ | ❌ |
 | Real-time chat | ✅ | ❌ | ❌ | ❌ |
+| Voice notes | ✅ | ❌ | ❌ | ❌ |
 | No third-party requests | ✅ | ❌ | ❌ | ❌ |
 | Completely free | ✅ | ❌ | ❌ | ❌ |
 
@@ -74,12 +75,13 @@
 - **Backpressure-aware** — Buffer drain between chunks prevents congestion
 - **Pause, resume, cancel** — Full transfer control per file
 - **Auto-reconnect** — Resumes from last chunk on disconnect
-- **Live file sharing** — Add files while recipients are connected
+- **Live file sharing** — Add or remove files while recipients are connected
 - **Bulk zip download** — Download all files as a single streaming archive
 - **File previews** — Image/video thumbnails & text previews via Web Worker
 
 ### Chat & Collaboration
 - **Encrypted chat rooms** — Standalone group chat mode
+- **Voice notes** — Record and send encrypted voice messages (up to 3 minutes) with seekable playback
 - **GIF support** — Animated GIFs sent through the binary chunk pipeline (no base64 inflation)
 - **Image sharing** — Drag-and-drop or paste images directly in chat
 - **Typing indicators** — See who's typing in real-time
@@ -88,13 +90,14 @@
 - **Sound & notifications** — Configurable alerts for new messages
 - **Fullscreen & popout** — Moveable, resizable popout chat on desktop; fullscreen on mobile
 - **RTL support** — Arabic and other RTL languages work natively
-- **Clear messages** — Local-only clear with confirmation
+- **Clear messages** — Local-only clear with confirmation dialog
 
 ### Reliability
 - **Multiple recipients** — Unlimited simultaneous connections
 - **Heartbeat monitoring** — 30s timeout with proof-of-life on any incoming traffic
 - **Zombie detection** — ICE state + heartbeat dedup prevents false disconnects
 - **Reconnect dedup** — Nickname-based eviction prevents stale connection accumulation
+- **Buffer drain safety** — waitForBufferDrain races against channel close to prevent hangs
 - **TURN relay fallback** — Encrypted relay for strict NATs and firewalls
 
 ### Experience
@@ -119,7 +122,7 @@ npm run dev
 Run the test suite:
 
 ```bash
-npm test                        # 104 tests
+npm test                        # 196 tests
 npm test -- --reporter=verbose  # see each test name
 ```
 
@@ -164,19 +167,21 @@ With self-hosted infrastructure, the only external connections during a session 
 ## Tech Stack
 
 <p>
+  <img src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white" />
   <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=white" />
   <img src="https://img.shields.io/badge/Vite-6-646CFF?style=flat-square&logo=vite&logoColor=white" />
   <img src="https://img.shields.io/badge/Tailwind-4-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white" />
   <img src="https://img.shields.io/badge/WebRTC-P2P-333333?style=flat-square&logo=webrtc&logoColor=white" />
   <img src="https://img.shields.io/badge/Web%20Crypto-AES--256-000000?style=flat-square" />
-  <img src="https://img.shields.io/badge/Vitest-104%20tests-6E9F18?style=flat-square&logo=vitest&logoColor=white" />
+  <img src="https://img.shields.io/badge/Vitest-196%20tests-6E9F18?style=flat-square&logo=vitest&logoColor=white" />
 </p>
 
+- **Language:** TypeScript (strict mode)
 - **Frontend:** React 19, Vite 6, Tailwind CSS v4
 - **P2P:** PeerJS (WebRTC), Web Crypto API (ECDH + AES-256-GCM)
 - **Streaming:** StreamSaver.js, fflate (zip)
 - **Fonts:** Self-hosted Inter & JetBrains Mono via @fontsource
-- **Testing:** Vitest (104 tests — crypto, chunking, transfer pipeline, integration)
+- **Testing:** Vitest (196 tests — crypto, chunking, transfer pipeline, connection helpers, integration)
 
 **No backend. No database. Deploy as a static site.**
 
@@ -200,8 +205,8 @@ With self-hosted infrastructure, the only external connections during a session 
        │     (backpressure-aware)         │
        │─────────────────────────────────►│
        │                                  │
-       │  4. Chat images via binary       │
-       │     chunk pipeline               │
+       │  4. Chat, images & voice notes   │
+       │     via binary chunk pipeline    │
        │◄────────────────────────────────►│
        │                                  │
        │        WebRTC DataChannel        │

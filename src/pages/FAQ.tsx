@@ -86,6 +86,14 @@ const faqs: FAQCategoryData[] = [
       {
         q: 'Can multiple people download at once?',
         a: 'Yes! Multiple recipients can connect to your portal simultaneously. Each gets their own encrypted channel with a unique encryption key.'
+      },
+      {
+        q: 'Are voice notes encrypted?',
+        a: 'Yes. Voice notes go through the same binary chunk pipeline as file transfers — each chunk is encrypted with AES-256-GCM before leaving your browser. The relay server cannot hear your recordings.'
+      },
+      {
+        q: 'Does the app access my microphone?',
+        a: 'Only when you tap the voice note button. Your browser will ask for microphone permission the first time. Audio is recorded locally, encrypted, and streamed directly to the other peer. No audio is ever sent to a server.'
       }
     ]
   },

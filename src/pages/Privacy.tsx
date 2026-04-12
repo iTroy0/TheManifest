@@ -20,6 +20,7 @@ const sections: SectionData[] = [
         <li>No telemetry. Nothing about your session is reported back to us.</li>
         <li>No file metadata. We never see file names, sizes, types, or contents.</li>
         <li>No chat logs. Messages exist only in the browsers of the people in the room.</li>
+        <li>No voice recordings stored. Voice notes are encrypted and streamed peer-to-peer. We never hear them.</li>
       </ul>
     ),
   },
@@ -90,6 +91,11 @@ const sections: SectionData[] = [
             (<code className="text-accent text-xs">stun.l.google.com</code>) are listed as a
             fallback only and are reached only if our box is unavailable. STUN sees your IP but
             never sees any of your traffic.
+          </li>
+          <li>
+            <span className="text-text">Microphone</span> access is requested only when you tap the
+            voice note button. Audio is recorded locally in your browser, encrypted, and streamed
+            directly to the other peer. No audio data is sent to or processed by any server.
           </li>
           <li>
             <span className="text-text">External links</span> in the footer (GitHub, Buy Me a
