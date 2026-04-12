@@ -2,6 +2,7 @@ export interface ChatMessage {
   text: string
   image?: string
   mime?: string
+  duration?: number
   replyTo?: { text: string; from: string; time: number } | null
   from: string
   time: number

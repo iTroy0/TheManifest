@@ -1,6 +1,6 @@
 import React, { useState, useReducer, useRef, useEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, Minimize2, MoreVertical, ExternalLink } from 'lucide-react'
+import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, Minimize2, MoreVertical, ExternalLink, Mic, Play, Pause } from 'lucide-react'
 import { sounds, canNotify, requestNotificationPermission, alertNewMessage } from '../utils/notifications'
 import { ChatMessage } from '../types'
 
@@ -25,23 +25,93 @@ function Linkify({ text }: LinkifyProps) {
   )
 }
 
-function formatRelativeTime(timestamp: number): string {
-  const now = Date.now()
-  const diff = now - timestamp
-  const seconds = Math.floor(diff / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const hours = Math.floor(minutes / 60)
-
-  if (seconds < 30) return 'just now'
-  if (seconds < 60) return `${seconds}s`
-  if (minutes < 60) return `${minutes}m`
-  if (hours < 24) return `${hours}h`
-  return new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' })
-}
-
 const TYPING_DELAY_0 = { animationDelay: '0ms' }
 const TYPING_DELAY_1 = { animationDelay: '150ms' }
 const TYPING_DELAY_2 = { animationDelay: '300ms' }
+
+function formatDur(s: number) {
+  if (!s || !isFinite(s)) return '0:00'
+  const m = Math.floor(s / 60)
+  const sec = Math.floor(s % 60)
+  return `${m}:${sec.toString().padStart(2, '0')}`
+}
+
+function VoicePlayer({ src, knownDuration }: { src: string; knownDuration?: number }) {
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const barRef = useRef<HTMLDivElement>(null)
+  const [playing, setPlaying] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(knownDuration || 0)
+
+  useEffect(() => {
+    const a = audioRef.current
+    if (!a) return
+    const getDur = () => (a.duration && isFinite(a.duration)) ? a.duration : (knownDuration || 0)
+    const onTime = () => {
+      setCurrentTime(a.currentTime)
+      const dur = getDur()
+      setProgress(dur ? (a.currentTime / dur) * 100 : 0)
+      // Once playing, browser resolves the real duration
+      if (a.duration && isFinite(a.duration)) setDuration(a.duration)
+    }
+    const onMeta = () => { const d = getDur(); if (d) setDuration(d) }
+    const onEnd = () => { setPlaying(false); setProgress(0); setCurrentTime(0) }
+    a.addEventListener('timeupdate', onTime)
+    a.addEventListener('loadedmetadata', onMeta)
+    a.addEventListener('durationchange', onMeta)
+    a.addEventListener('ended', onEnd)
+    return () => {
+      a.removeEventListener('timeupdate', onTime)
+      a.removeEventListener('loadedmetadata', onMeta)
+      a.removeEventListener('durationchange', onMeta)
+      a.removeEventListener('ended', onEnd)
+    }
+  }, [knownDuration])
+
+  function toggle() {
+    const a = audioRef.current
+    if (!a) return
+    if (playing) { a.pause(); setPlaying(false) }
+    else { a.play(); setPlaying(true) }
+  }
+
+  function seek(e: React.MouseEvent | React.TouchEvent) {
+    const a = audioRef.current
+    const bar = barRef.current
+    if (!a || !bar || !a.duration) return
+    const rect = bar.getBoundingClientRect()
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+    a.currentTime = pct * a.duration
+  }
+
+  return (
+    <div className="flex items-center gap-2.5 min-w-[200px]">
+      <audio ref={audioRef} src={src} preload="metadata" />
+      <button
+        onClick={(e) => { e.stopPropagation(); toggle() }}
+        className="shrink-0 w-9 h-9 rounded-full bg-accent flex items-center justify-center text-bg active:scale-90 transition-transform"
+      >
+        {playing ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
+      </button>
+      <div className="flex-1 min-w-0">
+        <div
+          ref={barRef}
+          onClick={(e) => { e.stopPropagation(); seek(e) }}
+          onTouchStart={(e) => { e.stopPropagation(); seek(e) }}
+          className="h-2 bg-border rounded-full overflow-hidden cursor-pointer relative group"
+        >
+          <div className="h-full bg-accent rounded-full transition-all duration-75" style={{ width: `${progress}%` }} />
+        </div>
+        <div className="flex justify-between mt-0.5">
+          <span className="font-mono text-[9px] text-muted">{formatDur(currentTime)}</span>
+          <span className="font-mono text-[9px] text-muted">{formatDur(duration)}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function TypingDots() {
   return (
@@ -126,6 +196,7 @@ interface ImagePreview {
   url: string
   bytes: Uint8Array
   mime: string
+  duration?: number
 }
 
 interface ViewImage {
@@ -206,6 +277,13 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const [editName, setEditName] = useState(nickname || '')
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [notifyEnabled, setNotifyEnabled] = useState(false)
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingTime, setRecordingTime] = useState(0)
+  const recordingTimeRef = useRef(0) // ref mirror — closures read this, not stale state
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const recordingChunksRef = useRef<Blob[]>([])
+
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const prevLen = useRef(messages.length)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
@@ -365,6 +443,95 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     }
   }
 
+  // ── Voice recording ──────────────────────────────────────────────────
+  const MAX_RECORDING_SECS = 180
+
+  function getRecordingMime(): string {
+    if (typeof MediaRecorder === 'undefined') return ''
+    if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) return 'audio/webm;codecs=opus'
+    if (MediaRecorder.isTypeSupported('audio/webm')) return 'audio/webm'
+    if (MediaRecorder.isTypeSupported('audio/mp4')) return 'audio/mp4'
+    return ''
+  }
+
+  async function startRecording() {
+    const mime = getRecordingMime()
+    if (!mime) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream, { mimeType: mime })
+      recordingChunksRef.current = []
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordingChunksRef.current.push(e.data)
+      }
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null }
+        const blob = new Blob(recordingChunksRef.current, { type: mime })
+        recordingChunksRef.current = []
+        if (blob.size === 0) {
+          setIsRecording(false)
+          setRecordingTime(0)
+          return
+        }
+        const bytes = new Uint8Array(await blob.arrayBuffer())
+        const url = URL.createObjectURL(blob)
+        if (soundEnabled) sounds.messageSent()
+        onSend('', { url, bytes, mime: mime.split(';')[0], duration: recordingTimeRef.current }, undefined)
+        setIsRecording(false)
+        setRecordingTime(0)
+        recordingTimeRef.current = 0
+      }
+
+      recorder.start(250) // collect in 250ms chunks for smooth recording
+      mediaRecorderRef.current = recorder
+      setIsRecording(true)
+      setRecordingTime(0)
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime(t => {
+          const next = t + 1
+          recordingTimeRef.current = next
+          if (next >= MAX_RECORDING_SECS) { stopRecording(); return t }
+          return next
+        })
+      }, 1000)
+    } catch { /* mic permission denied or unavailable */ }
+  }
+
+  function stopRecording() {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+    }
+  }
+
+  function cancelRecording() {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.ondataavailable = null
+      mediaRecorderRef.current.onstop = () => {
+        mediaRecorderRef.current?.stream?.getTracks().forEach(t => t.stop())
+      }
+      mediaRecorderRef.current.stop()
+    }
+    if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null }
+    recordingChunksRef.current = []
+    setIsRecording(false)
+    setRecordingTime(0)
+    recordingTimeRef.current = 0
+  }
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stream?.getTracks().forEach(t => t.stop())
+        mediaRecorderRef.current.stop()
+      }
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
+    }
+  }, [])
+
   function handleSend(e: React.FormEvent<HTMLFormElement> | React.KeyboardEvent<HTMLTextAreaElement>) {
     e.preventDefault()
     if ((!text.trim() && !imagePreview) || disabled) return
@@ -472,12 +639,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     e.stopPropagation()
     const el = popoutRef.current
     if (!el) return
-    const touch = (e as React.TouchEvent).touches
-    const clientX = touch ? touch[0].clientX : (e as React.MouseEvent).clientX
-    const clientY = touch ? touch[0].clientY : (e as React.MouseEvent).clientY
     const rect = el.getBoundingClientRect()
-    const startW = rect.width
-    const startH = rect.height
     const startRight = rect.right
     const startBottom = rect.bottom
 
@@ -984,14 +1146,16 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                                 </div>
                               )}
 
-                              {msg.image && (
+                              {msg.image && msg.mime?.startsWith('audio/') ? (
+                                <VoicePlayer src={msg.image} knownDuration={msg.duration} />
+                              ) : msg.image ? (
                                 <img
                                   src={msg.image}
                                   alt=""
                                   className="rounded-lg max-w-full max-h-[200px] object-contain cursor-pointer hover:opacity-90 transition-opacity shadow-sm"
                                   onClick={(e: React.MouseEvent) => { e.stopPropagation(); dispatchInteract({ type: 'SET', payload: { viewImage: { url: msg.image, mime: msg.mime } } }) }}
                                 />
-                              )}
+                              ) : null}
 
                               {msg.text && (
                                 <p className="text-[13px] text-text break-words leading-relaxed">
@@ -1145,57 +1309,108 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 className={`flex gap-1.5 sm:gap-2 items-end ${isFullscreen || isPopout ? 'px-3 py-2' : ''} ${isDragOver ? 'ring-2 ring-accent/40 rounded-xl' : ''}`}
               >
               <input ref={imageInputRef} type="file" accept="image/*" onChange={handleImagePick} className="hidden" />
-              <button
-                type="button"
-                onClick={() => imageInputRef.current?.click()}
-                disabled={disabled}
-                aria-label="Attach image"
-                className="shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-surface border border-border text-muted
-                  hover:text-accent hover:border-accent/30 active:scale-95 transition-all flex items-center justify-center
-                  disabled:opacity-30 disabled:cursor-not-allowed self-end"
-              >
-                <ImagePlus className="w-4 h-4 sm:w-5 sm:h-5" />
-              </button>
-              <textarea
-                ref={textInputRef}
-                dir="auto"
-                rows={1}
-                autoComplete="off"
-                autoCorrect="on"
-                autoCapitalize="sentences"
-                spellCheck={true}
-                enterKeyHint="send"
-                data-form-type="other"
-                data-lpignore="true"
-                data-1p-ignore="true"
-                value={text}
-                onChange={handleTyping}
-                onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    handleSend(e)
-                  }
-                }}
-                placeholder={disabled ? 'Connect to chat' : 'Message...'}
-                maxLength={2000}
-                disabled={disabled}
-                className="flex-1 min-w-0 bg-bg border border-border rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 font-mono text-[16px] sm:text-sm text-text
-                  placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-all
-                  disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px] max-h-[120px]
-                  resize-none overflow-y-auto scrollbar-thin"
-              />
-              <button
-                type="submit"
-                disabled={disabled || (!text.trim() && !imagePreview)}
-                aria-label="Send message"
-                className={`shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center transition-all self-end
-                  ${!disabled && (text.trim() || imagePreview)
-                    ? 'bg-accent text-bg hover:bg-accent-dim active:scale-90 shadow-lg shadow-accent/25'
-                    : 'bg-surface border border-border text-muted/40 cursor-not-allowed'
-                  }`}
-              >
-                <Send className="w-4 h-4" />
-              </button>
+
+              {isRecording ? (
+                <>
+                  {/* Recording indicator */}
+                  <button
+                    type="button"
+                    onClick={cancelRecording}
+                    aria-label="Cancel recording"
+                    className="shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-surface border border-border text-danger
+                      hover:bg-danger/10 active:scale-95 transition-all flex items-center justify-center self-end"
+                  >
+                    <X className="w-4 h-4 sm:w-5 sm:h-5" />
+                  </button>
+                  <div className="flex-1 flex items-center gap-3 px-3 py-2.5 bg-bg border border-danger/30 rounded-xl min-h-[40px] sm:min-h-[44px]">
+                    <span className="w-2.5 h-2.5 rounded-full bg-danger animate-pulse shrink-0" />
+                    <span className="font-mono text-sm text-danger">{Math.floor(recordingTime / 60)}:{(recordingTime % 60).toString().padStart(2, '0')}</span>
+                    <div className="flex-1 flex items-center gap-0.5">
+                      {Array.from({ length: 20 }).map((_, i) => (
+                        <div key={i} className={`w-1 rounded-full bg-danger/60 transition-all ${i < (recordingTime % 5) + 1 ? 'h-3' : 'h-1'}`} />
+                      ))}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={stopRecording}
+                    aria-label="Send voice note"
+                    className="shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-accent text-bg
+                      hover:bg-accent-dim active:scale-90 shadow-lg shadow-accent/25 transition-all flex items-center justify-center self-end"
+                  >
+                    <Send className="w-4 h-4" />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => imageInputRef.current?.click()}
+                    disabled={disabled}
+                    aria-label="Attach image"
+                    className="shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-surface border border-border text-muted
+                      hover:text-accent hover:border-accent/30 active:scale-95 transition-all flex items-center justify-center
+                      disabled:opacity-30 disabled:cursor-not-allowed self-end"
+                  >
+                    <ImagePlus className="w-4 h-4 sm:w-5 sm:h-5" />
+                  </button>
+                  <textarea
+                    ref={textInputRef}
+                    dir="auto"
+                    rows={1}
+                    autoComplete="off"
+                    autoCorrect="on"
+                    autoCapitalize="sentences"
+                    spellCheck={true}
+                    enterKeyHint="send"
+                    data-form-type="other"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    value={text}
+                    onChange={handleTyping}
+                    onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        handleSend(e)
+                      }
+                    }}
+                    placeholder={disabled ? 'Connect to chat' : 'Message...'}
+                    maxLength={2000}
+                    disabled={disabled}
+                    className="flex-1 min-w-0 bg-bg border border-border rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 font-mono text-[16px] sm:text-sm text-text
+                      placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-all
+                      disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px] max-h-[120px]
+                      resize-none overflow-y-auto scrollbar-thin"
+                  />
+                  {/* Show mic button when input is empty, send button when there's content */}
+                  {!text.trim() && !imagePreview ? (
+                    <button
+                      type="button"
+                      onClick={startRecording}
+                      disabled={disabled || !getRecordingMime()}
+                      aria-label="Record voice note"
+                      className="shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-surface border border-border text-muted
+                        hover:text-accent hover:border-accent/30 active:scale-95 transition-all flex items-center justify-center
+                        disabled:opacity-30 disabled:cursor-not-allowed self-end"
+                    >
+                      <Mic className="w-4 h-4 sm:w-5 sm:h-5" />
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      disabled={disabled || (!text.trim() && !imagePreview)}
+                      aria-label="Send message"
+                      className={`shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center transition-all self-end
+                        ${!disabled && (text.trim() || imagePreview)
+                          ? 'bg-accent text-bg hover:bg-accent-dim active:scale-90 shadow-lg shadow-accent/25'
+                          : 'bg-surface border border-border text-muted/40 cursor-not-allowed'
+                        }`}
+                    >
+                      <Send className="w-4 h-4" />
+                    </button>
+                  )}
+                </>
+              )}
             </form>
             </div>
           </div>

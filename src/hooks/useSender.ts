@@ -16,6 +16,7 @@ interface InProgressImage {
   replyTo: { text: string; from: string; time: number } | null
   time: number
   from: string
+  duration?: number
   chunks: Uint8Array[]
   receivedBytes: number
 }
@@ -430,6 +431,7 @@ export function useSender() {
             replyTo: meta.replyTo as InProgressImage['replyTo'] || null,
             time: meta.time as number || Date.now(),
             from: msg.from as string || connState.nickname || 'Anon',
+            duration: meta.duration as number | undefined,
             chunks: [],
             receivedBytes: 0,
           }
@@ -454,6 +456,7 @@ export function useSender() {
             text: inFlight.text,
             image: url,
             mime: inFlight.mime,
+            duration: inFlight.duration,
             replyTo: inFlight.replyTo,
             from: inFlight.from,
             time: inFlight.time,
@@ -466,7 +469,7 @@ export function useSender() {
               .then(() => streamImageToConn(
                 otherCs.conn, otherCs.encryptKey!, fullBytes,
                 inFlight.mime, inFlight.text, inFlight.replyTo,
-                inFlight.from, inFlight.time
+                inFlight.from, inFlight.time, inFlight.duration
               ))
               .catch(() => {})
           }
@@ -688,19 +691,20 @@ export function useSender() {
     const time = Date.now()
 
     if (image && typeof image === 'object' && (image as { bytes: Uint8Array; mime: string }).bytes) {
-      const imgObj = image as { bytes: Uint8Array; mime: string }
+      const imgObj = image as { bytes: Uint8Array; mime: string; duration?: number }
       const bytes = imgObj.bytes instanceof Uint8Array ? imgObj.bytes : new Uint8Array(imgObj.bytes)
       const mime = imgObj.mime || 'application/octet-stream'
+      const duration = imgObj.duration
       const localBlob = new Blob([bytes as unknown as BlobPart], { type: mime })
       const localUrl = URL.createObjectURL(localBlob)
       imageBlobUrlsRef.current.push(localUrl)
-      setMessages(prev => [...prev, { text: text || '', image: localUrl, mime, replyTo, from: 'You', time, self: true }].slice(-500))
+      setMessages(prev => [...prev, { text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }].slice(-500))
 
       for (const cs of connectionsRef.current.values()) {
         if (!cs.encryptKey) continue
         const key = cs.encryptKey
         cs.imageSendQueue = cs.imageSendQueue
-          .then(() => streamImageToConn(cs.conn, key, bytes, mime, text || '', replyTo ?? null, senderName, time))
+          .then(() => streamImageToConn(cs.conn, key, bytes, mime, text || '', replyTo ?? null, senderName, time, duration))
           .catch(() => {})
       }
       return
@@ -905,11 +909,12 @@ async function streamImageToConn(
   text: string,
   replyTo: InProgressImage['replyTo'],
   from: string,
-  time: number
+  time: number,
+  duration?: number
 ): Promise<void> {
   if (!conn || conn.open === false || !key) return
   try {
-    const startPayload = JSON.stringify({ mime, size: bytes.byteLength, text, replyTo, time })
+    const startPayload = JSON.stringify({ mime, size: bytes.byteLength, text, replyTo, time, duration })
     const encStart = await encryptChunk(key, new TextEncoder().encode(startPayload))
     conn.send({ type: 'chat-image-start-enc', data: uint8ToBase64(new Uint8Array(encStart)), from, time })
   } catch { return }
