@@ -91,11 +91,14 @@ function VoicePlayer({ src, knownDuration }: { src: string; knownDuration?: numb
   function seek(e: React.MouseEvent | React.TouchEvent) {
     const a = audioRef.current
     const bar = barRef.current
-    if (!a || !bar || !a.duration) return
+    // MediaRecorder output often reports Infinity for duration until fully
+    // buffered — filter for a usable finite number before seeking.
+    if (!a || !bar || !Number.isFinite(a.duration) || a.duration <= 0) return
     const rect = bar.getBoundingClientRect()
     const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX
     const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
-    a.currentTime = pct * a.duration
+    const target = pct * a.duration
+    if (Number.isFinite(target)) a.currentTime = target
   }
 
   return (
