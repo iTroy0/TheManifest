@@ -27,9 +27,31 @@ export function setupHeartbeat(conn: DataConnection, { onDead, interval = 5000, 
   // Note: heartbeat pings are intentionally unencrypted (low-value timing data).
   // DTLS provides transport-layer encryption. Application-level E2E encryption
   // is reserved for content-bearing messages (chat, file chunks).
+  let consecutivePingFailures = 0
+
   const pingTimer = setInterval(() => {
-    try { conn.send({ type: 'ping', ts: Date.now() }) } catch {}
+    try {
+      conn.send({ type: 'ping', ts: Date.now() })
+      consecutivePingFailures = 0
+    } catch {
+      consecutivePingFailures++
+      if (consecutivePingFailures >= 3) {
+        cleanup()
+        onDead()
+        return
+      }
+    }
   }, interval)
+
+  // Reset lastSeen on wake to prevent false-positive death after sleep
+  const handleVisibility = (): void => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      lastSeen = Date.now()
+    }
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibility)
+  }
 
   const checkTimer = setInterval(() => {
     if (Date.now() - lastSeen > timeout) {
@@ -43,6 +65,9 @@ export function setupHeartbeat(conn: DataConnection, { onDead, interval = 5000, 
   function cleanup(): void {
     clearInterval(pingTimer)
     clearInterval(checkTimer)
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
   }
 
   return { markAlive, cleanup, getLastSeen: () => lastSeen }
@@ -71,7 +96,7 @@ export function setupRTTPolling(
           setRtt(Math.round(report.currentRoundTripTime * 1000))
         }
       })
-    }).catch(() => {})
+    }).catch((err) => { console.warn('RTT stats query failed:', err) })
   }, interval)
 
   return { cleanup: () => clearInterval(timer) }

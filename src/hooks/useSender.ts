@@ -47,6 +47,9 @@ interface ConnState {
   pausedFiles?: Set<number>
   chunker?: InstanceType<typeof AdaptiveChunker>
   progressThrottler?: InstanceType<typeof ProgressThrottler>
+  pendingRemoteKey?: Uint8Array | null
+  keyExchangeTimeout?: ReturnType<typeof setTimeout>
+  fingerprint?: string
 }
 
 // ── Transfer reducer ─────────────────────────────────────────────────────
@@ -157,6 +160,8 @@ export function useSender() {
   const passwordRef = useRef<string | null>(null)
   const chatOnlyRef = useRef<boolean>(false)
   const imageBlobUrlsRef = useRef<string[]>([])
+  const globalPasswordAttempts = useRef<number>(0)
+  const lastPasswordAttemptTime = useRef<number>(0)
 
   const setFiles = useCallback((files: File[]): void => {
     filesRef.current = files
@@ -190,7 +195,7 @@ export function useSender() {
         return
       }
 
-      const connId = conn.peer + '-' + Date.now()
+      const connId = conn.peer + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
       const connState: ConnState = {
         conn, encryptKey: null, keyPair: null, abort: { aborted: false },
         progress: {}, totalSent: 0, startTime: null, transferTotalSize: 0,
@@ -221,7 +226,7 @@ export function useSender() {
         for (const cs of active) {
           for (const [name, pct] of Object.entries(cs.progress || {})) {
             if (merged[name] === undefined) merged[name] = pct
-            else merged[name] = Math.min(merged[name], pct)
+            else merged[name] = Math.max(merged[name], pct)
           }
         }
 
@@ -266,6 +271,12 @@ export function useSender() {
           connState.abort.aborted = true
           if (connState.heartbeat) connState.heartbeat.cleanup()
           if (connState.rttPoller) connState.rttPoller.cleanup()
+          if (connState.keyExchangeTimeout) clearTimeout(connState.keyExchangeTimeout)
+          if (connState.pauseResolvers) {
+            Object.values(connState.pauseResolvers).forEach(r => r())
+            connState.pauseResolvers = {}
+          }
+          try { conn.removeAllListeners() } catch {}
           const name = connState.nickname || 'A recipient'
           connectionsRef.current.delete(connId)
           dispatchConn({ type: 'SET', payload: { recipientCount: connectionsRef.current.size } })
@@ -289,7 +300,9 @@ export function useSender() {
 
         const pc = conn.peerConnection
         if (pc) {
-          pc.oniceconnectionstatechange = () => {
+          const prevIceHandler = pc.oniceconnectionstatechange
+          pc.oniceconnectionstatechange = (ev) => {
+            if (typeof prevIceHandler === 'function') prevIceHandler.call(pc, ev)
             const s = pc.iceConnectionState
             if (s === 'disconnected' || s === 'failed' || s === 'closed') {
               handlePeerDisconnect('left')
@@ -300,6 +313,34 @@ export function useSender() {
         connState.keyPair = await generateKeyPair()
         const pubKeyBytes = await exportPublicKey(connState.keyPair.publicKey)
         conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
+
+        // ECDH key exchange timeout
+        connState.keyExchangeTimeout = setTimeout(() => {
+          if (!connState.encryptKey) {
+            console.warn('Key exchange timed out for', connId)
+            conn.close()
+          }
+        }, 10_000)
+
+        // Handle deferred public key if receiver responded before our key was ready
+        if (connState.pendingRemoteKey) {
+          try {
+            const remotePubKey = await importPublicKey(connState.pendingRemoteKey)
+            connState.encryptKey = await deriveSharedKey(connState.keyPair.privateKey, remotePubKey)
+            if (connState.keyExchangeTimeout) { clearTimeout(connState.keyExchangeTimeout); connState.keyExchangeTimeout = undefined }
+            const fp = await getKeyFingerprint(pubKeyBytes, connState.pendingRemoteKey)
+            connState.fingerprint = fp
+            dispatchConn({ type: 'SET', payload: { fingerprint: fp } })
+            connState.pendingRemoteKey = null
+            if (passwordRef.current) {
+              conn.send({ type: 'password-required' })
+            } else {
+              await sendManifest(conn)
+            }
+          } catch {
+            conn.close()
+          }
+        }
       })
 
       conn.on('data', async (data: unknown) => {
@@ -322,11 +363,19 @@ export function useSender() {
         }
 
         if (msg.type === 'public-key') {
+          const remoteKeyRaw = new Uint8Array(msg.key as number[])
+          if (!connState.keyPair) {
+            // Key pair not ready yet — defer until generateKeyPair resolves
+            connState.pendingRemoteKey = remoteKeyRaw
+            return
+          }
           try {
-            const remotePubKey = await importPublicKey(new Uint8Array(msg.key as number[]))
-            connState.encryptKey = await deriveSharedKey(connState.keyPair!.privateKey, remotePubKey)
-            const localPubBytes = await exportPublicKey(connState.keyPair!.publicKey)
-            const fp = await getKeyFingerprint(localPubBytes, new Uint8Array(msg.key as number[]))
+            const remotePubKey = await importPublicKey(remoteKeyRaw)
+            connState.encryptKey = await deriveSharedKey(connState.keyPair.privateKey, remotePubKey)
+            if (connState.keyExchangeTimeout) { clearTimeout(connState.keyExchangeTimeout); connState.keyExchangeTimeout = undefined }
+            const localPubBytes = await exportPublicKey(connState.keyPair.publicKey)
+            const fp = await getKeyFingerprint(localPubBytes, remoteKeyRaw)
+            connState.fingerprint = fp
             dispatchConn({ type: 'SET', payload: { fingerprint: fp } })
 
             if (passwordRef.current) {
@@ -341,8 +390,15 @@ export function useSender() {
         }
 
         if (msg.type === 'password-encrypted') {
+          const now = Date.now()
+          if (now - lastPasswordAttemptTime.current < 2000) {
+            try { conn.send({ type: 'password-rate-limited' }) } catch {}
+            return
+          }
+          lastPasswordAttemptTime.current = now
+          globalPasswordAttempts.current += 1
           connState.passwordAttempts = (connState.passwordAttempts || 0) + 1
-          if (connState.passwordAttempts > 5) {
+          if (globalPasswordAttempts.current > 20 || connState.passwordAttempts > 5) {
             conn.send({ type: 'password-locked' })
             conn.close()
             return
@@ -477,7 +533,7 @@ export function useSender() {
         }
 
         if (msg.type === 'join') {
-          connState.nickname = msg.nickname as string
+          connState.nickname = (msg.nickname as string || '').slice(0, 32)
           const now = Date.now()
           for (const [otherId, otherCs] of connectionsRef.current) {
             if (otherId === connId) continue
@@ -501,7 +557,7 @@ export function useSender() {
 
         if (msg.type === 'nickname-change') {
           const oldName = connState.nickname || msg.oldName as string
-          connState.nickname = msg.newName as string
+          connState.nickname = (msg.newName as string || '').slice(0, 32)
           const changeMsg = `${oldName} is now ${msg.newName}`
           setMessages(prev => [...prev, { text: changeMsg, from: 'system', time: Date.now(), self: false }].slice(-500))
           connectionsRef.current.forEach((cs, id) => {
@@ -618,7 +674,9 @@ export function useSender() {
       })
 
       conn.on('close', () => {
-        if (destroyed) return
+        if (destroyed || connState.disconnectHandled) return
+        connState.disconnectHandled = true
+        try { conn.removeAllListeners() } catch {}
         connState.abort.aborted = true
         if (connState.heartbeat) connState.heartbeat.cleanup()
         if (connState.rttPoller) connState.rttPoller.cleanup()
@@ -664,7 +722,9 @@ export function useSender() {
       } else if (err.type === 'disconnected' || err.type === 'network') {
         return
       }
-      dispatchConn({ type: 'SET_STATUS', payload: 'error' })
+      if (connectionsRef.current.size === 0) {
+        dispatchConn({ type: 'SET_STATUS', payload: 'error' })
+      }
     })
 
     function handleVisibility(): void {
@@ -674,10 +734,23 @@ export function useSender() {
     }
     document.addEventListener('visibilitychange', handleVisibility)
 
+    function handleBeforeUnload(): void {
+      connectionsRef.current.forEach(cs => {
+        try { cs.conn.send({ type: 'closing' }) } catch {}
+      })
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility)
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      Object.values(typingTimeouts.current).forEach(clearTimeout)
+      typingTimeouts.current = {}
       destroyed = true
-      connectionsRef.current.forEach(cs => { cs.abort.aborted = true })
+      connectionsRef.current.forEach(cs => {
+        cs.abort.aborted = true
+        try { cs.conn.removeAllListeners() } catch {}
+      })
       connectionsRef.current.clear()
       peer.destroy()
     }
@@ -769,7 +842,12 @@ export function useSender() {
   }, [])
 
   const reset = useCallback((): void => {
-    connectionsRef.current.forEach(cs => { cs.abort.aborted = true })
+    Object.values(typingTimeouts.current).forEach(clearTimeout)
+    typingTimeouts.current = {}
+    connectionsRef.current.forEach(cs => {
+      cs.abort.aborted = true
+      try { cs.conn.removeAllListeners() } catch {}
+    })
     connectionsRef.current.clear()
     if (peerRef.current) peerRef.current.destroy()
     imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch {} })

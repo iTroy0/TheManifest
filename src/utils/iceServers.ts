@@ -1,3 +1,12 @@
+/**
+ * WARNING: VITE_ prefixed environment variables are embedded in the client-side
+ * JavaScript bundle at build time. TURN credentials configured here will be
+ * visible to anyone inspecting the page source.
+ *
+ * For production deployments, use ephemeral TURN credentials issued by a
+ * server-side API endpoint instead of static credentials.
+ * See: https://datatracker.ietf.org/doc/html/draft-uberti-behave-turn-rest-00
+ */
 const TURN_URL = import.meta.env.VITE_TURN_URL as string | undefined
 const TURN_USER = import.meta.env.VITE_TURN_USER as string | undefined
 const TURN_PASS = import.meta.env.VITE_TURN_PASS as string | undefined

@@ -86,12 +86,16 @@ function TextPreviewTooltip({ preview }: TextPreviewTooltipProps) {
       <button
         onMouseEnter={() => setShow(true)}
         onMouseLeave={() => setShow(false)}
+        onFocus={() => setShow(true)}
+        onBlur={() => setShow(false)}
+        aria-label="Show text preview"
+        aria-describedby={show ? 'text-preview-tooltip' : undefined}
         className="text-[9px] text-muted hover:text-accent transition-colors font-mono"
       >
         preview
       </button>
       {show && (
-        <div className="absolute bottom-full left-0 mb-2 w-64 p-2 bg-surface border border-border rounded-lg shadow-lg z-10">
+        <div id="text-preview-tooltip" role="tooltip" className="absolute bottom-full left-0 mb-2 w-64 p-2 bg-surface border border-border rounded-lg shadow-lg z-10">
           <pre className="text-[10px] text-muted-light font-mono whitespace-pre-wrap break-all overflow-hidden max-h-32">
             {preview}
           </pre>
@@ -300,6 +304,7 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, i
             onClick={(e: React.MouseEvent) => { e.stopPropagation(); onCancel(index) }}
             className="p-2 rounded-lg text-danger bg-danger/10 hover:bg-danger/20 active:scale-95 transition-all"
             title="Cancel"
+            aria-label="Cancel download"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -368,7 +373,7 @@ export default function FileList({ files, onRemove, onReorder, progress, pending
   const canDrag = !!onReorder && files.length > 1
   const [activeId, setActiveId] = useState<string | null>(null)
 
-  const itemIds = useMemo(() => files.map((_, i) => `file-${i}`), [files.length])
+  const itemIds = useMemo(() => files.map((f, i) => `file-${f.name}-${f.size}-${i}`), [files])
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -385,7 +390,7 @@ export default function FileList({ files, onRemove, onReorder, progress, pending
     if (!active || !over || active.id === over.id) return
     const from = itemIds.indexOf(active.id as string)
     const to = itemIds.indexOf(over.id as string)
-    if (from !== -1 && to !== -1) onReorder!(from, to)
+    if (from !== -1 && to !== -1) onReorder?.(from, to)
   }
 
   function handleDragCancel() {

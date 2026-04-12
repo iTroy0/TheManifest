@@ -5,7 +5,7 @@ import { sounds, canNotify, requestNotificationPermission, alertNewMessage } fro
 import { ChatMessage } from '../types'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
-const URL_REGEX = /(https?:\/\/[^\s<>"']+)/
+const URL_REGEX = /(https?:\/\/[^\s<>"']+[^\s<>"'.,;:!?\])}>])/
 
 interface LinkifyProps {
   text: string
@@ -279,10 +279,13 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const [notifyEnabled, setNotifyEnabled] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
   const [recordingTime, setRecordingTime] = useState(0)
+  const [micError, setMicError] = useState<string | null>(null)
+  const [nameSaved, setNameSaved] = useState(false)
   const recordingTimeRef = useRef(0) // ref mirror — closures read this, not stale state
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recordingChunksRef = useRef<Blob[]>([])
+  const chatBlobUrlsRef = useRef<string[]>([])
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const prevLen = useRef(messages.length)
@@ -294,10 +297,32 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const popoutRef = useRef<HTMLDivElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const clearConfirmRef = useRef<HTMLDivElement | null>(null)
+
+  function createTrackedBlobUrl(blob: Blob): string {
+    const url = URL.createObjectURL(blob)
+    chatBlobUrlsRef.current.push(url)
+    return url
+  }
+
+  // Cleanup blob URLs on unmount
+  useEffect(() => {
+    return () => {
+      chatBlobUrlsRef.current.forEach(url => URL.revokeObjectURL(url))
+    }
+  }, [])
 
   useEffect(() => {
     if (nickname) setEditName(nickname)
   }, [nickname])
+
+  // Fix 8: Auto-focus textarea when panel opens
+  useEffect(() => {
+    if (open && textInputRef.current) {
+      const t = setTimeout(() => textInputRef.current?.focus(), 100)
+      return () => clearTimeout(t)
+    }
+  }, [open])
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
@@ -477,7 +502,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           return
         }
         const bytes = new Uint8Array(await blob.arrayBuffer())
-        const url = URL.createObjectURL(blob)
+        const url = createTrackedBlobUrl(blob)
         if (soundEnabled) sounds.messageSent()
         onSend('', { url, bytes, mime: mime.split(';')[0], duration: recordingTimeRef.current }, undefined)
         setIsRecording(false)
@@ -497,7 +522,11 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           return next
         })
       }, 1000)
-    } catch { /* mic permission denied or unavailable */ }
+    } catch (err) {
+      console.warn('Microphone access failed:', err)
+      setMicError('Microphone access denied. Check browser permissions.')
+      setTimeout(() => setMicError(null), 4000)
+    }
   }
 
   function stopRecording() {
@@ -550,7 +579,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         return null
       }
       const bytes = new Uint8Array(await file.arrayBuffer())
-      const url = URL.createObjectURL(new Blob([bytes], { type: file.type }))
+      const url = createTrackedBlobUrl(new Blob([bytes], { type: file.type }))
       return { url, bytes, mime: file.type }
     }
     const dataUri = await compressImage(file)
@@ -567,7 +596,11 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     try {
       const img = await prepareImage(file)
       if (img) dispatchInteract({ type: 'SET', payload: { imagePreview: img } })
-    } catch { /* invalid image */ }
+    } catch (err) {
+      console.warn('Image processing failed:', err)
+      setMicError('Could not process image. Try a different file.')
+      setTimeout(() => setMicError(null), 4000)
+    }
   }
 
   useEffect(() => {
@@ -589,6 +622,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   function handleSetName() {
     if (!nameChanged) return
     onNicknameChange!(editName.trim())
+    setNameSaved(true)
+    setTimeout(() => setNameSaved(false), 2000)
   }
 
   function handleTouchStart(i: number) {
@@ -648,7 +683,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       const t = (ev as TouchEvent).touches
       const cx = t ? t[0].clientX : (ev as MouseEvent).clientX
       const cy = t ? t[0].clientY : (ev as MouseEvent).clientY
-      const newW = Math.max(320, Math.min(window.innerWidth - 32, startRight - cx))
+      const newW = Math.max(280, Math.min(window.innerWidth - 16, startRight - cx))
       const newH = Math.max(300, Math.min(window.innerHeight - 32, startBottom - cy))
       dispatchPanel({ type: 'SET', payload: { popoutSize: { w: newW, h: newH }, popoutPos: { x: startRight - newW, y: startBottom - newH } } })
     }
@@ -676,6 +711,13 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       document.removeEventListener('touchstart', handleClick)
     }
   }, [showMenu])
+
+  // Fix 2: Auto-focus clear confirm dialog
+  useEffect(() => {
+    if (showClearConfirm && clearConfirmRef.current) {
+      clearConfirmRef.current.focus()
+    }
+  }, [showClearConfirm])
 
   function handleMsgClick(i: number) {
     dispatchInteract({ type: 'TOGGLE_MSG', index: i })
@@ -889,6 +931,10 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                         </button>
                       )}
                     </div>
+                    <div className="flex items-center justify-between mt-1">
+                      <span className="text-[10px] text-zinc-500">{editName.length}/20</span>
+                      {nameSaved && <span className="text-xs text-emerald-400">Saved</span>}
+                    </div>
                   </div>
                 )}
 
@@ -897,6 +943,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                   <button
                     onClick={() => setSoundEnabled(s => !s)}
                     className="w-full flex items-center justify-between px-4 py-3 active:bg-surface-2 transition-colors"
+                    role="switch"
+                    aria-checked={soundEnabled}
                   >
                     <div className="flex items-center gap-3">
                       {soundEnabled ? <Volume2 className="w-4 h-4 text-accent" /> : <VolumeX className="w-4 h-4 text-muted" />}
@@ -917,6 +965,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                       }
                     }}
                     className="w-full flex items-center justify-between px-4 py-3 active:bg-surface-2 transition-colors"
+                    role="switch"
+                    aria-checked={notifyEnabled}
                   >
                     <div className="flex items-center gap-3">
                       {notifyEnabled ? <Bell className="w-4 h-4 text-accent" /> : <BellOff className="w-4 h-4 text-muted" />}
@@ -1034,6 +1084,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                         placeholder:text-muted/50 focus:outline-none"
                     />
                   </div>
+                  <span className="text-[10px] text-zinc-500">{editName.length}/20</span>
                   {nameChanged && (
                     <button
                       onClick={handleSetName}
@@ -1044,6 +1095,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                       Save
                     </button>
                   )}
+                  {nameSaved && <span className="text-xs text-emerald-400">Saved</span>}
                 </div>
               )}
               {/* Sound and notification toggles */}
@@ -1052,6 +1104,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                   onClick={() => setSoundEnabled(s => !s)}
                   className={`p-2 rounded-lg transition-colors ${soundEnabled ? 'text-accent bg-accent/10' : 'text-muted hover:text-accent hover:bg-accent/10'}`}
                   title={soundEnabled ? 'Sound on' : 'Sound off'}
+                  role="switch"
+                  aria-checked={soundEnabled}
                 >
                   {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
                 </button>
@@ -1066,6 +1120,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                   }}
                   className={`p-2 rounded-lg transition-colors ${notifyEnabled ? 'text-accent bg-accent/10' : 'text-muted hover:text-accent hover:bg-accent/10'}`}
                   title={notifyEnabled ? 'Notifications on' : 'Notifications off'}
+                  role="switch"
+                  aria-checked={notifyEnabled}
                 >
                   {notifyEnabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
                 </button>
@@ -1151,7 +1207,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                               ) : msg.image ? (
                                 <img
                                   src={msg.image}
-                                  alt=""
+                                  alt={`Image from ${msg.from}`}
                                   className="rounded-lg max-w-full max-h-[200px] object-contain cursor-pointer hover:opacity-90 transition-opacity shadow-sm"
                                   onClick={(e: React.MouseEvent) => { e.stopPropagation(); dispatchInteract({ type: 'SET', payload: { viewImage: { url: msg.image, mime: msg.mime } } }) }}
                                 />
@@ -1195,14 +1251,14 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                                       <button
                                         key={emoji}
                                         onClick={(e: React.MouseEvent) => { e.stopPropagation(); onReaction(msgId, emoji); dispatchInteract({ type: 'SET', payload: { reactingIdx: null, activeMsg: null } }) }}
-                                        className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded hover:bg-accent/15 active:scale-90 transition-all text-sm sm:text-base"
+                                        className="w-8 h-8 sm:w-7 sm:h-7 flex items-center justify-center rounded hover:bg-accent/15 active:scale-90 transition-all text-sm sm:text-base"
                                       >
                                         {emoji}
                                       </button>
                                     ))}
                                     <button
                                       onClick={(e: React.MouseEvent) => { e.stopPropagation(); dispatchInteract({ type: 'SET', payload: { reactingIdx: null } }) }}
-                                      className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded hover:bg-danger/15 text-muted hover:text-danger active:scale-90 transition-all text-xs"
+                                      className="w-8 h-8 sm:w-7 sm:h-7 flex items-center justify-center rounded hover:bg-danger/15 text-muted hover:text-danger active:scale-90 transition-all text-xs"
                                     >
                                       <X className="w-3 h-3" />
                                     </button>
@@ -1267,6 +1323,14 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 </div>
               )}
 
+              {/* Mic/image error feedback */}
+              {micError && (
+                <div className={`flex items-center gap-2 bg-danger/10 border border-danger/20 animate-fade-in-up ${isFullscreen || isPopout ? 'mx-4 my-2 px-3 py-2 rounded-xl' : 'px-3 py-2 rounded-xl'}`}>
+                  <X className="w-3.5 h-3.5 text-danger shrink-0" />
+                  <span className="font-mono text-xs text-danger">{micError}</span>
+                </div>
+              )}
+
               {/* Reply preview */}
               {replyTo && (
                 <div className={`flex items-center gap-2 bg-accent/5 animate-fade-in-up ${isFullscreen || isPopout ? 'px-4 py-2 border-b border-accent/20' : 'px-3 py-2 border border-accent/20 rounded-xl'}`}>
@@ -1307,6 +1371,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 onDragLeave={() => dispatchInteract({ type: 'SET', payload: { isDragOver: false } })}
                 onDrop={handleDrop}
                 className={`flex gap-1.5 sm:gap-2 items-end ${isFullscreen || isPopout ? 'px-3 py-2' : ''} ${isDragOver ? 'ring-2 ring-accent/40 rounded-xl' : ''}`}
+                style={{ paddingBottom: isFullscreen ? 'env(safe-area-inset-bottom, 0px)' : undefined }}
               >
               <input ref={imageInputRef} type="file" accept="image/*" onChange={handleImagePick} className="hidden" />
 
@@ -1417,14 +1482,26 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         </div>
       </div>
       {showClearConfirm && createPortal(
-        <div className="fixed inset-0 z-[10000] bg-black/70 flex items-center justify-center p-4 animate-fade-in-up" onClick={() => dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } })}>
+        <div
+          ref={clearConfirmRef}
+          className="fixed inset-0 z-[10000] bg-black/70 flex items-center justify-center p-4 animate-fade-in-up"
+          onClick={() => dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } })}
+          onKeyDown={(e: React.KeyboardEvent) => {
+            if (e.key === 'Escape') dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } })
+            if (e.key === 'Tab') e.preventDefault()
+          }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="clear-confirm-title"
+          tabIndex={-1}
+        >
           <div className="bg-surface border border-border rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-danger/10 flex items-center justify-center shrink-0">
                 <Trash2 className="w-5 h-5 text-danger" />
               </div>
               <div>
-                <p className="font-mono text-sm font-medium text-text">Clear messages?</p>
+                <p id="clear-confirm-title" className="font-mono text-sm font-medium text-text">Clear messages?</p>
                 <p className="text-xs text-muted mt-0.5">This will only clear messages on your side. Other participants will still see their messages.</p>
               </div>
             </div>
@@ -1464,10 +1541,18 @@ interface ImagePreviewOverlayProps {
 function ImagePreviewOverlay({ viewImage, onClose }: ImagePreviewOverlayProps) {
   const [showControls, setShowControls] = useState(true)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     hideTimer.current = setTimeout(() => setShowControls(false), 3000)
     return () => clearTimeout(hideTimer.current!)
+  }, [])
+
+  // Auto-focus the overlay for keyboard accessibility
+  useEffect(() => {
+    if (overlayRef.current) {
+      overlayRef.current.focus()
+    }
   }, [])
 
   function handleTap(e: React.MouseEvent<HTMLDivElement>) {
@@ -1481,15 +1566,25 @@ function ImagePreviewOverlay({ viewImage, onClose }: ImagePreviewOverlayProps) {
     }
   }
 
+  const handleDialogKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Escape') { onClose(); return }
+    if (e.key === 'Tab') {
+      e.preventDefault() // Keep focus trapped on the dialog
+    }
+  }
+
   const imgUrl = viewImage.url ?? ''
 
   return (
     <div
+      ref={overlayRef}
       className="fixed inset-0 z-[9999] bg-black/90 flex flex-col items-center justify-center p-4"
       onClick={handleTap}
-      onKeyDown={(e: React.KeyboardEvent<HTMLDivElement>) => e.key === 'Escape' && onClose()}
+      onKeyDown={handleDialogKeyDown}
       role="dialog"
+      aria-modal="true"
       aria-label="Image preview"
+      tabIndex={-1}
     >
       <div className={`absolute top-4 right-4 flex gap-2 z-10 transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
         <a

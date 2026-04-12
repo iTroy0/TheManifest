@@ -58,6 +58,7 @@ function registerWorker() {
 
 // Now that we have the Service Worker registered we can process messages
 function onMessage (event) {
+  if (event.origin !== location.origin) return
   let { data, ports, origin } = event
 
   // It's important to have a messageChannel, don't want to interfere
@@ -149,7 +150,7 @@ function onMessage (event) {
 if (window.opener) {
   // The opener can't listen to onload event, so we need to help em out!
   // (telling them that we are ready to accept postMessage's)
-  window.opener.postMessage('StreamSaver::loadedPopup', '*')
+  window.opener.postMessage('StreamSaver::loadedPopup', location.origin)
 }
 
 if (navigator.serviceWorker) {

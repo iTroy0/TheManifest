@@ -9,7 +9,7 @@ import StatusIndicator from '../components/StatusIndicator'
 import ChatPanel from '../components/ChatPanel'
 import { ComponentErrorBoundary } from '../components/ErrorBoundary'
 import { useState, useEffect, type FormEvent, type ChangeEvent } from 'react'
-import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Wifi, Archive, Lock, ChevronDown, MessagesSquare } from 'lucide-react'
+import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Wifi, Archive, Lock, ChevronDown, MessagesSquare, Loader2 } from 'lucide-react'
 
 export default function Portal() {
   const { peerId } = useParams<{ peerId: string }>()
@@ -48,6 +48,26 @@ export default function Portal() {
     const pct: number = progress?.[f.name] || 0
     return sum + Math.round((f.size * pct) / 100)
   }, 0) : 0
+
+  if (!peerId || peerId.trim().length === 0) {
+    return (
+      <div className="min-h-screen flex flex-col bg-grid bg-radial-glow items-center justify-center">
+        <div className="text-center space-y-5 animate-fade-in-up">
+          <div className="w-18 h-18 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto ring-4 ring-danger/5">
+            <AlertCircle className="w-9 h-9 text-danger" strokeWidth={1.5} />
+          </div>
+          <div>
+            <p className="font-mono text-lg text-text font-medium mb-2">Invalid Portal Link</p>
+            <p className="text-sm text-muted leading-relaxed">This link appears to be incomplete or invalid.</p>
+          </div>
+          <Link to="/" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-muted-light hover:border-accent/40 hover:text-accent transition-colors">
+            <ArrowLeft className="w-4 h-4" />
+            Go Home
+          </Link>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
@@ -176,7 +196,7 @@ export default function Portal() {
                   </div>
                 )}
                 <button type="submit" disabled={passwordLoading || !passwordInput} className="w-full px-5 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed">
-                  {passwordLoading ? 'Verifying...' : 'Unlock Portal'}
+                  {passwordLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1.5" />Verifying...</> : 'Unlock Portal'}
                 </button>
               </form>
             </div>
@@ -212,7 +232,9 @@ export default function Portal() {
         {/* Connected waiting for manifest */}
         {status === 'connected' && !manifest && (
           <div className="text-center py-10 animate-fade-in-up">
+            <Loader2 className="w-6 h-6 animate-spin text-accent mx-auto mb-3" />
             <p className="font-mono text-sm text-text mb-2">Connected. Setting up...</p>
+            <p className="text-xs text-muted">Waiting for the sender to share their manifest.</p>
           </div>
         )}
 
@@ -231,6 +253,7 @@ export default function Portal() {
               {/* Collapsible header */}
               <button
                 onClick={() => setFilesOpen(o => !o)}
+                aria-expanded={filesOpen}
                 className="w-full flex items-center justify-between px-4 py-3 text-left group"
               >
                 <div className="flex items-center gap-2">
@@ -304,7 +327,7 @@ export default function Portal() {
                     <span>{allDone ? `${formatBytes(totalReceived)} in ${formatElapsed(elapsed)}` : `ETA: ${formatTime(eta ?? 0)}`}</span>
                   </div>
                   {hasPending && (
-                    <div className="flex justify-between font-mono text-[9px] text-muted/60">
+                    <div className="flex justify-between font-mono text-[10px] text-muted/60">
                       <span>{formatBytes(totalReceived)} received</span>
                       <span>Elapsed: {formatElapsed(elapsed)}</span>
                     </div>

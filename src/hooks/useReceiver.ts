@@ -201,6 +201,8 @@ export function useReceiver(peerId: string) {
   const heartbeatRef = useRef<ReturnType<typeof setupHeartbeat> | null>(null)
   const rttPollerRef = useRef<ReturnType<typeof setupRTTPolling> | null>(null)
   const manifestTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingResumeRef = useRef<{ index: number; resumeChunk: number } | null>(null)
+  const keyExchangeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const startConnection = useCallback((withTurn: boolean, isReconnect: boolean = false): void => {
     if (!window.crypto?.subtle) { dispatchConn({ type: 'SET_STATUS', payload: 'error' }); return }
@@ -250,14 +252,19 @@ export function useReceiver(peerId: string) {
             disconnectHandled = true
             if (heartbeatRef.current) heartbeatRef.current.cleanup()
             if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
+            if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
+            try { conn.removeAllListeners() } catch {}
             setRtt(null)
             setMessages(prev => [...prev, { text: reason, from: 'system', time: Date.now(), self: false }])
             if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
               chunkQueueRef.current = Promise.resolve()
               imageSendQueueRef.current = Promise.resolve()
               inProgressImageRef.current = null
+              decryptKeyRef.current = null
+              keyPairRef.current = null
               Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
               streamsRef.current = {}
+              chunksRef.current = {}
               reconnectCountRef.current++
               peer.destroy()
               setTimeout(() => { if (!destroyedRef.current) startConnection(useTurnRef.current, true) }, RECONNECT_DELAY)
@@ -270,6 +277,14 @@ export function useReceiver(peerId: string) {
           heartbeatRef.current = setupHeartbeat(conn, {
             onDead: () => handleDisconnect('Connection lost'),
           })
+
+          // ECDH key exchange timeout
+          keyExchangeTimeoutRef.current = setTimeout(() => {
+            if (!decryptKeyRef.current && !destroyedRef.current) {
+              console.warn('Key exchange timed out')
+              conn.close()
+            }
+          }, 10_000)
 
           const pc = conn.peerConnection
           if (pc) {
@@ -285,7 +300,8 @@ export function useReceiver(peerId: string) {
 
           if (isReconnect && wasTransferringRef.current) {
             dispatchConn({ type: 'SET_STATUS', payload: 'manifest-received' })
-            conn.send({ type: 'request-file', index: lastFileIndexRef.current, resumeChunk: lastChunkIndexRef.current })
+            // Defer file request until new key exchange completes
+            pendingResumeRef.current = { index: lastFileIndexRef.current, resumeChunk: lastChunkIndexRef.current }
             dispatchTransfer({ type: 'ADD_PENDING', index: lastFileIndexRef.current })
           } else {
             dispatchConn({ type: 'SET_STATUS', payload: 'connected' })
@@ -318,6 +334,11 @@ export function useReceiver(peerId: string) {
             return
           }
 
+          if (msg.type === 'closing') {
+            conn.close()
+            return
+          }
+
           if (msg.type === 'public-key') {
             try {
               if (!keyPairRef.current) {
@@ -327,8 +348,16 @@ export function useReceiver(peerId: string) {
               conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
               const remotePubKey = await importPublicKey(new Uint8Array(msg.key as number[]))
               decryptKeyRef.current = await deriveSharedKey(keyPairRef.current.privateKey, remotePubKey)
+              if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
               const fp = await getKeyFingerprint(pubKeyBytes, new Uint8Array(msg.key as number[]))
               dispatchConn({ type: 'SET', payload: { fingerprint: fp } })
+
+              // Resume deferred transfer now that we have the new decryption key
+              if (pendingResumeRef.current) {
+                const { index, resumeChunk } = pendingResumeRef.current
+                pendingResumeRef.current = null
+                conn.send({ type: 'request-file', index, resumeChunk })
+              }
             } catch {
               dispatchConn({ type: 'SET_STATUS', payload: 'error' })
             }
@@ -526,17 +555,21 @@ export function useReceiver(peerId: string) {
         conn.on('close', () => {
           if (destroyedRef.current) return
           clearTimeout(timeoutRef.current!)
-          // If handleDisconnect already initiated a reconnect or close,
-          // don't double-fire. Just clean up anything it might have missed.
           if (disconnectHandled) return
+          disconnectHandled = true
+          try { conn.removeAllListeners() } catch {}
           if (heartbeatRef.current) heartbeatRef.current.cleanup()
           if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
+          if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
           chunkQueueRef.current = Promise.resolve()
           imageSendQueueRef.current = Promise.resolve()
           inProgressImageRef.current = null
           if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
+            decryptKeyRef.current = null
+            keyPairRef.current = null
             Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
             streamsRef.current = {}
+            chunksRef.current = {}
             reconnectCountRef.current++
             peer.destroy()
             setTimeout(() => { if (!destroyedRef.current) startConnection(useTurnRef.current, true) }, RECONNECT_DELAY)
@@ -582,8 +615,27 @@ export function useReceiver(peerId: string) {
 
   useEffect(() => {
     if (!peerId) return
+
+    const handleBeforeUnload = (): void => {
+      try { connRef.current?.send({ type: 'closing' }) } catch {}
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+
+    const handleOnline = (): void => {
+      if (connRef.current && !connRef.current.open && reconnectCountRef.current < MAX_RECONNECTS) {
+        startConnection(useTurnRef.current, true)
+      }
+    }
+    window.addEventListener('online', handleOnline)
+
     startConnection(false)
     return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      window.removeEventListener('online', handleOnline)
+      Object.values(typingTimeouts.current).forEach(clearTimeout)
+      typingTimeouts.current = {}
+      if (keyExchangeTimeoutRef.current) clearTimeout(keyExchangeTimeoutRef.current)
+      if (connRef.current) try { connRef.current.removeAllListeners() } catch {}
       destroyedRef.current = true
       clearTimeout(timeoutRef.current!)
       clearTimeout(manifestTimeoutRef.current!)
@@ -606,6 +658,7 @@ export function useReceiver(peerId: string) {
     destroyedRef.current = true
     clearTimeout(timeoutRef.current!)
     chunkQueueRef.current = Promise.resolve()
+    reconnectCountRef.current = 0
     if (peerRef.current) peerRef.current.destroy()
     useTurnRef.current = true
     dispatchConn({ type: 'SET', payload: { useRelay: true } })
@@ -723,7 +776,7 @@ export function useReceiver(peerId: string) {
       const payload = JSON.stringify({ text, image: imgStr, replyTo })
       const encrypted = await encryptChunk(key, new TextEncoder().encode(payload))
       conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), nickname, time })
-    } catch {}
+    } catch (e) { console.warn('Failed to send chat message:', e) }
   }, [nickname])
 
   async function handleChunk(rawData: ArrayBuffer | ArrayBufferView): Promise<void> {
@@ -735,7 +788,16 @@ export function useReceiver(peerId: string) {
       plainData = decryptKeyRef.current
         ? await decryptChunk(decryptKeyRef.current, data)
         : data
-    } catch {
+    } catch (decryptErr) {
+      console.error('Chunk decryption failed for file', fileIndex, 'chunk', chunkIndex, decryptErr)
+      if (streamsRef.current[fileIndex]) {
+        try { streamsRef.current[fileIndex]!.abort() } catch {}
+        streamsRef.current[fileIndex] = null
+      }
+      if (chunksRef.current[fileIndex]) chunksRef.current[fileIndex] = null
+      const fileName = manifestRef.current?.files?.[fileIndex]?.name || `file ${fileIndex}`
+      dispatchTransfer({ type: 'CANCEL_FILE', index: fileIndex, name: fileName })
+      wasTransferringRef.current = false
       return
     }
 
@@ -841,7 +903,7 @@ export function useReceiver(peerId: string) {
     try {
       const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(password))
       conn.send({ type: 'password-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)) })
-    } catch {}
+    } catch (e) { console.warn('Failed to submit password:', e) }
   }, [])
 
   const clearMessages = useCallback((): void => {

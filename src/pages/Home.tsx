@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, type ChangeEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, MessageCircle, MessagesSquare, Plus, type LucideIcon } from 'lucide-react'
 import { useSender } from '../hooks/useSender'
@@ -21,6 +22,7 @@ export default function Home() {
   const [passwordInput, setPasswordInput] = useState<string>('')
   const [filesOpen, setFilesOpen] = useState<boolean>(true)
   const [chatMode, setChatMode] = useState<boolean>(false)
+  const [showResetConfirm, setShowResetConfirm] = useState<boolean>(false)
   // Tracks whether the user intentionally started a session (added files
   // or started chat). Stays true even if all files are removed so the
   // portal link / chat / connection status remain visible. Only resets
@@ -77,17 +79,23 @@ export default function Home() {
     setChatOnly(true)
   }, [setChatOnly])
 
-  const handleNewSession = useCallback((): void => {
-    if (sessionStarted) {
-      if (!window.confirm('This will end your current session. Are you sure?')) return
-    }
+  const performReset = useCallback((): void => {
+    setShowResetConfirm(false)
     setFilesState([])
     setError(null)
     setPasswordInput('')
     setChatMode(false)
     setSessionStarted(false)
     reset()
-  }, [reset, sessionStarted])
+  }, [reset])
+
+  const handleNewSession = useCallback((): void => {
+    if (sessionStarted) {
+      setShowResetConfirm(true)
+      return
+    }
+    performReset()
+  }, [sessionStarted, performReset])
 
   return (
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
@@ -185,7 +193,7 @@ export default function Home() {
               <div className="flex items-center gap-2 bg-warning/5 border border-warning/15 rounded-lg px-3 py-2 animate-fade-in-up">
                 <AlertTriangle className="w-3.5 h-3.5 text-warning/70 shrink-0" />
                 <span className="font-mono text-[10px] text-warning/70">
-                  Keep this tab open — closing it ends {chatMode ? 'the chat room' : 'all transfers'}.
+                  Important: Keep this tab open — closing it ends {chatMode ? 'the chat room' : 'all transfers'}.
                 </span>
               </div>
             )}
@@ -228,6 +236,7 @@ export default function Home() {
               ref={addInputRef}
               type="file"
               multiple
+              aria-label="Select files to share"
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
                 if (e.target.files) handleFiles(Array.from(e.target.files))
                 e.target.value = ''
@@ -264,13 +273,15 @@ export default function Home() {
                 </div>
                 <div className="flex items-center gap-1">
                   {!isTransferring && !isFinished && (
-                    <div
+                    <button
+                      type="button"
                       onClick={(e) => { e.stopPropagation(); addInputRef.current?.click() }}
                       className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
                       title="Add more files"
+                      aria-label="Add more files"
                     >
                       <Plus className="w-4 h-4" />
-                    </div>
+                    </button>
                   )}
                   <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesOpen ? 'rotate-180' : ''}`} />
                 </div>
@@ -385,11 +396,37 @@ export default function Home() {
             </div>
           </div>
         )}
+        {/* New Session confirmation modal */}
+        {showResetConfirm && createPortal(
+          <div
+            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowResetConfirm(false)}
+            onKeyDown={(e) => { if (e.key === 'Escape') setShowResetConfirm(false) }}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Confirm new session"
+            tabIndex={-1}
+          >
+            <div className="bg-surface border border-border rounded-2xl p-6 max-w-sm mx-4 space-y-4 animate-fade-in-up" onClick={(e) => e.stopPropagation()}>
+              <h3 className="font-mono text-base font-semibold text-text-bright">Start New Session?</h3>
+              <p className="text-sm text-muted leading-relaxed">This will end the current session and disconnect all peers.</p>
+              <div className="flex gap-3 justify-end">
+                <button onClick={() => setShowResetConfirm(false)} className="px-4 py-2 rounded-xl bg-surface-2 border border-border hover:border-accent/30 text-muted-light text-sm font-mono transition-colors">
+                  Cancel
+                </button>
+                <button onClick={performReset} className="px-4 py-2 rounded-xl bg-danger text-white text-sm font-mono hover:bg-danger/80 transition-colors">
+                  End Session
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
       </main>
 
       {/* ── Footer ── */}
       <footer className="border-t border-border/40 mt-auto">
-        <div className="max-w-[720px] mx-auto px-6 py-5 flex items-center justify-between flex-wrap gap-2">
+        <div className="max-w-[720px] mx-auto px-6 py-5 flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left">
           <p className="font-mono text-xs text-muted">
             No servers. No storage. No tracking.
           </p>
@@ -509,6 +546,7 @@ interface PasswordSectionProps {
 
 function PasswordSection({ password, onChange }: PasswordSectionProps) {
   const [open, setOpen] = useState<boolean>(false)
+  const [showPassword, setShowPassword] = useState<boolean>(false)
 
   return (
     <div className="glow-card overflow-hidden animate-fade-in-up">
@@ -534,14 +572,24 @@ function PasswordSection({ password, onChange }: PasswordSectionProps) {
         <div className="overflow-hidden">
           <div className="px-4 pb-4">
             <label htmlFor="portal-password" className="sr-only">Portal password</label>
-            <input
-              id="portal-password"
-              type="password"
-              placeholder="Enter a password..."
-              value={password}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
-              className="w-full bg-bg border border-border rounded-xl px-4 py-3 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all"
-            />
+            <div className="relative">
+              <input
+                id="portal-password"
+                type={showPassword ? 'text' : 'password'}
+                placeholder="Enter a password..."
+                value={password}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
+                className="w-full bg-bg border border-border rounded-xl px-4 py-3 pr-10 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(v => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-accent transition-colors"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
             <p className="font-mono text-[10px] text-muted mt-2 px-1">Recipients will need this password to access the portal</p>
           </div>
         </div>

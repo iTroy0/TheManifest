@@ -39,7 +39,8 @@ export function createFileStream(fileName: string, fileSize: number): FileStream
         return writer.abort()
       },
     }
-  } catch {
+  } catch (err) {
+    console.warn('StreamSaver initialization failed, falling back to in-memory buffering:', err)
     return null
   }
 }

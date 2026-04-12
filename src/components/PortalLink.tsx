@@ -17,16 +17,21 @@ export default function PortalLink({ peerId }: PortalLinkProps) {
   async function handleCopy() {
     try {
       await navigator.clipboard.writeText(url)
+      setToast(true)
     } catch {
       const ta = document.createElement('textarea')
       ta.value = url
       ta.style.cssText = 'position:fixed;opacity:0'
       document.body.appendChild(ta)
       ta.select()
-      document.execCommand('copy')
+      const ok = document.execCommand('copy')
       document.body.removeChild(ta)
+      if (ok) {
+        setToast(true)
+      } else {
+        prompt('Copy this link manually:', url)
+      }
     }
-    setToast(true)
   }
 
   async function handleShare() {

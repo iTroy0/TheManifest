@@ -5,9 +5,10 @@ interface ToastProps {
   message: string
   visible: boolean
   onHide: () => void
+  duration?: number
 }
 
-export default function Toast({ message, visible, onHide }: ToastProps) {
+export default function Toast({ message, visible, onHide, duration = 3500 }: ToastProps) {
   const [show, setShow] = useState(false)
 
   useEffect(() => {
@@ -16,7 +17,7 @@ export default function Toast({ message, visible, onHide }: ToastProps) {
       const timer = setTimeout(() => {
         setShow(false)
         setTimeout(onHide, 300) // wait for exit animation
-      }, 2500)
+      }, duration)
       return () => clearTimeout(timer)
     }
   }, [visible, onHide])

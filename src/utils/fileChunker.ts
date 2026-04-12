@@ -70,8 +70,8 @@ export class AdaptiveChunker {
     // suppress unused variable warning — avgThroughput is computed for future use
     void avgThroughput
 
-    // Round to nearest 64KB for alignment
-    this.currentChunkSize = Math.round(this.currentChunkSize / (64 * 1024)) * (64 * 1024)
+    // Round to nearest 64KB for alignment, clamped to MIN_CHUNK_SIZE
+    this.currentChunkSize = Math.max(MIN_CHUNK_SIZE, Math.round(this.currentChunkSize / (64 * 1024)) * (64 * 1024))
   }
 
   getChunkSize(): number {
@@ -180,13 +180,12 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
 
     // Race 1: buffer drains normally
     const useLowEvent = typeof dc.onbufferedamountlow !== 'undefined'
-    let prevLow: ((this: RTCDataChannel, ev: Event) => void) | null = null
     let pollTimer: ReturnType<typeof setTimeout> | null = null
+    let drainTimeout: ReturnType<typeof setTimeout> | null = null
 
     if (useLowEvent) {
       dc.bufferedAmountLowThreshold = BUFFER_THRESHOLD
-      prevLow = dc.onbufferedamountlow
-      dc.onbufferedamountlow = done
+      dc.addEventListener('bufferedamountlow', done, { once: true })
     } else {
       const poll = () => {
         if (settled) return
@@ -202,10 +201,14 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
     dc.addEventListener('close', onClose)
     dc.addEventListener('error', onClose)
 
+    // Race 3: timeout to prevent infinite hang on zombie channels
+    drainTimeout = setTimeout(done, 30_000)
+
     function cleanup(): void {
       if (!dc) return
-      if (useLowEvent) dc.onbufferedamountlow = prevLow
+      if (useLowEvent) dc.removeEventListener('bufferedamountlow', done)
       if (pollTimer) clearTimeout(pollTimer)
+      if (drainTimeout) clearTimeout(drainTimeout)
       dc.removeEventListener('close', onClose)
       dc.removeEventListener('error', onClose)
     }
