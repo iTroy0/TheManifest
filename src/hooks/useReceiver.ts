@@ -4,7 +4,7 @@ import { parseChunkPacket, buildChunkPacket, waitForBufferDrain, CHAT_IMAGE_FILE
 import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, getKeyFingerprint, uint8ToBase64 } from '../utils/crypto'
 import { createFileStream } from '../utils/streamWriter'
 import { createStreamingZip } from '../utils/zipBuilder'
-import { STUN_ONLY, WITH_TURN } from '../utils/iceServers'
+import { STUN_ONLY, getWithTurn } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { ChatMessage, ManifestData } from '../types'
 
@@ -214,12 +214,12 @@ export function useReceiver(peerId: string) {
       useTurnRef.current = withTurn
     }
 
-    function connect(): void {
+    async function connect(): Promise<void> {
       if (destroyedRef.current) return
       attemptRef.current++
       dispatchConn({ type: 'SET', payload: { retryCount: attemptRef.current - 1, status: isReconnect ? 'reconnecting' : attemptRef.current > 1 ? 'retrying' : 'connecting' } })
 
-      const config = useTurnRef.current ? WITH_TURN : STUN_ONLY
+      const config = useTurnRef.current ? await getWithTurn() : STUN_ONLY
       const peer = new Peer(config)
       peerRef.current = peer
 

@@ -1,15 +1,5 @@
-/**
- * WARNING: VITE_ prefixed environment variables are embedded in the client-side
- * JavaScript bundle at build time. TURN credentials configured here will be
- * visible to anyone inspecting the page source.
- *
- * For production deployments, use ephemeral TURN credentials issued by a
- * server-side API endpoint instead of static credentials.
- * See: https://datatracker.ietf.org/doc/html/draft-uberti-behave-turn-rest-00
- */
+// TURN URL is safe to expose (just a hostname, no credentials)
 const TURN_URL = import.meta.env.VITE_TURN_URL as string | undefined
-const TURN_USER = import.meta.env.VITE_TURN_USER as string | undefined
-const TURN_PASS = import.meta.env.VITE_TURN_PASS as string | undefined
 const SIGNAL_HOST = import.meta.env.VITE_SIGNAL_HOST as string | undefined
 const SIGNAL_PATH = (import.meta.env.VITE_SIGNAL_PATH as string | undefined) || '/'
 
@@ -45,16 +35,26 @@ export const STUN_ONLY = {
   },
 }
 
-// With TURN relay fallback (only if configured)
-export const WITH_TURN = {
-  ...signalConfig,
-  config: {
-    iceServers: [
-      ...stunServers,
-      ...(TURN_URL ? [
-        { urls: `turn:${TURN_URL}:3478`, username: TURN_USER, credential: TURN_PASS },
-        { urls: `turn:${TURN_URL}:3478?transport=tcp`, username: TURN_USER, credential: TURN_PASS },
-      ] : []),
-    ],
-  },
+// Fetch ephemeral TURN credentials from the server-side API.
+// Credentials are HMAC-based and expire after 24 hours.
+// Falls back to STUN-only if the API is unavailable.
+export async function getWithTurn(): Promise<typeof STUN_ONLY> {
+  if (!TURN_URL) return STUN_ONLY
+
+  try {
+    const res = await fetch('/api/turn-credentials')
+    if (!res.ok) return STUN_ONLY
+    const { username, credential, urls } = await res.json()
+    return {
+      ...signalConfig,
+      config: {
+        iceServers: [
+          ...stunServers,
+          ...((urls as string[]) || []).map((url: string) => ({ urls: url, username, credential })),
+        ],
+      },
+    }
+  } catch {
+    return STUN_ONLY
+  }
 }
