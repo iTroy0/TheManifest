@@ -62,6 +62,8 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
     urls: [
       `turn:${turnUrl}:3478`,
       `turn:${turnUrl}:3478?transport=tcp`,
+      `turns:${turnUrl}:5349?transport=tcp`,
+      `turns:${turnUrl}:443?transport=tcp`,
     ],
     ttl,
   })
