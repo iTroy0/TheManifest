@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX } from 'lucide-react'
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera } from 'lucide-react'
 import { UseCallReturn } from '../hooks/useCall'
 import VideoTile from './VideoTile'
 import AudioTile from './AudioTile'
@@ -24,7 +24,6 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
   const [popoutSize, setPopoutSize] = useState<PopoutSize>(POPOUT_DEFAULT)
   const [showSettings, setShowSettings] = useState<boolean>(false)
   const [isMobile, setIsMobile] = useState<boolean>(false)
-  const [isPortrait, setIsPortrait] = useState<boolean>(false)
   // Master remote-volume (0-1). Applied to every remote audio/video tile.
   // Ephemeral on purpose — we don't persist to localStorage (privacy ethos).
   const [volume, setVolume] = useState<number>(1)
@@ -35,15 +34,12 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
 
   const popoutRef = useRef<HTMLDivElement | null>(null)
 
-  // Viewport detection: mobile (for popout gating) + portrait (for tile shape).
-  // Portrait = on a mobile-sized viewport held vertically. We intentionally
-  // don't care about desktop window aspect — only actual mobile portrait flips
-  // the tile shape.
+  // Viewport detection: mobile gates the popout and bumps control sizes.
+  // Tile aspect is handled inside VideoTile itself via the source's natural
+  // dimensions, so we don't track orientation here anymore.
   useEffect(() => {
     const check = (): void => {
-      const mobile = window.innerWidth < 720
-      setIsMobile(mobile)
-      setIsPortrait(mobile && window.innerHeight > window.innerWidth)
+      setIsMobile(window.innerWidth < 720)
     }
     check()
     window.addEventListener('resize', check)
@@ -259,7 +255,6 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
                 cameraOff={focusedTile.cameraOff}
                 connecting={focusedTile.connecting}
                 volume={focusedTile.isSelf ? 1 : volume}
-                portrait={isPortrait}
                 focused
                 onToggleFocus={() => setFocusedId(null)}
               />
@@ -283,11 +278,11 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
               )}
             </div>
           ) : (
-            // Grid: 1 tile = full-width, 2 tiles = side-by-side. On portrait
-            // mobile, tiles switch to a 3:4 aspect so the layout actually
-            // *looks* portrait — not just a landscape tile stacked.
+            // Grid: 1 tile full-width, 2 tiles side-by-side. Each tile's
+            // aspect follows its own source (VideoTile derives from
+            // videoWidth/videoHeight) so no forced crop.
             <div
-              className="grid gap-2"
+              className="grid gap-2 items-start"
               style={{
                 gridTemplateColumns: videoTiles.length === 1 ? '1fr' : '1fr 1fr',
               }}
@@ -302,7 +297,6 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
                   cameraOff={v.cameraOff}
                   connecting={v.connecting}
                   volume={v.isSelf ? 1 : volume}
-                  portrait={isPortrait}
                   onToggleFocus={() => setFocusedId(v.id)}
                 />
               ))}
@@ -355,6 +349,14 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
               title={call.cameraOff ? 'Camera on' : 'Camera off'}
               icon={call.cameraOff ? VideoOff : Video}
               danger={call.cameraOff}
+            />
+          )}
+          {call.mode === 'video' && call.cameraDevices.length > 1 && (
+            <ControlButton
+              active
+              onClick={() => { void call.flipCamera() }}
+              title="Switch camera"
+              icon={SwitchCamera}
             />
           )}
           <ControlButton

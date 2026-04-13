@@ -432,6 +432,8 @@ export function useCall(options: UseCallOptions) {
     selectedCameraId: localMedia.selectedCameraId,
     selectMic: localMedia.selectMic,
     selectCamera: localMedia.selectCamera,
+    cameraFacing: localMedia.cameraFacing,
+    flipCamera: localMedia.flipCamera,
     // For rendering local preview
     localStream: localMedia.stream,
   }

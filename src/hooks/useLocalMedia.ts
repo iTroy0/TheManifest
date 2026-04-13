@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
 export type LocalMediaMode = 'none' | 'audio' | 'video'
+export type CameraFacing = 'user' | 'environment'
 
 export interface LocalMediaState {
   stream: MediaStream | null
@@ -26,9 +27,21 @@ export function useLocalMedia() {
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([])
   const [selectedMicId, setSelectedMicId] = useState<string | null>(null)
   const [selectedCameraId, setSelectedCameraId] = useState<string | null>(null)
+  const [cameraFacing, setCameraFacing] = useState<CameraFacing>('user')
 
   const streamRef = useRef<MediaStream | null>(null)
   const modeRef = useRef<LocalMediaMode>('none')
+  // Refs mirror state so `start` can read the latest selection synchronously
+  // without re-capturing closures — essential when `flipCamera` sets state and
+  // then immediately restarts the stream in the same tick.
+  const selectedMicIdRef = useRef<string | null>(null)
+  const selectedCameraIdRef = useRef<string | null>(null)
+  const cameraFacingRef = useRef<CameraFacing>('user')
+  const flippingRef = useRef<boolean>(false)
+
+  useEffect(() => { selectedMicIdRef.current = selectedMicId }, [selectedMicId])
+  useEffect(() => { selectedCameraIdRef.current = selectedCameraId }, [selectedCameraId])
+  useEffect(() => { cameraFacingRef.current = cameraFacing }, [cameraFacing])
 
   const refreshDevices = useCallback(async (): Promise<void> => {
     if (!navigator.mediaDevices?.enumerateDevices) return
@@ -63,22 +76,20 @@ export function useLocalMedia() {
       throw new Error(err)
     }
     stopStream()
-    const audio: MediaTrackConstraints = selectedMicId
-      ? { deviceId: { exact: selectedMicId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    const micId = selectedMicIdRef.current
+    const camId = selectedCameraIdRef.current
+    const facing = cameraFacingRef.current
+    const audio: MediaTrackConstraints = micId
+      ? { deviceId: { exact: micId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       : { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-    // Portrait mobile: request portrait-aspect capture. Browsers honour this
-    // as a hint; on most phones it yields a 720×1280 stream so the receiver
-    // actually sees a portrait frame instead of a letterboxed landscape one.
-    const portraitCapture: boolean = typeof window !== 'undefined'
-      && window.innerWidth < 720
-      && window.innerHeight > window.innerWidth
-    const videoDims: MediaTrackConstraints = portraitCapture
-      ? { width: { ideal: 720 }, height: { ideal: 1280 } }
-      : { width: { ideal: 1280 }, height: { ideal: 720 } }
+    // Let the browser pick a sensible resolution via ideal hints. When the
+    // user hasn't explicitly chosen a camera we also pass `facingMode` so the
+    // front/back flip toggle can work on mobile.
+    const videoDims: MediaTrackConstraints = { width: { ideal: 1280 }, height: { ideal: 720 } }
     const video: MediaTrackConstraints | false = mode === 'video'
-      ? (selectedCameraId
-          ? { deviceId: { exact: selectedCameraId }, ...videoDims }
-          : videoDims)
+      ? (camId
+          ? { deviceId: { exact: camId }, ...videoDims }
+          : { facingMode: facing, ...videoDims })
       : false
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio, video })
@@ -94,7 +105,7 @@ export function useLocalMedia() {
       setState(s => ({ ...s, error: err }))
       throw e
     }
-  }, [selectedMicId, selectedCameraId, stopStream, refreshDevices])
+  }, [stopStream, refreshDevices])
 
   const stop = useCallback((): void => {
     stopStream()
@@ -131,6 +142,7 @@ export function useLocalMedia() {
 
   const selectMic = useCallback(async (deviceId: string): Promise<void> => {
     setSelectedMicId(deviceId)
+    selectedMicIdRef.current = deviceId
     if (streamRef.current && modeRef.current !== 'none') {
       // Restart with the new device so existing call publishers pick it up
       // via the track-change effect in useCall.
@@ -140,8 +152,31 @@ export function useLocalMedia() {
 
   const selectCamera = useCallback(async (deviceId: string): Promise<void> => {
     setSelectedCameraId(deviceId)
+    selectedCameraIdRef.current = deviceId
     if (streamRef.current && modeRef.current === 'video') {
       try { await start('video') } catch {}
+    }
+  }, [start])
+
+  // Flip between front ('user') and back ('environment') cameras. Clears any
+  // explicit deviceId selection so the browser picks whichever device best
+  // matches the requested facingMode.
+  const flipCamera = useCallback(async (): Promise<void> => {
+    if (modeRef.current !== 'video') return
+    if (flippingRef.current) return
+    flippingRef.current = true
+    try {
+      const next: CameraFacing = cameraFacingRef.current === 'user' ? 'environment' : 'user'
+      cameraFacingRef.current = next
+      setCameraFacing(next)
+      setSelectedCameraId(null)
+      selectedCameraIdRef.current = null
+      await start('video')
+    } catch {
+      // Silent — we may be on a device that ignores facingMode, or permission
+      // was just revoked. State stays consistent because start() sets an error.
+    } finally {
+      flippingRef.current = false
     }
   }, [start])
 
@@ -156,12 +191,14 @@ export function useLocalMedia() {
     cameraDevices,
     selectedMicId,
     selectedCameraId,
+    cameraFacing,
     start,
     stop,
     toggleMic,
     toggleCamera,
     selectMic,
     selectCamera,
+    flipCamera,
   }
 }
 

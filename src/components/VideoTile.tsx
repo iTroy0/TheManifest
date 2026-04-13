@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { MicOff, User, VideoOff, Maximize2, Minimize2 } from 'lucide-react'
 
 interface VideoTileProps {
@@ -12,11 +12,19 @@ interface VideoTileProps {
   mini?: boolean
   onToggleFocus?: () => void
   volume?: number
-  portrait?: boolean
 }
 
-export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus, volume = 1, portrait = false }: VideoTileProps) {
+// Clamp the container's aspect ratio so an unusual source can't produce a
+// ridiculously tall or wide tile. 9/16 ≈ 0.5625, 16/9 ≈ 1.778.
+const MIN_ASPECT = 9 / 16
+const MAX_ASPECT = 16 / 9
+
+export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus, volume = 1 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  // The container's aspect follows whatever the actual video source is so
+  // a landscape sender renders in a landscape tile and a portrait sender
+  // renders in a portrait tile — no cropping in either case.
+  const [srcAspect, setSrcAspect] = useState<number>(16 / 9)
 
   // Attach/detach srcObject whenever the stream reference changes. The
   // <video> element is always mounted (see below), so this effect always
@@ -39,6 +47,28 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     if (el) el.volume = Math.max(0, Math.min(1, volume))
   }, [volume])
 
+  // Read the source's intrinsic dimensions whenever they become available
+  // (on loadedmetadata) or change (e.g., replaceTrack after a camera flip).
+  useEffect(() => {
+    const el = videoRef.current
+    if (!el) return
+    const update = (): void => {
+      const w = el.videoWidth
+      const h = el.videoHeight
+      if (w > 0 && h > 0) {
+        const raw = w / h
+        setSrcAspect(Math.max(MIN_ASPECT, Math.min(MAX_ASPECT, raw)))
+      }
+    }
+    update()
+    el.addEventListener('loadedmetadata', update)
+    el.addEventListener('resize', update)
+    return () => {
+      el.removeEventListener('loadedmetadata', update)
+      el.removeEventListener('resize', update)
+    }
+  }, [stream])
+
   const hasAnyVideoTrack: boolean = !!(stream && stream.getVideoTracks().length > 0)
   const shouldShowBlackout: boolean = !hasAnyVideoTrack || cameraOff
   const clickable: boolean = !!onToggleFocus
@@ -49,14 +79,15 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     if (onToggleFocus) onToggleFocus()
   }
 
-  // Mini PiP tiles stay landscape so they don't take over the focused tile.
-  // Everything else respects the portrait flag from the parent.
-  const aspectClass: string = mini ? 'aspect-video' : (portrait ? 'aspect-[3/4]' : 'aspect-video')
+  // Mini PiP tiles stay locked to a predictable landscape shape so the strip
+  // layout in focused mode stays neat. Full-size tiles follow the source.
+  const effectiveAspect: number = mini ? 16 / 9 : srcAspect
 
   return (
     <div
       onClick={clickable ? handleClick : undefined}
-      className={`relative ${aspectClass} w-full rounded-xl overflow-hidden bg-surface-2/80 border border-border group ${
+      style={{ aspectRatio: `${effectiveAspect}` }}
+      className={`relative w-full rounded-xl overflow-hidden bg-surface-2/80 border border-border group ${
         clickable ? 'cursor-pointer hover:border-accent/60 transition-colors' : ''
       } ${focused ? 'ring-2 ring-accent/60' : ''}`}
       title={clickable ? (focused ? 'Click to unfocus' : 'Click to focus') : undefined}
