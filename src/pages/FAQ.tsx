@@ -92,8 +92,16 @@ const faqs: FAQCategoryData[] = [
         a: 'Yes. Voice notes go through the same binary chunk pipeline as file transfers — each chunk is encrypted with AES-256-GCM before leaving your browser. The relay server cannot hear your recordings.'
       },
       {
-        q: 'Does the app access my microphone?',
-        a: 'Only when you tap the voice note button. Your browser will ask for microphone permission the first time. Audio is recorded locally, encrypted, and streamed directly to the other peer. No audio is ever sent to a server.'
+        q: 'Does the app access my microphone or camera?',
+        a: 'Only when you explicitly tap a button — recording a voice note or joining a live call. Your browser will ask permission the first time. Audio and video are captured locally and streamed directly to the other peers. Nothing is ever sent to a server.'
+      },
+      {
+        q: 'How are live voice & video calls encrypted?',
+        a: 'Calls use WebRTC\'s built-in DTLS-SRTP encryption, which is end-to-end between browsers — no server can listen in. Files and chat are additionally wrapped in an app-level AES-256-GCM layer; live media runs on a single encryption layer because adding a second layer to real-time media is impractical without an SFU.'
+      },
+      {
+        q: 'Is there a limit on how many people can be in a call?',
+        a: 'Voice calls scale up to 20 participants (same cap as file transfer) using a peer-to-peer mesh. Video calls are 1:1 — only the first two people to click Join Video get their cameras shared. Everyone else can still join audio.'
       }
     ]
   },

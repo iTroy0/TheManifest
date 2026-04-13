@@ -163,6 +163,39 @@ export function useSender() {
   const globalPasswordAttempts = useRef<number>(0)
   const lastPasswordAttemptTime = useRef<number>(0)
 
+  // Call plumbing — exposed to useCall as a lightweight bus. useCall is the
+  // only consumer; we keep a single handler slot rather than a pub/sub list.
+  const [peerInstance, setPeerInstance] = useState<InstanceType<typeof Peer> | null>(null)
+  const [participants, setParticipants] = useState<Array<{ peerId: string; name: string }>>([])
+  const callMessageHandlerRef = useRef<((fromPeerId: string, msg: Record<string, unknown>) => void) | null>(null)
+
+  const refreshParticipants = useCallback((): void => {
+    const list: Array<{ peerId: string; name: string }> = []
+    connectionsRef.current.forEach(cs => {
+      list.push({ peerId: cs.conn.peer, name: cs.nickname || 'Anon' })
+    })
+    setParticipants(list)
+  }, [])
+
+  const setCallMessageHandler = useCallback((h: ((fromPeerId: string, msg: Record<string, unknown>) => void) | null): void => {
+    callMessageHandlerRef.current = h
+  }, [])
+
+  const sendCallMessage = useCallback((peerId: string, msg: Record<string, unknown>): void => {
+    connectionsRef.current.forEach(cs => {
+      if (cs.conn.peer === peerId) {
+        try { cs.conn.send(msg) } catch {}
+      }
+    })
+  }, [])
+
+  const broadcastCallMessage = useCallback((msg: Record<string, unknown>, exceptPeerId?: string): void => {
+    connectionsRef.current.forEach(cs => {
+      if (exceptPeerId && cs.conn.peer === exceptPeerId) return
+      try { cs.conn.send(msg) } catch {}
+    })
+  }, [])
+
   const setFiles = useCallback((files: File[]): void => {
     filesRef.current = files
   }, [])
@@ -184,6 +217,7 @@ export function useSender() {
     peer.on('open', (id: string) => {
       if (destroyed) return
       dispatchConn({ type: 'SET', payload: { peerId: id, status: 'waiting' } })
+      setPeerInstance(peer)
     })
 
     peer.on('connection', (conn: DataConnection) => {
@@ -208,6 +242,7 @@ export function useSender() {
 
       function announceJoin(cs: ConnState, cId: string): void {
         dispatchConn({ type: 'SET', payload: { status: 'connected', recipientCount: connectionsRef.current.size } })
+        refreshParticipants()
         setMessages(prev => [...prev, { text: `${cs.nickname} joined`, from: 'system', time: Date.now(), self: false }].slice(-500))
         const count = connectionsRef.current.size + 1
         connectionsRef.current.forEach((other, id) => {
@@ -287,6 +322,7 @@ export function useSender() {
           const name = connState.nickname || 'A recipient'
           connectionsRef.current.delete(connId)
           dispatchConn({ type: 'SET', payload: { recipientCount: connectionsRef.current.size } })
+          refreshParticipants()
           setMessages(prev => [...prev, { text: `${name} ${reason}`, from: 'system', time: Date.now(), self: false }].slice(-500))
           const newCount = connectionsRef.current.size + 1
           connectionsRef.current.forEach(cs => {
@@ -366,6 +402,13 @@ export function useSender() {
         if (msg.type === 'pong') return
         if (msg.type === 'ping') {
           try { conn.send({ type: 'pong', ts: msg.ts }) } catch {}
+          return
+        }
+
+        if (typeof msg.type === 'string' && (msg.type as string).startsWith('call-')) {
+          if (callMessageHandlerRef.current) {
+            try { callMessageHandlerRef.current(conn.peer, msg) } catch {}
+          }
           return
         }
 
@@ -567,6 +610,7 @@ export function useSender() {
         if (msg.type === 'nickname-change') {
           const oldName = connState.nickname || msg.oldName as string
           connState.nickname = (msg.newName as string || '').slice(0, 32)
+          refreshParticipants()
           const changeMsg = `${oldName} is now ${msg.newName}`
           setMessages(prev => [...prev, { text: changeMsg, from: 'system', time: Date.now(), self: false }].slice(-500))
           connectionsRef.current.forEach((cs, id) => {
@@ -709,6 +753,7 @@ export function useSender() {
         setTypingUsers(prev => prev.filter(n => n !== name))
         connectionsRef.current.delete(connId)
         dispatchConn({ type: 'SET', payload: { recipientCount: connectionsRef.current.size } })
+        refreshParticipants()
         setMessages(prev => [...prev, { text: `${name} left`, from: 'system', time: Date.now(), self: false }].slice(-500))
         const count = connectionsRef.current.size + 1
         connectionsRef.current.forEach(cs => {
@@ -728,6 +773,7 @@ export function useSender() {
         connState.abort.aborted = true
         connectionsRef.current.delete(connId)
         dispatchConn({ type: 'SET', payload: { recipientCount: connectionsRef.current.size } })
+        refreshParticipants()
       })
     })
 
@@ -776,6 +822,8 @@ export function useSender() {
         try { cs.conn.removeAllListeners() } catch {}
       })
       connectionsRef.current.clear()
+      setPeerInstance(null)
+      setParticipants([])
       peer.destroy()
     }
   }, [sessionKey])
@@ -898,7 +946,7 @@ export function useSender() {
     imageBlobUrlsRef.current = []
   }, [])
 
-  return { peerId: conn.peerId, status: conn.status, progress: transfer.progress, overallProgress: transfer.overallProgress, speed: transfer.speed, eta: transfer.eta, setFiles, reset, currentFileIndex: transfer.currentFileIndex, totalSent: transfer.totalSent, fingerprint: conn.fingerprint, recipientCount: conn.recipientCount, setPassword, setChatOnly, broadcastManifest, messages, sendMessage, clearMessages, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction }
+  return { peerId: conn.peerId, status: conn.status, progress: transfer.progress, overallProgress: transfer.overallProgress, speed: transfer.speed, eta: transfer.eta, setFiles, reset, currentFileIndex: transfer.currentFileIndex, totalSent: transfer.totalSent, fingerprint: conn.fingerprint, recipientCount: conn.recipientCount, setPassword, setChatOnly, peer: peerInstance, participants, sendCallMessage, broadcastCallMessage, setCallMessageHandler, broadcastManifest, messages, sendMessage, clearMessages, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction }
 }
 
 // ── sendSingleFile ────────────────────────────────────────────────────────

@@ -212,6 +212,19 @@ export function useReceiver(peerId: string) {
   // still awaiting its own deriveSharedKey when the message arrives.
   const pendingManifestRef = useRef<string | null>(null)
 
+  // Call plumbing (single-consumer — useCall owns the handler slot).
+  const [peerInstance, setPeerInstance] = useState<InstanceType<typeof Peer> | null>(null)
+  const callMessageHandlerRef = useRef<((fromPeerId: string, msg: Record<string, unknown>) => void) | null>(null)
+
+  const setCallMessageHandler = useCallback((h: ((fromPeerId: string, msg: Record<string, unknown>) => void) | null): void => {
+    callMessageHandlerRef.current = h
+  }, [])
+
+  const sendCallMessage = useCallback((msg: Record<string, unknown>): void => {
+    const c = connRef.current
+    if (c && c.open) { try { c.send(msg) } catch {} }
+  }, [])
+
   const startConnection = useCallback((withTurn: boolean, isReconnect: boolean = false): void => {
     if (!window.crypto?.subtle) { dispatchConn({ type: 'SET_STATUS', payload: 'error' }); return }
     // Don't restart after unmount — guards against setTimeout-queued reconnects
@@ -250,6 +263,7 @@ export function useReceiver(peerId: string) {
         if (destroyedRef.current) return
         const conn = peer.connect(peerId, { reliable: true })
         connRef.current = conn
+        setPeerInstance(peer)
         let disconnectHandled = false
 
         conn.on('open', () => {
@@ -357,6 +371,14 @@ export function useReceiver(peerId: string) {
           if (msg.type === 'pong') return
           if (msg.type === 'ping') {
             try { conn.send({ type: 'pong', ts: msg.ts }) } catch {}
+            return
+          }
+
+          if (typeof msg.type === 'string' && (msg.type as string).startsWith('call-')) {
+            if (callMessageHandlerRef.current) {
+              const from = (msg.from as string) || conn.peer
+              try { callMessageHandlerRef.current(from, msg) } catch {}
+            }
             return
           }
 
@@ -756,6 +778,7 @@ export function useReceiver(peerId: string) {
       Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
       if (zipWriterRef.current) { zipWriterRef.current.abort(); zipWriterRef.current = null }
       if (peerRef.current) peerRef.current.destroy()
+      setPeerInstance(null)
     }
   }, [peerId, startConnection])
 
@@ -1028,6 +1051,7 @@ export function useReceiver(peerId: string) {
     passwordRequired: conn.passwordRequired, passwordError: conn.passwordError, submitPassword,
     messages, sendMessage, clearMessages, rtt, nickname, changeNickname, onlineCount: conn.onlineCount,
     typingUsers, sendTyping, sendReaction, cancelFile, cancelAll, pauseFile, resumeFile, pausedFiles: transfer.pausedFiles,
+    peer: peerInstance, hostPeerId: peerId, sendCallMessage, setCallMessageHandler,
   }
 }
 

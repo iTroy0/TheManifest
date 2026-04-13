@@ -1,5 +1,7 @@
 import { useParams, Link } from 'react-router-dom'
 import { useReceiver } from '../hooks/useReceiver'
+import { useLocalMedia } from '../hooks/useLocalMedia'
+import { useCall } from '../hooks/useCall'
 import { formatBytes, formatSpeed, formatTime } from '../utils/formatBytes'
 import { usePageTitle } from '../hooks/usePageTitle'
 import { useElapsedTime, formatElapsed } from '../hooks/useElapsedTime'
@@ -7,6 +9,7 @@ import FileList from '../components/FileList'
 import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import ChatPanel from '../components/ChatPanel'
+import CallPanel from '../components/CallPanel'
 import { ComponentErrorBoundary } from '../components/ErrorBoundary'
 import { useState, useEffect, type ChangeEvent } from 'react'
 import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Wifi, Archive, Lock, ChevronDown, MessagesSquare, Loader2 } from 'lucide-react'
@@ -20,7 +23,20 @@ export default function Portal() {
     passwordRequired, passwordError, submitPassword,
     messages, sendMessage, clearMessages, rtt, nickname, changeNickname, onlineCount,
     typingUsers, sendTyping, sendReaction, cancelFile, cancelAll, pauseFile, resumeFile, pausedFiles,
+    peer: receiverPeer, hostPeerId, sendCallMessage, setCallMessageHandler,
   } = useReceiver(peerId ?? '')
+  const localMedia = useLocalMedia()
+  const call = useCall({
+    peer: receiverPeer,
+    myPeerId: receiverPeer?.id ?? null,
+    myName: nickname,
+    isHost: false,
+    hostPeerId,
+    participants: [],
+    sendToHost: sendCallMessage,
+    setMessageHandler: setCallMessageHandler,
+    localMedia,
+  })
   const [passwordInput, setPasswordInput] = useState<string>('')
   const [passwordLoading, setPasswordLoading] = useState<boolean>(false)
   const [filesOpen, setFilesOpen] = useState<boolean>(true)
@@ -362,6 +378,13 @@ export default function Portal() {
           </div>
         )}
 
+
+        {/* Call — only while live (no point showing after disconnect) */}
+        {showManifest && !isDead && (
+          <ComponentErrorBoundary name="Call">
+            <CallPanel call={call} myName={nickname} myPeerId={receiverPeer?.id ?? null} disabled={isDead} />
+          </ComponentErrorBoundary>
+        )}
 
         {/* Chat — keep visible after disconnect so the user can still read history */}
         {(showManifest || (manifest && isDead)) && (
