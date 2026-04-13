@@ -6,6 +6,7 @@ interface AudioTileProps {
   name: string
   self?: boolean
   micMuted?: boolean
+  volume?: number
 }
 
 // Small, inline speaking detector using the Web Audio API. Runs a cheap
@@ -64,7 +65,7 @@ function useSpeakingLevel(stream: MediaStream | null, active: boolean): number {
   return level
 }
 
-export default function AudioTile({ stream, name, self = false, micMuted = false }: AudioTileProps) {
+export default function AudioTile({ stream, name, self = false, micMuted = false, volume = 1 }: AudioTileProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const speaking = useSpeakingLevel(stream, !self && !micMuted)
 
@@ -74,6 +75,11 @@ export default function AudioTile({ stream, name, self = false, micMuted = false
     if (stream && el.srcObject !== stream) { el.srcObject = stream }
     if (!stream && el.srcObject) { el.srcObject = null }
   }, [stream])
+
+  useEffect(() => {
+    const el = audioRef.current
+    if (el) el.volume = Math.max(0, Math.min(1, volume))
+  }, [volume])
 
   const isSpeaking: boolean = speaking > 0.08
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown } from 'lucide-react'
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX } from 'lucide-react'
 import { UseCallReturn } from '../hooks/useCall'
 import VideoTile from './VideoTile'
 import AudioTile from './AudioTile'
@@ -22,20 +22,48 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
   const [isPopout, setIsPopout] = useState<boolean>(false)
   const [popoutPos, setPopoutPos] = useState<PopoutPos | null>(null)
   const [popoutSize, setPopoutSize] = useState<PopoutSize>(POPOUT_DEFAULT)
-  const [showDeviceMenu, setShowDeviceMenu] = useState<boolean>(false)
+  const [showSettings, setShowSettings] = useState<boolean>(false)
   const [isMobile, setIsMobile] = useState<boolean>(false)
+  const [isPortrait, setIsPortrait] = useState<boolean>(false)
+  // Master remote-volume (0-1). Applied to every remote audio/video tile.
+  // Ephemeral on purpose — we don't persist to localStorage (privacy ethos).
+  const [volume, setVolume] = useState<number>(1)
+  const lastNonZeroVolumeRef = useRef<number>(1)
   // Discord-style focus: clicking a video tile spotlights it; others become
   // small overlays. Special sentinel 'self' refers to the local preview.
   const [focusedId, setFocusedId] = useState<string | null>(null)
 
   const popoutRef = useRef<HTMLDivElement | null>(null)
 
-  // Auto-detect mobile for fullscreen popout.
+  // Viewport detection: mobile (for popout gating) + portrait (for video grid).
   useEffect(() => {
-    const check = (): void => setIsMobile(window.innerWidth < 720)
+    const check = (): void => {
+      setIsMobile(window.innerWidth < 720)
+      setIsPortrait(window.innerWidth < 500 && window.innerHeight > window.innerWidth)
+    }
     check()
     window.addEventListener('resize', check)
-    return () => window.removeEventListener('resize', check)
+    window.addEventListener('orientationchange', check)
+    return () => {
+      window.removeEventListener('resize', check)
+      window.removeEventListener('orientationchange', check)
+    }
+  }, [])
+
+  const handleVolumeChange = useCallback((v: number): void => {
+    const clamped = Math.max(0, Math.min(1, v))
+    if (clamped > 0) lastNonZeroVolumeRef.current = clamped
+    setVolume(clamped)
+  }, [])
+
+  const toggleSpeakerMute = useCallback((): void => {
+    setVolume(prev => {
+      if (prev > 0) {
+        lastNonZeroVolumeRef.current = prev
+        return 0
+      }
+      return lastNonZeroVolumeRef.current || 1
+    })
   }, [])
 
   // When a call becomes active, auto-open the panel.
@@ -226,6 +254,7 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
                 micMuted={focusedTile.micMuted}
                 cameraOff={focusedTile.cameraOff}
                 connecting={focusedTile.connecting}
+                volume={focusedTile.isSelf ? 1 : volume}
                 focused
                 onToggleFocus={() => setFocusedId(null)}
               />
@@ -240,6 +269,7 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
                       micMuted={v.micMuted}
                       cameraOff={v.cameraOff}
                       connecting={v.connecting}
+                      volume={v.isSelf ? 1 : volume}
                       mini
                       onToggleFocus={() => setFocusedId(v.id)}
                     />
@@ -249,7 +279,17 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
             </div>
           ) : (
             // Grid: all tiles equal. Click any to focus.
-            <div className="grid gap-2" style={{ gridTemplateColumns: videoTiles.length === 1 ? '1fr' : '1fr 1fr' }}>
+            // Portrait mobile stacks vertically so each tile keeps a usable size.
+            <div
+              className="grid gap-2"
+              style={{
+                gridTemplateColumns: videoTiles.length === 1
+                  ? '1fr'
+                  : isPortrait
+                    ? '1fr'
+                    : '1fr 1fr',
+              }}
+            >
               {videoTiles.map(v => (
                 <VideoTile
                   key={v.id}
@@ -259,6 +299,7 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
                   micMuted={v.micMuted}
                   cameraOff={v.cameraOff}
                   connecting={v.connecting}
+                  volume={v.isSelf ? 1 : volume}
                   onToggleFocus={() => setFocusedId(v.id)}
                 />
               ))}
@@ -275,7 +316,7 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
             <AudioTile stream={call.localStream} name={myName} self micMuted={call.micMuted} />
           )}
           {audioRemotes.map(p => (
-            <AudioTile key={p.peerId} stream={p.stream} name={p.name} micMuted={p.micMuted} />
+            <AudioTile key={p.peerId} stream={p.stream} name={p.name} micMuted={p.micMuted} volume={volume} />
           ))}
         </div>
         {remotePeers.length === 0 && (
@@ -296,7 +337,7 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
 
       {/* Controls bar */}
       <div className="border-t border-border bg-surface-2/40 px-3 py-2">
-        <div className="flex items-center justify-center gap-1.5">
+        <div className="flex items-center justify-center gap-1.5 flex-wrap">
           <ControlButton
             active={!call.micMuted}
             onClick={call.toggleMic}
@@ -314,24 +355,32 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
             />
           )}
           <ControlButton
-            active={showDeviceMenu}
-            onClick={() => setShowDeviceMenu(s => !s)}
-            title="Devices"
+            active={volume > 0}
+            onClick={toggleSpeakerMute}
+            title={volume === 0 ? 'Unmute speakers' : 'Mute speakers'}
+            icon={volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2}
+            danger={volume === 0}
+          />
+          <ControlButton
+            active={showSettings}
+            onClick={() => setShowSettings(s => !s)}
+            title="Settings"
             icon={Settings2}
           />
           <div className="w-px h-6 bg-border mx-1" />
           <button
             type="button"
             onClick={call.leave}
-            className="flex items-center gap-2 px-4 h-9 rounded-lg bg-danger hover:bg-danger/90 text-white font-mono text-[11px] font-medium transition-all active:scale-[0.97] shadow-[0_0_0_1px_rgba(239,68,68,0.25)]"
+            className="flex items-center gap-2 px-4 h-11 sm:h-9 rounded-lg bg-danger hover:bg-danger/90 text-white font-mono text-[11px] font-medium transition-all active:scale-[0.97] shadow-[0_0_0_1px_rgba(239,68,68,0.25)]"
             title="Leave call"
           >
-            <PhoneOff className="w-3.5 h-3.5" />
+            <PhoneOff className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
             Leave
           </button>
         </div>
-        {showDeviceMenu && (
-          <div className="mt-2 pt-2 border-t border-border/50 flex flex-col gap-1.5">
+        {showSettings && (
+          <div className="mt-2 pt-2 border-t border-border/50 flex flex-col gap-2">
+            <VolumeRow volume={volume} onChange={handleVolumeChange} onToggleMute={toggleSpeakerMute} />
             <DeviceRow label="Microphone" devices={call.micDevices} selectedId={call.selectedMicId} onSelect={(id) => { void call.selectMic(id) }} />
             {call.mode === 'video' && (
               <DeviceRow label="Camera" devices={call.cameraDevices} selectedId={call.selectedCameraId} onSelect={(id) => { void call.selectCamera(id) }} />
@@ -489,14 +538,49 @@ function ControlButton({ icon: Icon, onClick, title, active: _active = true, dan
       onClick={onClick}
       title={title}
       aria-label={title}
-      className={`flex items-center justify-center w-9 h-9 rounded-lg transition-all active:scale-[0.95] ${
+      className={`flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 rounded-lg transition-all active:scale-[0.95] ${
         danger
           ? 'bg-danger/15 hover:bg-danger/25 text-danger ring-1 ring-danger/30'
           : 'bg-accent/10 hover:bg-accent/20 text-accent ring-1 ring-accent/20'
       }`}
     >
-      <Icon className="w-4 h-4" />
+      <Icon className="w-5 h-5 sm:w-4 sm:h-4" />
     </button>
+  )
+}
+
+interface VolumeRowProps {
+  volume: number
+  onChange: (v: number) => void
+  onToggleMute: () => void
+}
+function VolumeRow({ volume, onChange, onToggleMute }: VolumeRowProps) {
+  const Icon = volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2
+  const percent = Math.round(volume * 100)
+  return (
+    <div className="flex items-center gap-2">
+      <span className="font-mono text-[10px] text-muted w-[70px] shrink-0">Volume</span>
+      <button
+        type="button"
+        onClick={onToggleMute}
+        className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-accent hover:bg-accent/10 transition-colors"
+        aria-label={volume === 0 ? 'Unmute speakers' : 'Mute speakers'}
+        title={volume === 0 ? 'Unmute speakers' : 'Mute speakers'}
+      >
+        <Icon className="w-3.5 h-3.5" />
+      </button>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        step={1}
+        value={percent}
+        onChange={(e) => onChange(Number(e.target.value) / 100)}
+        className="flex-1 min-w-0 accent-accent cursor-pointer"
+        aria-label="Remote volume"
+      />
+      <span className="font-mono text-[10px] text-muted w-9 text-right tabular-nums">{percent}%</span>
+    </div>
   )
 }
 

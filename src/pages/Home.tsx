@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef, type ChangeEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, MessagesSquare, Plus, type LucideIcon } from 'lucide-react'
+import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, MessagesSquare, Phone, Mic, Plus, type LucideIcon } from 'lucide-react'
 import { useSender } from '../hooks/useSender'
 import { formatSpeed, formatTime, formatBytes } from '../utils/formatBytes'
 import { usePageTitle } from '../hooks/usePageTitle'
@@ -198,6 +198,8 @@ export default function Home() {
               <InfoCard icon={Users} title="Multi-recipient" desc="Unlimited simultaneous connections. Each gets their own encrypted channel." />
               <InfoCard icon={Lock} title="Password protect" desc="Lock your portal or chat room with an encrypted password." />
               <InfoCard icon={MessagesSquare} title="Chat rooms" desc="Encrypted group chat with reactions, replies, image sharing, and typing indicators." />
+              <InfoCard icon={Phone} title="Voice & video calls" desc="Live voice up to 20 peers, 1:1 video. DTLS-SRTP encrypted, mobile-friendly controls." />
+              <InfoCard icon={Mic} title="Voice notes" desc="Record and send encrypted voice messages up to 3 minutes with seekable playback." />
             </div>
           </div>
         )}

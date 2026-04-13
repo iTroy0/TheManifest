@@ -102,6 +102,10 @@ const faqs: FAQCategoryData[] = [
       {
         q: 'Is there a limit on how many people can be in a call?',
         a: 'Voice calls scale up to 20 participants (same cap as file transfer) using a peer-to-peer mesh. Video calls are 1:1 — only the first two people to click Join Video get their cameras shared. Everyone else can still join audio.'
+      },
+      {
+        q: 'Can I control the volume of other people in a call?',
+        a: 'Yes. Tap the settings (gear) icon in the call controls to reveal a master volume slider that applies to everyone you\'re listening to. For a faster silence, the controls row also has a dedicated mute-speakers button. On mobile, tap targets are sized for thumbs and the video grid stacks vertically in portrait.'
       }
     ]
   },

@@ -52,6 +52,7 @@
 | Zero server storage | ✅ | ❌ | ❌ | ❌ |
 | Real-time chat | ✅ | ❌ | ❌ | ❌ |
 | Voice notes | ✅ | ❌ | ❌ | ❌ |
+| Voice & video calls | ✅ | ❌ | ❌ | ❌ |
 | No third-party requests | ✅ | ❌ | ❌ | ❌ |
 | Completely free | ✅ | ❌ | ❌ | ❌ |
 
@@ -91,6 +92,16 @@
 - **Fullscreen & popout** — Moveable, resizable popout chat on desktop; fullscreen on mobile
 - **RTL support** — Arabic and other RTL languages work natively
 - **Clear messages** — Local-only clear with confirmation dialog
+
+### Voice & Video Calls (Beta)
+- **Live voice calls** — Up to 20 participants in a P2P mesh with speaking indicators
+- **Live video calls** — 1:1 video with Discord-style click-to-focus spotlight
+- **DTLS-SRTP encrypted** — End-to-end encryption built into WebRTC — no server can listen
+- **Hot-swap devices** — Switch microphone or camera mid-call without dropping the connection
+- **Remote volume control** — Master volume slider and quick mute-speakers button
+- **Mobile-first controls** — 44px tap targets, portrait-aware video grid, orientation-change aware
+- **Popout window** — Draggable and resizable floating call window on desktop
+- **Track-state sync** — Mute and camera-off state propagate to every peer in the call
 
 ### Reliability
 - **Multiple recipients** — Unlimited simultaneous connections

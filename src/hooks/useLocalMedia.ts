@@ -93,24 +93,31 @@ export function useLocalMedia() {
     setState({ stream: null, mode: 'none', micMuted: false, cameraOff: false, error: null })
   }, [stopStream])
 
+  // State is the source of truth for mute/camera; we flip it and then
+  // align track.enabled to match. Reading track.enabled is fragile after
+  // device swaps or when the track has been restarted between clicks.
   const toggleMic = useCallback((): void => {
-    const s = streamRef.current
-    if (!s) return
-    const tracks = s.getAudioTracks()
-    if (!tracks.length) return
-    const newMuted = tracks[0].enabled
-    tracks.forEach(t => { t.enabled = !newMuted })
-    setState(prev => ({ ...prev, micMuted: newMuted }))
+    setState(prev => {
+      const s = streamRef.current
+      if (!s) return prev
+      const tracks = s.getAudioTracks()
+      if (!tracks.length) return prev
+      const nextMuted = !prev.micMuted
+      tracks.forEach(t => { t.enabled = !nextMuted })
+      return { ...prev, micMuted: nextMuted }
+    })
   }, [])
 
   const toggleCamera = useCallback((): void => {
-    const s = streamRef.current
-    if (!s) return
-    const tracks = s.getVideoTracks()
-    if (!tracks.length) return
-    const newOff = tracks[0].enabled
-    tracks.forEach(t => { t.enabled = !newOff })
-    setState(prev => ({ ...prev, cameraOff: newOff }))
+    setState(prev => {
+      const s = streamRef.current
+      if (!s) return prev
+      const tracks = s.getVideoTracks()
+      if (!tracks.length) return prev
+      const nextOff = !prev.cameraOff
+      tracks.forEach(t => { t.enabled = !nextOff })
+      return { ...prev, cameraOff: nextOff }
+    })
   }, [])
 
   const selectMic = useCallback(async (deviceId: string): Promise<void> => {

@@ -11,11 +11,15 @@ interface VideoTileProps {
   focused?: boolean
   mini?: boolean
   onToggleFocus?: () => void
+  volume?: number
 }
 
-export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus }: VideoTileProps) {
+export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus, volume = 1 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
 
+  // Attach/detach srcObject whenever the stream reference changes. The
+  // <video> element is always mounted (see below), so this effect always
+  // runs against a live ref — no remount races when cameraOff toggles.
   useEffect(() => {
     const el = videoRef.current
     if (!el) return
@@ -27,7 +31,13 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     }
   }, [stream])
 
-  const showVideo: boolean = !!stream && !cameraOff
+  // Remote audio comes through the <video> element when in video mode.
+  // Self-video is HTML-muted anyway, so this is a no-op for local preview.
+  useEffect(() => {
+    const el = videoRef.current
+    if (el) el.volume = Math.max(0, Math.min(1, volume))
+  }, [volume])
+
   const hasAnyVideoTrack: boolean = !!(stream && stream.getVideoTracks().length > 0)
   const shouldShowBlackout: boolean = !hasAnyVideoTrack || cameraOff
   const clickable: boolean = !!onToggleFocus
@@ -46,16 +56,18 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
       } ${focused ? 'ring-2 ring-accent/60' : ''}`}
       title={clickable ? (focused ? 'Click to unfocus' : 'Click to focus') : undefined}
     >
-      {showVideo && hasAnyVideoTrack ? (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted={self}
-          className="absolute inset-0 w-full h-full object-cover bg-black"
-          style={{ transform: self ? 'scaleX(-1)' : undefined }}
-        />
-      ) : null}
+      {/* Always-mounted video element. Hidden (not unmounted) when blackout
+          applies so that toggling cameraOff never loses the srcObject binding. */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={self}
+        className={`absolute inset-0 w-full h-full object-cover bg-black transition-opacity duration-200 ${
+          shouldShowBlackout ? 'opacity-0 pointer-events-none' : 'opacity-100'
+        }`}
+        style={{ transform: self ? 'scaleX(-1)' : undefined }}
+      />
 
       {shouldShowBlackout && (
         <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-2 to-bg">
