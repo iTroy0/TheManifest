@@ -12,9 +12,10 @@ interface VideoTileProps {
   mini?: boolean
   onToggleFocus?: () => void
   volume?: number
+  portrait?: boolean
 }
 
-export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus, volume = 1 }: VideoTileProps) {
+export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus, volume = 1, portrait = false }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
 
   // Attach/detach srcObject whenever the stream reference changes. The
@@ -48,10 +49,14 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     if (onToggleFocus) onToggleFocus()
   }
 
+  // Mini PiP tiles stay landscape so they don't take over the focused tile.
+  // Everything else respects the portrait flag from the parent.
+  const aspectClass: string = mini ? 'aspect-video' : (portrait ? 'aspect-[3/4]' : 'aspect-video')
+
   return (
     <div
       onClick={clickable ? handleClick : undefined}
-      className={`relative aspect-video w-full rounded-xl overflow-hidden bg-surface-2/80 border border-border group ${
+      className={`relative ${aspectClass} w-full rounded-xl overflow-hidden bg-surface-2/80 border border-border group ${
         clickable ? 'cursor-pointer hover:border-accent/60 transition-colors' : ''
       } ${focused ? 'ring-2 ring-accent/60' : ''}`}
       title={clickable ? (focused ? 'Click to unfocus' : 'Click to focus') : undefined}

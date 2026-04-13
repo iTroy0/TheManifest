@@ -35,11 +35,15 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
 
   const popoutRef = useRef<HTMLDivElement | null>(null)
 
-  // Viewport detection: mobile (for popout gating) + portrait (for video grid).
+  // Viewport detection: mobile (for popout gating) + portrait (for tile shape).
+  // Portrait = on a mobile-sized viewport held vertically. We intentionally
+  // don't care about desktop window aspect — only actual mobile portrait flips
+  // the tile shape.
   useEffect(() => {
     const check = (): void => {
-      setIsMobile(window.innerWidth < 720)
-      setIsPortrait(window.innerWidth < 500 && window.innerHeight > window.innerWidth)
+      const mobile = window.innerWidth < 720
+      setIsMobile(mobile)
+      setIsPortrait(mobile && window.innerHeight > window.innerWidth)
     }
     check()
     window.addEventListener('resize', check)
@@ -255,6 +259,7 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
                 cameraOff={focusedTile.cameraOff}
                 connecting={focusedTile.connecting}
                 volume={focusedTile.isSelf ? 1 : volume}
+                portrait={isPortrait}
                 focused
                 onToggleFocus={() => setFocusedId(null)}
               />
@@ -278,16 +283,13 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
               )}
             </div>
           ) : (
-            // Grid: all tiles equal. Click any to focus.
-            // Portrait mobile stacks vertically so each tile keeps a usable size.
+            // Grid: 1 tile = full-width, 2 tiles = side-by-side. On portrait
+            // mobile, tiles switch to a 3:4 aspect so the layout actually
+            // *looks* portrait — not just a landscape tile stacked.
             <div
               className="grid gap-2"
               style={{
-                gridTemplateColumns: videoTiles.length === 1
-                  ? '1fr'
-                  : isPortrait
-                    ? '1fr'
-                    : '1fr 1fr',
+                gridTemplateColumns: videoTiles.length === 1 ? '1fr' : '1fr 1fr',
               }}
             >
               {videoTiles.map(v => (
@@ -300,6 +302,7 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
                   cameraOff={v.cameraOff}
                   connecting={v.connecting}
                   volume={v.isSelf ? 1 : volume}
+                  portrait={isPortrait}
                   onToggleFocus={() => setFocusedId(v.id)}
                 />
               ))}

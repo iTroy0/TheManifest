@@ -66,10 +66,19 @@ export function useLocalMedia() {
     const audio: MediaTrackConstraints = selectedMicId
       ? { deviceId: { exact: selectedMicId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       : { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    // Portrait mobile: request portrait-aspect capture. Browsers honour this
+    // as a hint; on most phones it yields a 720×1280 stream so the receiver
+    // actually sees a portrait frame instead of a letterboxed landscape one.
+    const portraitCapture: boolean = typeof window !== 'undefined'
+      && window.innerWidth < 720
+      && window.innerHeight > window.innerWidth
+    const videoDims: MediaTrackConstraints = portraitCapture
+      ? { width: { ideal: 720 }, height: { ideal: 1280 } }
+      : { width: { ideal: 1280 }, height: { ideal: 720 } }
     const video: MediaTrackConstraints | false = mode === 'video'
       ? (selectedCameraId
-          ? { deviceId: { exact: selectedCameraId }, width: { ideal: 1280 }, height: { ideal: 720 } }
-          : { width: { ideal: 1280 }, height: { ideal: 720 } })
+          ? { deviceId: { exact: selectedCameraId }, ...videoDims }
+          : videoDims)
       : false
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio, video })
