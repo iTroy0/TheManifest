@@ -1,64 +1,16 @@
-import React, { useState, useReducer, useRef, useEffect, useCallback, useMemo } from 'react'
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, Minimize2, MoreVertical, ExternalLink, Mic } from 'lucide-react'
 import { sounds, canNotify, requestNotificationPermission, alertNewMessage } from '../utils/notifications'
 import Linkify from './chat/Linkify'
 import VoicePlayer from './chat/VoicePlayer'
 import TypingDots from './chat/TypingDots'
-import ImagePreviewOverlay, { type ViewImage } from './chat/ImagePreviewOverlay'
+import ImagePreviewOverlay from './chat/ImagePreviewOverlay'
 import { useChatPanelState } from '../hooks/useChatPanelState'
+import { useChatInteraction, type ImagePreview, type ReplyTo } from '../hooks/useChatInteraction'
 import { ChatMessage } from '../types'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
-
-// ── interactionReducer ───────────────────────────────────────────────────────
-
-interface ImagePreview {
-  url: string
-  bytes: Uint8Array
-  mime: string
-  duration?: number
-}
-
-interface ReplyTo {
-  text: string
-  from: string
-  time: number
-}
-
-interface InteractionState {
-  replyTo: ReplyTo | null
-  reactingIdx: number | null
-  activeMsg: number | null
-  imagePreview: ImagePreview | null
-  viewImage: ViewImage | null
-  isDragOver: boolean
-  dropError: string | null
-}
-
-type InteractionAction =
-  | { type: 'SET'; payload: Partial<InteractionState> }
-  | { type: 'CLEAR_SEND' }
-  | { type: 'TOGGLE_MSG'; index: number }
-
-const initialInteraction: InteractionState = {
-  replyTo: null,
-  reactingIdx: null,
-  activeMsg: null,
-  imagePreview: null,
-  viewImage: null,
-  isDragOver: false,
-  dropError: null,
-}
-
-function interactionReducer(state: InteractionState, action: InteractionAction): InteractionState {
-  switch (action.type) {
-    case 'SET': return { ...state, ...action.payload }
-    case 'CLEAR_SEND': return { ...state, imagePreview: null, replyTo: null }
-    case 'TOGGLE_MSG': return { ...state, activeMsg: state.activeMsg === action.index ? null : action.index, reactingIdx: null }
-    default: return state
-  }
-}
 
 // ── DragRef shape ────────────────────────────────────────────────────────────
 
@@ -87,7 +39,7 @@ interface ChatPanelProps {
 export default function ChatPanel({ messages, onSend, onClearMessages, disabled, nickname, onNicknameChange, onlineCount, onTyping, typingUsers, onReaction }: ChatPanelProps) {
   const [panel, dispatchPanel] = useChatPanelState()
   const { open, unread, isFullscreen, isPopout, showMenu, showClearConfirm, showScrollBtn, isNearBottom, menuPos, popoutPos, popoutSize, viewportHeight, viewportOffset } = panel
-  const [interact, dispatchInteract] = useReducer(interactionReducer, initialInteraction)
+  const [interact, dispatchInteract] = useChatInteraction()
   const { replyTo, reactingIdx, activeMsg, imagePreview, viewImage, isDragOver, dropError } = interact
   const [text, setText] = useState('')
   const [editName, setEditName] = useState(nickname || '')
