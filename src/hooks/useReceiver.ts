@@ -7,13 +7,7 @@ import { createStreamingZip } from '../utils/zipBuilder'
 import { STUN_ONLY, getWithTurn } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { ChatMessage, ManifestData } from '../types'
-
-// ── Utilities ────────────────────────────────────────────────────────────
-
-function sanitizeFileName(name: string): string {
-  let s = name.replace(/^.*[\\/]/, '').replace(/[<>:"|?*\x00-\x1f]/g, '_').replace(/^[\s.]+|[\s.]+$/g, '')
-  return s.slice(0, 255) || 'download'
-}
+import { sanitizeFileName } from '../utils/filename'
 
 // ── Constants ────────────────────────────────────────────────────────────
 
