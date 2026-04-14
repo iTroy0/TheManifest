@@ -8,17 +8,9 @@ import { STUN_ONLY, getWithTurn } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { ChatMessage, ManifestData } from '../types'
 import { sanitizeFileName } from '../utils/filename'
+import { generateNickname } from '../utils/nickname'
 
 // ── Constants ────────────────────────────────────────────────────────────
-
-const ANIMALS = ['Fox', 'Wolf', 'Bear', 'Hawk', 'Lynx', 'Owl', 'Crow', 'Deer', 'Hare', 'Pike']
-const ADJECTIVES = ['Swift', 'Bold', 'Calm', 'Keen', 'Wild', 'Wise', 'Dark', 'Bright']
-
-function generateNickname(): string {
-  const a = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)]
-  const b = ANIMALS[Math.floor(Math.random() * ANIMALS.length)]
-  return `${a}${b}${Math.floor(Math.random() * 10000)}`
-}
 
 const MAX_RETRIES = 2
 const TIMEOUT_MS = 10000
