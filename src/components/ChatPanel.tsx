@@ -4,23 +4,10 @@ import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, Ar
 import { sounds, canNotify, requestNotificationPermission, alertNewMessage } from '../utils/notifications'
 import Linkify from './chat/Linkify'
 import VoicePlayer from './chat/VoicePlayer'
+import TypingDots from './chat/TypingDots'
 import { ChatMessage } from '../types'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
-
-const TYPING_DELAY_0 = { animationDelay: '0ms' }
-const TYPING_DELAY_1 = { animationDelay: '150ms' }
-const TYPING_DELAY_2 = { animationDelay: '300ms' }
-
-function TypingDots() {
-  return (
-    <span className="inline-flex gap-0.5 ml-1">
-      <span className="w-1 h-1 bg-accent/60 rounded-full animate-bounce" style={TYPING_DELAY_0} />
-      <span className="w-1 h-1 bg-accent/60 rounded-full animate-bounce" style={TYPING_DELAY_1} />
-      <span className="w-1 h-1 bg-accent/60 rounded-full animate-bounce" style={TYPING_DELAY_2} />
-    </span>
-  )
-}
 
 // ── panelReducer ─────────────────────────────────────────────────────────────
 
