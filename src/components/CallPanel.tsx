@@ -1,39 +1,57 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera, AlertTriangle, Loader2, RefreshCw, X, WifiOff } from 'lucide-react'
 import { UseCallReturn } from '../hooks/useCall'
 import { useViewport } from '../hooks/useViewport'
 import { usePopout } from '../hooks/usePopout'
+import { useSpeakingLevels, StreamEntry } from '../hooks/useSpeakingLevels'
+import { ensureAudioContextRunning } from '../utils/audioContext'
 import VideoTile from './VideoTile'
 import AudioTile from './AudioTile'
+
+// Lifecycle states the parent connection can be in. We accept the loose
+// receiver/sender status strings rather than imposing a tighter union here.
+export type CallPanelConnectionStatus =
+  | 'connecting'
+  | 'retrying'
+  | 'reconnecting'
+  | 'connected'
+  | 'manifest-received'
+  | 'transferring'
+  | 'waiting'
+  | 'done'
+  | 'closed'
+  | 'rejected'
+  | 'error'
+  | 'direct-failed'
+  | string
 
 interface CallPanelProps {
   call: UseCallReturn
   myName: string
   myPeerId: string | null
   disabled?: boolean
+  // Connection state from the host receiver/sender hook. Drives the
+  // reconnect banner and forces a clean leave when the underlying transport
+  // dies. Optional so existing callers compile during the migration.
+  connectionStatus?: CallPanelConnectionStatus
 }
 
 const POPOUT_DEFAULT = { w: 420, h: 520 }
 const POPOUT_MIN = { w: 320, h: 360 }
 
-export default function CallPanel({ call, myName, disabled = false }: CallPanelProps) {
+export default function CallPanel({ call, myName, disabled = false, connectionStatus }: CallPanelProps) {
   const [open, setOpen] = useState<boolean>(false)
   const [showSettings, setShowSettings] = useState<boolean>(false)
-  // Viewport detection is shared with other panels via useViewport. `isMobile`
-  // gates the popout and bumps control sizes; tile aspect is handled inside
-  // VideoTile via the source's natural dimensions.
   const { isMobile } = useViewport()
-  // Popout drag/resize/dock logic lives in usePopout so it can be shared
-  // with ChatPanel. Consumer supplies default + minimum size only.
   const popout = usePopout({ defaultSize: POPOUT_DEFAULT, minSize: POPOUT_MIN })
   const { isPopout, pos: popoutPos, size: popoutSize, popOut, dockBack } = popout
-  // Master remote-volume (0-1). Applied to every remote audio/video tile.
-  // Ephemeral on purpose — we don't persist to localStorage (privacy ethos).
+  // Master remote-volume (0–1). Applied to every remote tile. Ephemeral on
+  // purpose — we don't persist to localStorage (privacy ethos).
   const [volume, setVolume] = useState<number>(1)
   const lastNonZeroVolumeRef = useRef<number>(1)
-  // Discord-style focus: clicking a video tile spotlights it; others become
-  // small overlays. Special sentinel 'self' refers to the local preview.
-  const [focusedId, setFocusedId] = useState<string | null>(null)
+  // Manual focus state. When the user explicitly focuses a tile, auto
+  // active-speaker switching is suspended until they unfocus.
+  const [manualFocusId, setManualFocusId] = useState<string | null>(null)
 
   const handleVolumeChange = useCallback((v: number): void => {
     const clamped = Math.max(0, Math.min(1, v))
@@ -56,64 +74,135 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
     if (call.joined && !open) setOpen(true)
   }, [call.joined, open])
 
-  // Open the panel whenever the popout is engaged — the user clearly
-  // wants to see it if they're detaching it.
   useEffect(() => {
     if (isPopout) setOpen(true)
   }, [isPopout])
 
+  // Reconnect banner — visible when the parent connection is reconnecting
+  // or transiently dead. We don't auto-leave the call here; useCall already
+  // tears down on `peer` change. This is just user-facing communication.
+  const isReconnecting: boolean = connectionStatus === 'reconnecting' || connectionStatus === 'retrying'
+  const isConnectionDead: boolean = connectionStatus === 'closed' || connectionStatus === 'error' || connectionStatus === 'rejected'
+
+  // Force-leave when the underlying transport is gone — keeps audio from
+  // limping along with no signaling backbone.
+  useEffect(() => {
+    if (isConnectionDead && call.joined) {
+      call.leave('connection-lost')
+    }
+  }, [isConnectionDead, call])
+
   const remotePeers = call.remotePeers
+  // Tile classification is now derived from the peer's *current* mode (which
+  // useCall keeps in sync with track-state messages and stream contents),
+  // not a frozen-at-join-time value.
   const videoRemotes = remotePeers.filter(p => p.mode === 'video')
-  const audioRemotes = remotePeers.filter(p => p.mode === 'audio')
+  const audioRemotes = remotePeers.filter(p => p.mode !== 'video')
   const showLocalVideo: boolean = call.mode === 'video'
+
+  // ── Speaking levels — single shared analyser graph for everyone ────────
+  // We sample every remote audio stream plus self (so the local "you're
+  // talking" hint stays accurate). Self is sampled but excluded from active-
+  // speaker auto-focus below.
+  const speakingEntries: StreamEntry[] = useMemo(() => {
+    const entries: StreamEntry[] = []
+    if (call.localStream && call.joined) {
+      entries.push({ id: 'self', stream: call.localStream, skip: call.micMuted })
+    }
+    remotePeers.forEach(p => {
+      entries.push({ id: p.peerId, stream: p.stream, skip: p.micMuted })
+    })
+    return entries
+    // localStream identity changes on restart; remotePeers re-derives on each
+    // roster mutation.
+  }, [call.localStream, call.joined, call.micMuted, remotePeers])
+
+  const levels = useSpeakingLevels(speakingEntries)
+
+  // Feed levels back to useCall for active-speaker selection. Only the
+  // remote levels matter for spotlight selection.
+  useEffect(() => {
+    const remoteOnly: Record<string, number> = {}
+    for (const [id, level] of Object.entries(levels)) {
+      if (id !== 'self') remoteOnly[id] = level
+    }
+    call.reportSpeakingLevels(remoteOnly)
+  }, [levels, call])
 
   // ── Pre-join screen ────────────────────────────────────────────────────
 
-  const renderPreJoin = (): React.ReactElement => (
+  const renderPreJoin = (): React.ReactElement => {
+    const lastReason = call.endReason
+    return (
     <div className="flex flex-col items-center justify-center gap-5 py-6 px-4 text-center">
       <div className="w-14 h-14 rounded-2xl bg-accent/10 flex items-center justify-center ring-2 ring-accent/20">
         <Phone className="w-6 h-6 text-accent" strokeWidth={1.75} />
       </div>
       <div>
         <p className="font-mono text-sm text-text font-medium">Start a call</p>
-        <p className="font-mono text-[10px] text-muted mt-1">Voice up to 20 · Video 1:1</p>
+        <p className="font-mono text-[10px] text-muted mt-1">Mic on, camera off — toggle anytime.</p>
       </div>
-      {call.error && (
-        <p className="font-mono text-[10px] text-danger max-w-[260px]">{call.error}</p>
+
+      {/* Post-call reason banner. Honest about why we're back here. */}
+      {lastReason && (
+        <div className="flex items-start gap-2 max-w-[300px] w-full bg-surface-2/60 border border-border rounded-lg px-3 py-2 text-left">
+          <div className="shrink-0 mt-0.5">
+            {lastReason === 'connection-lost' && <WifiOff className="w-3.5 h-3.5 text-warning" />}
+            {lastReason === 'rejected' && <AlertTriangle className="w-3.5 h-3.5 text-danger" />}
+            {lastReason === 'host-ended' && <PhoneOff className="w-3.5 h-3.5 text-muted" />}
+            {lastReason === 'user-left' && <PhoneOff className="w-3.5 h-3.5 text-muted" />}
+            {lastReason === 'error' && <AlertTriangle className="w-3.5 h-3.5 text-danger" />}
+          </div>
+          <p className="flex-1 font-mono text-[10px] text-muted leading-relaxed">
+            {endReasonLabel(lastReason)}
+          </p>
+          <button
+            type="button"
+            onClick={call.dismissEndReason}
+            className="shrink-0 text-muted/60 hover:text-muted transition-colors"
+            aria-label="Dismiss"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
       )}
-      <div className="flex items-center gap-2 w-full max-w-[280px]">
-        <button
-          type="button"
-          onClick={() => { void call.joinAudio() }}
-          disabled={disabled || call.joining}
-          className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-accent/15 hover:bg-accent/25 border border-accent/30 text-accent font-mono text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
-        >
-          <Mic className="w-3.5 h-3.5" />
-          Join Audio
-        </button>
-        <button
-          type="button"
-          onClick={() => { void call.joinVideo() }}
-          disabled={disabled || call.joining || !call.canJoinVideo}
-          className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-accent/15 hover:bg-accent/25 border border-accent/30 text-accent font-mono text-xs font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
-          title={!call.canJoinVideo ? 'Video full (1:1)' : 'Join with camera'}
-        >
-          <Video className="w-3.5 h-3.5" />
-          Join Video
-        </button>
-      </div>
+
+      {/* Structured error from a failed start. */}
+      {call.error && (
+        <div className="flex items-start gap-2 max-w-[300px] w-full bg-danger/10 border border-danger/30 rounded-lg px-3 py-2 text-left">
+          <AlertTriangle className="w-3.5 h-3.5 text-danger shrink-0 mt-0.5" />
+          <p className="flex-1 font-mono text-[10px] text-danger leading-relaxed">{call.error.message}</p>
+          <button
+            type="button"
+            onClick={call.dismissError}
+            className="shrink-0 text-danger/60 hover:text-danger transition-colors"
+            aria-label="Dismiss error"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => { ensureAudioContextRunning(); void call.join() }}
+        disabled={disabled || call.joining || isConnectionDead}
+        className="w-full max-w-[260px] flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-accent/15 hover:bg-accent/25 border border-accent/30 text-accent font-mono text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
+      >
+        {call.joining ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
+        {call.joining ? 'Joining…' : 'Join Call'}
+      </button>
+
       <p className="font-mono text-[10px] text-muted/60">
-        {call.videoSlotsUsed > 0 && `${call.videoSlotsUsed}/2 in video · `}
         {remotePeers.length > 0 ? `${remotePeers.length} already in call` : 'No one is in the call yet'}
       </p>
     </div>
-  )
+    )
+  }
 
   // ── Active call content ────────────────────────────────────────────────
 
   const renderActive = (): React.ReactElement => {
-    // Build the list of video tiles (self + remotes). Each one can be
-    // focused or mini, depending on focusedId.
     type VideoTileInfo = {
       id: string
       isSelf: boolean
@@ -146,18 +235,57 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
         connecting: !p.stream,
       })
     })
-    // Auto-unfocus if the focused tile is gone
-    const effectiveFocus: string | null = focusedId && videoTiles.some(v => v.id === focusedId) ? focusedId : null
+    // Effective focus: manual override > auto active speaker (only when there
+    // are 2+ video tiles, since auto-focus is meaningless on a single tile).
+    const autoFocusId: string | null = videoTiles.length >= 2 && call.activeSpeakerId && videoTiles.some(v => v.id === call.activeSpeakerId)
+      ? call.activeSpeakerId
+      : null
+    const effectiveFocus: string | null = manualFocusId && videoTiles.some(v => v.id === manualFocusId)
+      ? manualFocusId
+      : autoFocusId
     const focusedTile: VideoTileInfo | null = effectiveFocus ? videoTiles.find(v => v.id === effectiveFocus) || null : null
     const miniTiles: VideoTileInfo[] = focusedTile ? videoTiles.filter(v => v.id !== focusedTile.id) : []
 
+    const handleFocusToggle = (id: string): void => {
+      setManualFocusId(prev => prev === id ? null : id)
+    }
+    const handleUnfocus = (): void => {
+      setManualFocusId(null)
+    }
+
+    const cameraButtonDisabled: boolean = call.cameraStarting
+
     return (
     <div className="flex flex-col flex-1 min-h-0">
-      {/* Video area */}
+      {/* Reconnect banner — visible whenever the underlying transport is
+          flailing. Doesn't block the call UI; the audio that is still up
+          keeps playing. */}
+      {isReconnecting && (
+        <div className="px-3 pt-2">
+          <div className="flex items-center gap-2 rounded-lg bg-warning/10 border border-warning/30 px-3 py-2">
+            <RefreshCw className="w-3.5 h-3.5 text-warning animate-spin shrink-0" />
+            <p className="font-mono text-[10px] text-warning flex-1">
+              Reconnecting to {connectionStatus === 'retrying' ? 'host' : 'session'}…
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Soft cap warning — informational only; we don't block the join. */}
+      {call.overSoftVideoCap && (
+        <div className="px-3 pt-2">
+          <div className="flex items-center gap-2 rounded-lg bg-info/10 border border-info/30 px-3 py-2">
+            <AlertTriangle className="w-3.5 h-3.5 text-info shrink-0" />
+            <p className="font-mono text-[10px] text-info/90 flex-1">
+              {call.videoTileCount} video tiles — bandwidth may suffer above {call.softVideoCap}.
+            </p>
+          </div>
+        </div>
+      )}
+
       {videoTiles.length > 0 && (
         <div className="px-3 pt-3 pb-2">
           {focusedTile ? (
-            // Focused: one big tile, others as PiP overlay in the top-right
             <div className="relative">
               <VideoTile
                 stream={focusedTile.stream}
@@ -167,8 +295,9 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
                 cameraOff={focusedTile.cameraOff}
                 connecting={focusedTile.connecting}
                 volume={focusedTile.isSelf ? 1 : volume}
+                level={levels[focusedTile.id] || 0}
                 focused
-                onToggleFocus={() => setFocusedId(null)}
+                onToggleFocus={handleUnfocus}
               />
               {miniTiles.length > 0 && (
                 <div className="absolute top-2 left-2 flex flex-col gap-1.5 w-24 sm:w-28">
@@ -182,23 +311,19 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
                       cameraOff={v.cameraOff}
                       connecting={v.connecting}
                       volume={v.isSelf ? 1 : volume}
+                      level={levels[v.id] || 0}
                       mini
-                      onToggleFocus={() => setFocusedId(v.id)}
+                      onToggleFocus={() => handleFocusToggle(v.id)}
                     />
                   ))}
                 </div>
               )}
             </div>
           ) : (
-            // Grid: 1 tile full-width, 2 tiles side-by-side. Each tile's
-            // aspect follows its own source (VideoTile derives from
-            // videoWidth/videoHeight). items-center vertically centers a
-            // shorter tile in a row dominated by a taller sibling so a
-            // landscape + portrait pair doesn't leave one orphaned.
             <div
               className="grid gap-2 items-center"
               style={{
-                gridTemplateColumns: videoTiles.length === 1 ? '1fr' : '1fr 1fr',
+                gridTemplateColumns: videoTiles.length === 1 ? '1fr' : videoTiles.length === 2 ? '1fr 1fr' : 'repeat(2, 1fr)',
               }}
             >
               {videoTiles.map(v => (
@@ -211,7 +336,8 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
                   cameraOff={v.cameraOff}
                   connecting={v.connecting}
                   volume={v.isSelf ? 1 : volume}
-                  onToggleFocus={() => setFocusedId(v.id)}
+                  level={levels[v.id] || 0}
+                  onToggleFocus={() => handleFocusToggle(v.id)}
                 />
               ))}
             </div>
@@ -224,10 +350,23 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
         <div className="grid grid-cols-2 sm:grid-cols-2 gap-1.5">
           {/* Local audio-only tile: show only when not publishing video */}
           {call.mode === 'audio' && (
-            <AudioTile stream={call.localStream} name={myName} self micMuted={call.micMuted} />
+            <AudioTile
+              stream={call.localStream}
+              name={myName}
+              self
+              micMuted={call.micMuted}
+              level={levels['self'] || 0}
+            />
           )}
           {audioRemotes.map(p => (
-            <AudioTile key={p.peerId} stream={p.stream} name={p.name} micMuted={p.micMuted} volume={volume} />
+            <AudioTile
+              key={p.peerId}
+              stream={p.stream}
+              name={p.name}
+              micMuted={p.micMuted}
+              volume={volume}
+              level={levels[p.peerId] || 0}
+            />
           ))}
         </div>
         {remotePeers.length === 0 && (
@@ -240,8 +379,17 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
       {/* Error banner */}
       {call.error && (
         <div className="px-3 pb-2">
-          <div className="rounded-lg bg-danger/10 border border-danger/30 px-3 py-2">
-            <p className="font-mono text-[10px] text-danger">{call.error}</p>
+          <div className="flex items-start gap-2 rounded-lg bg-danger/10 border border-danger/30 px-3 py-2">
+            <AlertTriangle className="w-3.5 h-3.5 text-danger shrink-0 mt-0.5" />
+            <p className="flex-1 font-mono text-[10px] text-danger">{call.error.message}</p>
+            <button
+              type="button"
+              onClick={call.dismissError}
+              className="shrink-0 text-danger/60 hover:text-danger transition-colors"
+              aria-label="Dismiss"
+            >
+              <X className="w-3 h-3" />
+            </button>
           </div>
         </div>
       )}
@@ -256,15 +404,15 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
             icon={call.micMuted ? MicOff : Mic}
             danger={call.micMuted}
           />
-          {call.mode === 'video' && (
-            <ControlButton
-              active={!call.cameraOff}
-              onClick={call.toggleCamera}
-              title={call.cameraOff ? 'Camera on' : 'Camera off'}
-              icon={call.cameraOff ? VideoOff : Video}
-              danger={call.cameraOff}
-            />
-          )}
+          <ControlButton
+            active={!call.cameraOff}
+            onClick={call.toggleCamera}
+            title={call.cameraStarting ? 'Camera starting…' : call.cameraOff ? 'Turn camera on' : 'Turn camera off'}
+            icon={call.cameraStarting ? Loader2 : call.cameraOff ? VideoOff : Video}
+            danger={call.cameraOff}
+            disabled={cameraButtonDisabled}
+            spinning={call.cameraStarting}
+          />
           {call.mode === 'video' && call.cameraDevices.length > 1 && (
             <ControlButton
               active
@@ -289,7 +437,7 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
           <div className="w-px h-6 bg-border mx-1" />
           <button
             type="button"
-            onClick={call.leave}
+            onClick={() => call.leave('user-left')}
             className="flex items-center gap-2 px-4 h-11 sm:h-9 rounded-lg bg-danger hover:bg-danger/90 text-white font-mono text-[11px] font-medium transition-all active:scale-[0.97] shadow-[0_0_0_1px_rgba(239,68,68,0.25)]"
             title="Leave call"
           >
@@ -308,7 +456,7 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
         )}
       </div>
     </div>
-  )
+    )
   }
 
   // ── Panel header ───────────────────────────────────────────────────────
@@ -326,7 +474,6 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
       onMouseDown={isPopout && !isMobile ? popout.onDragStart : undefined}
       onTouchStart={isPopout && !isMobile ? popout.onDragStart : undefined}
     >
-      {/* Top-left resize handle (popout only) */}
       {isPopout && !isMobile && (
         <div
           className="absolute -top-1 -left-1 w-5 h-5 cursor-nw-resize z-10 flex items-center justify-center opacity-40 hover:opacity-100 transition-opacity"
@@ -353,8 +500,11 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
         <span className="font-mono text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-warning/15 text-warning border border-warning/30 shrink-0">
           Beta
         </span>
-        {call.joined && (
+        {call.joined && !isReconnecting && (
           <span className="w-1.5 h-1.5 rounded-full bg-accent shadow-[0_0_6px_rgba(100,255,218,0.8)] animate-pulse shrink-0" />
+        )}
+        {isReconnecting && (
+          <span className="w-1.5 h-1.5 rounded-full bg-warning shadow-[0_0_6px_rgba(250,204,21,0.8)] animate-pulse shrink-0" />
         )}
       </div>
       <div className="flex items-center gap-1 shrink-0">
@@ -395,11 +545,6 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
     </div>
   )
 
-  // ── Unified render ─────────────────────────────────────────────────────
-  // Single div with conditional classes — same pattern as ChatPanel. No
-  // portal needed because `position: fixed` already takes the element out
-  // of normal flow when popped out.
-
   const popoutActive: boolean = isPopout && !isMobile
 
   return (
@@ -436,9 +581,19 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
           </div>
         </div>
       )}
-
     </div>
   )
+}
+
+function endReasonLabel(reason: NonNullable<UseCallReturn['endReason']>): string {
+  switch (reason) {
+    case 'user-left': return 'You left the call.'
+    case 'host-ended': return 'The host ended the call.'
+    case 'connection-lost': return 'Call ended — connection lost.'
+    case 'rejected': return 'Call join was rejected.'
+    case 'error': return 'Call ended due to an error.'
+    default: return 'Call ended.'
+  }
 }
 
 // ── Internal components ──────────────────────────────────────────────────
@@ -449,21 +604,24 @@ interface ControlButtonProps {
   title: string
   active?: boolean
   danger?: boolean
+  disabled?: boolean
+  spinning?: boolean
 }
-function ControlButton({ icon: Icon, onClick, title, active: _active = true, danger = false }: ControlButtonProps) {
+function ControlButton({ icon: Icon, onClick, title, active: _active = true, danger = false, disabled = false, spinning = false }: ControlButtonProps) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       title={title}
       aria-label={title}
-      className={`flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 rounded-lg transition-all active:scale-[0.95] ${
+      className={`flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 rounded-lg transition-all active:scale-[0.95] disabled:opacity-50 disabled:cursor-not-allowed ${
         danger
           ? 'bg-danger/15 hover:bg-danger/25 text-danger ring-1 ring-danger/30'
           : 'bg-accent/10 hover:bg-accent/20 text-accent ring-1 ring-accent/20'
       }`}
     >
-      <Icon className="w-5 h-5 sm:w-4 sm:h-4" />
+      <Icon className={`w-5 h-5 sm:w-4 sm:h-4 ${spinning ? 'animate-spin' : ''}`} />
     </button>
   )
 }

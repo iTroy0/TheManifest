@@ -6,6 +6,11 @@ import { UseLocalMediaReturn, LocalMediaMode } from './useLocalMedia'
 
 export type CallMode = 'audio' | 'video'
 
+// Per-peer roster entry. `mode` is the *current* publishing mode and is
+// updated live as peers turn their cameras on/off — it is NOT frozen at
+// join time. `hasVideo` is the lower-level truth derived from the actual
+// MediaStream, which we use as a fallback when track-state messages haven't
+// arrived yet.
 export interface RemotePeer {
   peerId: string
   name: string
@@ -15,16 +20,42 @@ export interface RemotePeer {
   cameraOff: boolean
 }
 
+// Structured failure surface so the UI can react without parsing strings.
+export interface CallError {
+  code:
+    | 'not-connected'
+    | 'permission-denied'
+    | 'device-not-found'
+    | 'device-in-use'
+    | 'overconstrained'
+    | 'rejected'
+    | 'peer-unavailable'
+    | 'peer-error'
+    | 'media-conn-failed'
+    | 'media-failed'
+    | 'unknown'
+  message: string
+  recoverable: boolean
+  // Optional peer id when the error is scoped to a specific remote.
+  peerId?: string
+}
+
+// Why a call ended — surfaced after `leave()` so the UI can post-mortem
+// honestly instead of silently snapping back to the pre-join screen.
+export type CallEndReason =
+  | 'user-left'
+  | 'host-ended'
+  | 'connection-lost'
+  | 'rejected'
+  | 'error'
+
 export interface UseCallOptions {
   peer: InstanceType<typeof Peer> | null
   myPeerId: string | null
   myName: string
   isHost: boolean
   hostPeerId: string | null
-  // For hosts: current wire-level recipients. Used to scope broadcasts.
   participants: Array<{ peerId: string; name: string }>
-  // Signaling plumbing. One of sendToHost / (sendToPeer + broadcast) will
-  // be usable depending on role. Both roles share setMessageHandler.
   sendToHost?: (msg: Record<string, unknown>) => void
   sendToPeer?: (peerId: string, msg: Record<string, unknown>) => void
   broadcast?: (msg: Record<string, unknown>, exceptPeerId?: string) => void
@@ -32,11 +63,59 @@ export interface UseCallOptions {
   localMedia: UseLocalMediaReturn
 }
 
+const SOFT_VIDEO_CAP = 4
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+function classifyMediaError(e: unknown): CallError {
+  const name = (e as { name?: string })?.name || ''
+  const msg = (e as { message?: string })?.message || 'Failed to start media'
+  switch (name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return { code: 'permission-denied', message: 'Microphone access was blocked. Allow it in your browser settings and try again.', recoverable: true }
+    case 'NotFoundError':
+    case 'DevicesNotFoundError':
+      return { code: 'device-not-found', message: 'No microphone was found on this device.', recoverable: false }
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return { code: 'device-in-use', message: 'Your microphone is in use by another app. Close it and try again.', recoverable: true }
+    default:
+      return { code: 'media-failed', message: msg, recoverable: true }
+  }
+}
+
+// Lift a useLocalMedia error into the call lane's CallError shape so the
+// panel only watches a single error surface. We translate the code, expand
+// the message, and decide whether the failure is recoverable.
+function liftLocalMediaError(err: { code: string; message: string }): CallError {
+  switch (err.code) {
+    case 'permission-denied':
+      return { code: 'permission-denied', message: err.message, recoverable: true }
+    case 'device-not-found':
+      return { code: 'device-not-found', message: err.message, recoverable: false }
+    case 'in-use':
+      return { code: 'device-in-use', message: err.message, recoverable: true }
+    case 'overconstrained':
+      return { code: 'overconstrained', message: err.message, recoverable: true }
+    case 'unsupported':
+      return { code: 'media-failed', message: err.message, recoverable: false }
+    default:
+      return { code: 'media-failed', message: err.message, recoverable: true }
+  }
+}
+
+function streamHasLiveVideo(stream: MediaStream | null): boolean {
+  if (!stream) return false
+  const tracks = stream.getVideoTracks()
+  return tracks.length > 0 && tracks.some(t => t.readyState !== 'ended')
+}
+
 // ── Hook ─────────────────────────────────────────────────────────────────
 
 export function useCall(options: UseCallOptions) {
   const {
-    peer, myPeerId, myName, isHost,
+    peer, myPeerId, myName, isHost, hostPeerId,
     sendToHost, sendToPeer, broadcast, setMessageHandler,
     localMedia,
   } = options
@@ -44,8 +123,13 @@ export function useCall(options: UseCallOptions) {
   const [joined, setJoined] = useState<boolean>(false)
   const [joining, setJoining] = useState<boolean>(false)
   const [mode, setMode] = useState<LocalMediaMode>('none')
-  const [error, setError] = useState<string | null>(null)
+  // Internal call-layer errors (rejection, peer-unavailable, …). Local-media
+  // errors come in via `localMedia.error` and we merge them into the public
+  // `error` field below so consumers only watch one surface.
+  const [callError, setCallError] = useState<CallError | null>(null)
+  const [endReason, setEndReason] = useState<CallEndReason | null>(null)
   const [roster, setRoster] = useState<Map<string, RemotePeer>>(new Map())
+  const [activeSpeakerId, setActiveSpeakerId] = useState<string | null>(null)
 
   const mediaConnsRef = useRef<Map<string, MediaConnection>>(new Map())
   const joinedRef = useRef<boolean>(false)
@@ -53,12 +137,17 @@ export function useCall(options: UseCallOptions) {
   const rosterRef = useRef<Map<string, RemotePeer>>(new Map())
   const myNameRef = useRef<string>(myName)
   const localStreamRef = useRef<MediaStream | null>(localMedia.stream)
+  const hostPeerIdRef = useRef<string | null>(hostPeerId)
+  // Per-join token. Any async work that captures this value can compare it
+  // to the current ref to detect a stale join attempt.
+  const joinAttemptRef = useRef<symbol>(Symbol('initial'))
 
   useEffect(() => { joinedRef.current = joined }, [joined])
   useEffect(() => { modeRef.current = mode }, [mode])
   useEffect(() => { rosterRef.current = roster }, [roster])
   useEffect(() => { myNameRef.current = myName }, [myName])
   useEffect(() => { localStreamRef.current = localMedia.stream }, [localMedia.stream])
+  useEffect(() => { hostPeerIdRef.current = hostPeerId }, [hostPeerId])
 
   // ── Roster helpers ─────────────────────────────────────────────────────
 
@@ -72,7 +161,7 @@ export function useCall(options: UseCallOptions) {
         mode: patch.mode || 'audio',
         stream: null,
         micMuted: false,
-        cameraOff: false,
+        cameraOff: true,
       }
       next.set(peerId, { ...base, ...patch })
       return next
@@ -96,13 +185,13 @@ export function useCall(options: UseCallOptions) {
     }
   }, [])
 
-  // ── Video slot enforcement ─────────────────────────────────────────────
+  // ── Soft cap (informational only) ──────────────────────────────────────
 
-  const videoSlotsUsed = Array.from(roster.values()).filter(p => p.mode === 'video').length
+  const videoTileCount = Array.from(roster.values()).filter(p => p.mode === 'video').length
     + (mode === 'video' ? 1 : 0)
-  const canJoinVideo = videoSlotsUsed < 2 || mode === 'video'
+  const overSoftVideoCap = videoTileCount > SOFT_VIDEO_CAP
 
-  // ── Outgoing: call a specific peer (used when we join with an existing roster) ──
+  // ── Outgoing: call a specific peer ─────────────────────────────────────
 
   const callPeerWithStream = useCallback((peerId: string, stream: MediaStream, myMode: CallMode): void => {
     if (!peer || peerId === myPeerId) return
@@ -111,38 +200,71 @@ export function useCall(options: UseCallOptions) {
       const mc = peer.call(peerId, stream, { metadata: { kind: 'manifest-call', mode: myMode, name: myNameRef.current } })
       mediaConnsRef.current.set(peerId, mc)
       mc.on('stream', (remoteStream: MediaStream) => {
-        upsertRoster(peerId, { stream: remoteStream })
+        upsertRoster(peerId, {
+          stream: remoteStream,
+          mode: streamHasLiveVideo(remoteStream) ? 'video' : 'audio',
+        })
       })
       mc.on('close', () => {
         mediaConnsRef.current.delete(peerId)
         upsertRoster(peerId, { stream: null })
       })
-      mc.on('error', () => {
+      mc.on('error', (err: unknown) => {
         mediaConnsRef.current.delete(peerId)
+        upsertRoster(peerId, { stream: null })
+        // Surface a scoped error so the user knows which peer dropped.
+        // We don't override a more important global error if one already exists.
+        const peerName = rosterRef.current.get(peerId)?.name || 'A peer'
+        console.warn('media connection error', peerId, err)
+        setCallError(prev => prev ?? {
+          code: 'media-conn-failed',
+          message: `Lost media connection to ${peerName}.`,
+          recoverable: true,
+          peerId,
+        })
       })
     } catch (e) {
       console.warn('peer.call failed for', peerId, e)
+      const peerName = rosterRef.current.get(peerId)?.name || 'a peer'
+      setCallError({
+        code: 'media-conn-failed',
+        message: `Could not call ${peerName}: ${(e as Error).message || 'media setup failed'}.`,
+        recoverable: true,
+        peerId,
+      })
     }
   }, [peer, myPeerId, upsertRoster])
 
-  // ── Incoming: answer a media call while we're joined ───────────────────
-
+  // ── Incoming: answer media calls ───────────────────────────────────────
+  // peerjs does not implement EventEmitter.off() reliably across versions, so
+  // we keep a handler ref and use removeAllListeners('call') in cleanup.
+  // Trust gate: only accept incoming calls from peers we already know about
+  // (host always trusted by non-host; both sides require an existing roster
+  // entry otherwise). Without this gate any peer with your peer id can ring
+  // you and force-attach an RTCPeerConnection.
   useEffect(() => {
     if (!peer) return
     const handler = (mc: MediaConnection): void => {
       const meta = (mc.metadata || {}) as { kind?: string; mode?: CallMode; name?: string }
       if (meta.kind !== 'manifest-call') {
-        // Not our call — ignore (some other future feature could reuse peer.call)
         try { mc.close() } catch {}
         return
       }
       if (!joinedRef.current || !localStreamRef.current) {
-        // Not in a call — reject
         try { mc.close() } catch {}
         return
       }
-      // Close any existing connection to this peer before accepting a new one
-      // (handles simultaneous dial / reconnect races without leaking).
+      // Trust gate: must be the host or an already-known roster peer.
+      const isFromHost = !!hostPeerIdRef.current && mc.peer === hostPeerIdRef.current
+      const isKnown = rosterRef.current.has(mc.peer)
+      if (!isFromHost && !isKnown) {
+        console.warn('Rejecting unsolicited call from unknown peer', mc.peer)
+        try { mc.close() } catch {}
+        return
+      }
+      // Close any existing connection to this peer before accepting a new
+      // one — handles simultaneous dial / camera-toggle reconnect races
+      // without leaking RTCPeerConnections.
       const existing = mediaConnsRef.current.get(mc.peer)
       if (existing && existing !== mc) {
         try { existing.close() } catch {}
@@ -151,11 +273,20 @@ export function useCall(options: UseCallOptions) {
       try { mc.answer(localStreamRef.current) } catch { return }
       mediaConnsRef.current.set(mc.peer, mc)
 
-      // Ensure a roster entry exists (name may be filled in later by signaling)
-      upsertRoster(mc.peer, { name: meta.name || rosterRef.current.get(mc.peer)?.name || 'Anon', mode: meta.mode || 'audio' })
+      // Only the metadata.name from the host is trusted to overwrite an
+      // existing roster name — peer-supplied names from a known peer are
+      // accepted (since they're already in the roster).
+      const incomingMode: CallMode = meta.mode || 'audio'
+      upsertRoster(mc.peer, {
+        name: meta.name || rosterRef.current.get(mc.peer)?.name || 'Anon',
+        mode: incomingMode,
+      })
 
       mc.on('stream', (remoteStream: MediaStream) => {
-        upsertRoster(mc.peer, { stream: remoteStream })
+        upsertRoster(mc.peer, {
+          stream: remoteStream,
+          mode: streamHasLiveVideo(remoteStream) ? 'video' : 'audio',
+        })
       })
       mc.on('close', () => {
         mediaConnsRef.current.delete(mc.peer)
@@ -166,15 +297,80 @@ export function useCall(options: UseCallOptions) {
       })
     }
     peer.on('call', handler)
-    return () => {
-      try { peer.off('call', handler) } catch {}
+
+    // Subscribe to peer-level errors so we can react when peerjs gives us
+    // signal we'd otherwise miss: peer-unavailable when calling a peer that
+    // disappeared, network errors, server disconnects, etc. These map to
+    // user-actionable banners instead of console.warn.
+    //
+    // We must NOT call removeAllListeners('error') on cleanup — useReceiver
+    // / useSender install their own peer error handlers on the same Peer
+    // instance and we'd kill them. Use a stored ref + removeListener.
+    const errHandler = (err: unknown): void => {
+      const e = err as { type?: string; message?: string }
+      const type = e?.type || ''
+      const msg = e?.message || ''
+      // Most peer errors are transient and not specific to the call lane.
+      // Only set callError for ones that meaningfully affect the call.
+      if (type === 'peer-unavailable') {
+        // Extract peer id from the message if possible (peerjs format:
+        // "Could not connect to peer <id>"). Best-effort only.
+        const match = /peer\s+([\w-]+)/i.exec(msg)
+        const pid = match?.[1]
+        const name = pid ? (rosterRef.current.get(pid)?.name || 'a peer') : 'a peer'
+        setCallError({
+          code: 'peer-unavailable',
+          message: `Could not reach ${name}. They may have left.`,
+          recoverable: true,
+          peerId: pid,
+        })
+        if (pid) {
+          // Clean up any stale roster entry — the peer is gone for sure.
+          closeMediaConn(pid)
+          removeFromRoster(pid)
+        }
+        return
+      }
+      if (type === 'disconnected' || type === 'network') {
+        // The transport itself is wobbly; the connection-status prop will
+        // already trigger the reconnect banner via CallPanel. Don't double
+        // up by setting callError here.
+        return
+      }
+      if (type === 'browser-incompatible' || type === 'webrtc') {
+        setCallError({
+          code: 'peer-error',
+          message: 'Your browser had a WebRTC error during the call.',
+          recoverable: false,
+        })
+        return
+      }
+      // Catch-all for unexpected peer errors so they don't go silent.
+      if (type) {
+        console.warn('peer error', type, msg)
+        setCallError(prev => prev ?? {
+          code: 'peer-error',
+          message: msg || `Peer connection error (${type}).`,
+          recoverable: true,
+        })
+      }
     }
-  }, [peer, upsertRoster])
+    peer.on('error', errHandler)
+
+    return () => {
+      // 'call' is owned by us — no other consumer subscribes to it.
+      try { peer.removeAllListeners('call') } catch {}
+      // 'error' is shared with useReceiver/useSender — only remove our own
+      // handler. eventemitter3's removeListener is the canonical method.
+      try { (peer as unknown as { removeListener: (e: string, h: (...a: unknown[]) => void) => void }).removeListener('error', errHandler) } catch {}
+    }
+  }, [peer, upsertRoster, closeMediaConn, removeFromRoster])
 
   // ── Track hot-swap on device changes ───────────────────────────────────
-  // When useLocalMedia restarts (device change), the new stream lands on
-  // localMedia.stream. Replace the outgoing tracks on every active media
-  // connection so receivers immediately hear/see the new source.
+  // When useLocalMedia restarts the stream because of a device swap (NOT a
+  // mode change — the mode-change effect below handles that by full reconnect),
+  // replace the outgoing tracks on every active media connection so receivers
+  // immediately hear/see the new source.
   useEffect(() => {
     const stream = localMedia.stream
     if (!stream || !joinedRef.current) return
@@ -193,35 +389,69 @@ export function useCall(options: UseCallOptions) {
     })
   }, [localMedia.stream])
 
+  // ── Local mode change → reconnect media ────────────────────────────────
+  // When the user toggles their camera on or off, the local stream gains or
+  // loses a video track. RTCPeerConnection sender lists are negotiated up-front
+  // and peerjs has no public renegotiation API, so the honest fix is to close
+  // the existing media connections and re-call everyone with the new stream.
+  // The brief audio drop is the cost — alternative approaches that fudge the
+  // black-frame state cause more confusion than they save.
+  useEffect(() => {
+    if (!joinedRef.current) return
+    const newMode: LocalMediaMode = localMedia.mode
+    if (newMode === 'none') return
+    if (modeRef.current === newMode) return
+
+    modeRef.current = newMode
+    setMode(newMode)
+
+    const stream = localMedia.stream
+    if (!stream) return
+
+    // Snapshot existing peer ids before tearing down (which mutates the map).
+    const peerIds: string[] = Array.from(mediaConnsRef.current.keys())
+    peerIds.forEach(pid => {
+      const mc = mediaConnsRef.current.get(pid)
+      if (mc) { try { mc.close() } catch {} }
+      mediaConnsRef.current.delete(pid)
+    })
+    // Re-call every roster member with the new stream.
+    rosterRef.current.forEach((_, pid) => {
+      callPeerWithStream(pid, stream, newMode as CallMode)
+    })
+    // Tell everyone our new track-state so their tile renders the right kind.
+    const payload = {
+      type: 'call-track-state',
+      micMuted: localMedia.micMuted,
+      cameraOff: newMode !== 'video',
+      mode: newMode,
+      from: myPeerId,
+    }
+    if (isHost) broadcast?.(payload)
+    else sendToHost?.(payload)
+  }, [localMedia.mode, localMedia.stream, localMedia.micMuted, isHost, broadcast, sendToHost, myPeerId, callPeerWithStream])
+
   // ── Signaling message handler ──────────────────────────────────────────
 
   useEffect(() => {
     const handler = (fromPeerId: string, msg: Record<string, unknown>): void => {
       const type = msg.type as string
 
+      // ── Host-side ─────────────────────────────────────────────────────
+
       if (type === 'call-join' && isHost) {
-        // A receiver wants to join. Validate and update roster.
         const incomingMode = (msg.mode as CallMode) || 'audio'
         const incomingName = (msg.name as string) || 'Anon'
-        // Enforce video cap including host itself.
-        const currentVideoCount = Array.from(rosterRef.current.values()).filter(p => p.mode === 'video').length
-          + (modeRef.current === 'video' ? 1 : 0)
-        if (incomingMode === 'video' && currentVideoCount >= 2) {
-          sendToPeer?.(fromPeerId, { type: 'call-rejected', reason: 'video-full', from: myPeerId })
-          return
-        }
-        upsertRoster(fromPeerId, { name: incomingName, mode: incomingMode, micMuted: false, cameraOff: false })
-        // Send the joiner a snapshot of the current roster (excluding themselves).
+        upsertRoster(fromPeerId, { name: incomingName, mode: incomingMode, micMuted: false, cameraOff: incomingMode !== 'video' })
+        // Send the joiner a roster snapshot (excluding themselves).
         const snapshot: Array<{ peerId: string; name: string; mode: CallMode }> = []
         rosterRef.current.forEach((p, pid) => {
           if (pid !== fromPeerId) snapshot.push({ peerId: pid, name: p.name, mode: p.mode })
         })
-        // Include the host itself in the roster snapshot if host is joined.
         if (joinedRef.current && myPeerId && modeRef.current !== 'none') {
           snapshot.push({ peerId: myPeerId, name: myNameRef.current, mode: modeRef.current as CallMode })
         }
         sendToPeer?.(fromPeerId, { type: 'call-roster', peers: snapshot, from: myPeerId })
-        // Tell everyone else that this peer has joined.
         broadcast?.({ type: 'call-peer-joined', peerId: fromPeerId, name: incomingName, mode: incomingMode, from: myPeerId }, fromPeerId)
         return
       }
@@ -234,20 +464,26 @@ export function useCall(options: UseCallOptions) {
       }
 
       if (type === 'call-track-state' && isHost) {
-        // Relay and update local view.
+        // A peer reports their own state. Pin peerId to fromPeerId so a
+        // malicious client can't muck with someone else's roster entry.
         const micMuted = !!msg.micMuted
         const cameraOff = !!msg.cameraOff
-        upsertRoster(fromPeerId, { micMuted, cameraOff })
-        broadcast?.({ type: 'call-track-state', peerId: fromPeerId, micMuted, cameraOff, from: myPeerId }, fromPeerId)
+        const reportedMode = (msg.mode as CallMode | undefined)
+        const nextMode: CallMode = reportedMode || (cameraOff ? 'audio' : 'video')
+        upsertRoster(fromPeerId, { micMuted, cameraOff, mode: nextMode })
+        broadcast?.({ type: 'call-track-state', peerId: fromPeerId, micMuted, cameraOff, mode: nextMode, from: myPeerId }, fromPeerId)
         return
       }
 
-      // ── Non-host handling ─────────────────────────────────────────────
+      // ── Non-host: only trust messages claimed to be from the host ─────
 
       if (type === 'call-roster') {
+        if (fromPeerId !== hostPeerIdRef.current) {
+          console.warn('Ignoring call-roster from non-host', fromPeerId)
+          return
+        }
         const peers = (msg.peers as Array<{ peerId: string; name: string; mode: CallMode }>) || []
-        peers.forEach(p => { upsertRoster(p.peerId, { name: p.name, mode: p.mode }) })
-        // Now initiate calls to everyone in the roster.
+        peers.forEach(p => { upsertRoster(p.peerId, { name: p.name, mode: p.mode, cameraOff: p.mode !== 'video' }) })
         const stream = localStreamRef.current
         if (stream && modeRef.current !== 'none') {
           peers.forEach(p => callPeerWithStream(p.peerId, stream, modeRef.current as CallMode))
@@ -256,16 +492,24 @@ export function useCall(options: UseCallOptions) {
       }
 
       if (type === 'call-peer-joined') {
+        if (fromPeerId !== hostPeerIdRef.current) {
+          console.warn('Ignoring call-peer-joined from non-host', fromPeerId)
+          return
+        }
         const peerId = msg.peerId as string
         const name = (msg.name as string) || 'Anon'
         const joinedMode = (msg.mode as CallMode) || 'audio'
         if (peerId && peerId !== myPeerId) {
-          upsertRoster(peerId, { name, mode: joinedMode })
+          upsertRoster(peerId, { name, mode: joinedMode, cameraOff: joinedMode !== 'video' })
         }
         return
       }
 
       if (type === 'call-peer-left') {
+        if (fromPeerId !== hostPeerIdRef.current) {
+          console.warn('Ignoring call-peer-left from non-host', fromPeerId)
+          return
+        }
         const peerId = msg.peerId as string
         if (peerId) {
           closeMediaConn(peerId)
@@ -275,15 +519,23 @@ export function useCall(options: UseCallOptions) {
       }
 
       if (type === 'call-track-state') {
-        const peerId = msg.peerId as string || fromPeerId
-        upsertRoster(peerId, { micMuted: !!msg.micMuted, cameraOff: !!msg.cameraOff })
+        // Non-host receives a relayed update from the host. The host already
+        // pinned peerId to the original sender, so we trust the embedded
+        // peerId only when the relayer is the host. If we got it from
+        // anyone else, fall back to fromPeerId (a peer reporting itself).
+        const isFromHost = fromPeerId === hostPeerIdRef.current
+        const peerId = isFromHost ? ((msg.peerId as string) || fromPeerId) : fromPeerId
+        const reportedMode = (msg.mode as CallMode | undefined)
+        const cameraOff = !!msg.cameraOff
+        const nextMode: CallMode = reportedMode || (cameraOff ? 'audio' : 'video')
+        upsertRoster(peerId, { micMuted: !!msg.micMuted, cameraOff, mode: nextMode })
         return
       }
 
       if (type === 'call-rejected') {
-        setError(msg.reason === 'video-full' ? 'Video call is full (max 2 participants).' : 'Call join rejected.')
+        setCallError({ code: 'rejected', message: 'Call join rejected.', recoverable: true })
+        setEndReason('rejected')
         setJoining(false)
-        // Stop local media if we started it
         if (modeRef.current !== 'none') {
           localMedia.stop()
           setMode('none')
@@ -297,102 +549,123 @@ export function useCall(options: UseCallOptions) {
 
   // ── Actions ────────────────────────────────────────────────────────────
 
-  const join = useCallback(async (wantMode: CallMode): Promise<void> => {
+  // Single join entrypoint. Always starts in audio-only mode with mic
+  // enabled and camera off — matching how people actually walk into a call.
+  // Camera comes on later via the toggle.
+  const join = useCallback(async (): Promise<void> => {
     if (joinedRef.current || joining) return
     if (!peer || !myPeerId) {
-      setError('Not connected yet — try again in a moment.')
+      setCallError({ code: 'not-connected', message: 'Not connected yet — try again in a moment.', recoverable: true })
       return
     }
-    if (wantMode === 'video' && !canJoinVideo) {
-      setError('Video call is full (max 2 participants).')
-      return
-    }
+    const attempt = Symbol('join-attempt')
+    joinAttemptRef.current = attempt
+
     setJoining(true)
-    setError(null)
+    setCallError(null)
+    setEndReason(null)
     try {
-      const stream = await localMedia.start(wantMode)
-      setMode(wantMode)
-      modeRef.current = wantMode
+      const stream = await localMedia.start('audio')
+      // If a newer attempt or a leave/unmount has happened during the
+      // permission prompt, abort cleanly.
+      if (joinAttemptRef.current !== attempt) {
+        try { stream.getTracks().forEach(t => t.stop()) } catch {}
+        return
+      }
+      setMode('audio')
+      modeRef.current = 'audio'
       localStreamRef.current = stream
 
       if (isHost) {
-        // Host joins by adding itself to its own roster and calling every
-        // currently-joined remote peer, then broadcasting its arrival.
         const existingPeerIds: string[] = Array.from(rosterRef.current.keys())
-        existingPeerIds.forEach(pid => callPeerWithStream(pid, stream, wantMode))
-        broadcast?.({ type: 'call-peer-joined', peerId: myPeerId, name: myNameRef.current, mode: wantMode, from: myPeerId })
+        existingPeerIds.forEach(pid => callPeerWithStream(pid, stream, 'audio'))
+        broadcast?.({ type: 'call-peer-joined', peerId: myPeerId, name: myNameRef.current, mode: 'audio', from: myPeerId })
       } else {
-        // Non-host asks the host to add them. The host replies with a
-        // roster snapshot, which triggers outgoing calls in the handler above.
-        sendToHost?.({ type: 'call-join', mode: wantMode, name: myNameRef.current, from: myPeerId })
+        sendToHost?.({ type: 'call-join', mode: 'audio', name: myNameRef.current, from: myPeerId })
       }
 
       setJoined(true)
       joinedRef.current = true
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Failed to join call'
-      setError(msg)
+      const err = classifyMediaError(e)
+      setCallError(err)
+      setEndReason(null) // join failure isn't a "call ended"
     } finally {
-      setJoining(false)
+      if (joinAttemptRef.current === attempt) setJoining(false)
     }
-  }, [peer, myPeerId, joining, canJoinVideo, localMedia, isHost, broadcast, sendToHost, callPeerWithStream])
+  }, [peer, myPeerId, joining, localMedia, isHost, broadcast, sendToHost, callPeerWithStream])
 
-  const joinAudio = useCallback(() => join('audio'), [join])
-  const joinVideo = useCallback(() => join('video'), [join])
-
-  const leave = useCallback((): void => {
-    // Close all media connections
+  const leave = useCallback((reason: CallEndReason = 'user-left'): void => {
+    // Invalidate any in-flight join attempt.
+    joinAttemptRef.current = Symbol('leave')
     mediaConnsRef.current.forEach(mc => { try { mc.close() } catch {} })
     mediaConnsRef.current.clear()
-    // Signal departure
-    if (isHost) {
-      broadcast?.({ type: 'call-peer-left', peerId: myPeerId, from: myPeerId })
-    } else {
-      sendToHost?.({ type: 'call-leave', from: myPeerId })
+    if (joinedRef.current) {
+      if (isHost) {
+        broadcast?.({ type: 'call-peer-left', peerId: myPeerId, from: myPeerId })
+      } else {
+        sendToHost?.({ type: 'call-leave', from: myPeerId })
+      }
     }
-    // Stop local media
     localMedia.stop()
     setMode('none')
     modeRef.current = 'none'
     setJoined(false)
     joinedRef.current = false
-    setError(null)
-    // Clear remote roster (we're leaving — tiles should disappear)
     setRoster(new Map())
+    setActiveSpeakerId(null)
+    setEndReason(reason)
   }, [isHost, broadcast, sendToHost, myPeerId, localMedia])
 
-  // ── Track-state broadcast on mic/cam toggle ────────────────────────────
+  const dismissEndReason = useCallback((): void => {
+    setEndReason(null)
+  }, [])
+
+  // Clear both layers. localMedia.error gets reset by the next start()
+  // attempt; until then dismissing only the call-layer copy is enough.
+  const dismissError = useCallback((): void => {
+    setCallError(null)
+  }, [])
+
+  // Merge call-layer + media-layer errors into one surface for the UI.
+  // Call-layer errors take priority because they're usually about a
+  // specific remote (more time-sensitive); media errors fall through.
+  const error: CallError | null = callError
+    ?? (localMedia.error ? liftLocalMediaError(localMedia.error) : null)
+
+  // ── Track-state broadcast on local mic toggle ──────────────────────────
 
   const toggleMic = useCallback((): void => {
     localMedia.toggleMic()
   }, [localMedia])
 
   const toggleCamera = useCallback((): void => {
-    localMedia.toggleCamera()
+    void localMedia.toggleCamera()
   }, [localMedia])
 
   // Broadcast track state changes so remote peers can show mute icons.
+  // Mode changes are handled by the mode-reconnect effect above (which also
+  // emits a track-state message), so this effect handles mic-only changes.
   const prevMicMutedRef = useRef<boolean>(false)
-  const prevCameraOffRef = useRef<boolean>(false)
   useEffect(() => {
     if (!joinedRef.current) return
-    if (localMedia.micMuted === prevMicMutedRef.current && localMedia.cameraOff === prevCameraOffRef.current) return
+    if (localMedia.micMuted === prevMicMutedRef.current) return
     prevMicMutedRef.current = localMedia.micMuted
-    prevCameraOffRef.current = localMedia.cameraOff
-    const payload = { type: 'call-track-state', micMuted: localMedia.micMuted, cameraOff: localMedia.cameraOff, from: myPeerId }
-    if (isHost) {
-      broadcast?.(payload)
-    } else {
-      sendToHost?.(payload)
+    const payload = {
+      type: 'call-track-state',
+      micMuted: localMedia.micMuted,
+      cameraOff: localMedia.mode !== 'video',
+      mode: localMedia.mode === 'video' ? 'video' : 'audio',
+      from: myPeerId,
     }
-  }, [localMedia.micMuted, localMedia.cameraOff, isHost, broadcast, sendToHost, myPeerId])
+    if (isHost) broadcast?.(payload)
+    else sendToHost?.(payload)
+  }, [localMedia.micMuted, localMedia.mode, isHost, broadcast, sendToHost, myPeerId])
 
   // ── Cleanup on unmount or peer change ──────────────────────────────────
-  // Receiver reconnects swap the Peer instance. When that happens the existing
-  // media connections are on a dead peer — close them and wipe the roster so
-  // the user sees a clean "not joined" state and can rejoin fresh.
-  // Intentionally only depends on `peer` to avoid re-running on every render;
-  // localMedia.stop is captured via ref to stay up-to-date.
+  // Receiver reconnects swap the Peer instance. When that happens the
+  // existing media connections are on a dead peer — close them, wipe the
+  // roster, and surface a connection-lost reason if we were mid-call.
   const localMediaStopRef = useRef<() => void>(localMedia.stop)
   useEffect(() => { localMediaStopRef.current = localMedia.stop }, [localMedia.stop])
   useEffect(() => {
@@ -406,25 +679,57 @@ export function useCall(options: UseCallOptions) {
         setJoined(false)
         joinedRef.current = false
         setRoster(new Map())
+        setActiveSpeakerId(null)
+        setEndReason('connection-lost')
       }
     }
   }, [peer])
+
+  // ── Active speaker selection ───────────────────────────────────────────
+  // CallPanel feeds us a peerId+level table; we apply hysteresis so the
+  // spotlight doesn't ping-pong between near-equal speakers.
+  const lastSpeakerSwitchRef = useRef<number>(0)
+  const reportSpeakingLevels = useCallback((levels: Record<string, number>): void => {
+    // Only consider levels above an audible threshold.
+    let bestId: string | null = null
+    let bestLevel = 0.12
+    for (const [id, level] of Object.entries(levels)) {
+      if (level > bestLevel) {
+        bestLevel = level
+        bestId = id
+      }
+    }
+    const now = performance.now()
+    setActiveSpeakerId(prev => {
+      if (bestId === prev) return prev
+      // Require 600ms of dominance before switching to avoid flicker.
+      if (now - lastSpeakerSwitchRef.current < 600 && prev !== null) return prev
+      lastSpeakerSwitchRef.current = now
+      return bestId
+    })
+  }, [])
 
   return {
     joined,
     joining,
     mode,
     error,
+    endReason,
+    dismissEndReason,
+    dismissError,
     remotePeers: Array.from(roster.values()),
-    videoSlotsUsed,
-    canJoinVideo,
-    joinAudio,
-    joinVideo,
+    videoTileCount,
+    overSoftVideoCap,
+    softVideoCap: SOFT_VIDEO_CAP,
+    activeSpeakerId,
+    reportSpeakingLevels,
+    join,
     leave,
     toggleMic,
     toggleCamera,
     micMuted: localMedia.micMuted,
-    cameraOff: localMedia.cameraOff,
+    cameraOff: localMedia.mode !== 'video',
+    cameraStarting: localMedia.starting && localMedia.mode !== 'video',
     // Device plumbing for the controls bar
     micDevices: localMedia.micDevices,
     cameraDevices: localMedia.cameraDevices,
@@ -434,7 +739,6 @@ export function useCall(options: UseCallOptions) {
     selectCamera: localMedia.selectCamera,
     cameraFacing: localMedia.cameraFacing,
     flipCamera: localMedia.flipCamera,
-    // For rendering local preview
     localStream: localMedia.stream,
   }
 }

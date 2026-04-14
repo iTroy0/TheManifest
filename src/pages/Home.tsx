@@ -368,7 +368,7 @@ export default function Home() {
             {/* Call — separate, appears above chat */}
             {(recipientCount > 0 || chatMode) && !isFinished && (
               <ComponentErrorBoundary name="Call">
-                <CallPanel call={call} myName={senderName} myPeerId={peerId} disabled={recipientCount === 0} />
+                <CallPanel call={call} myName={senderName} myPeerId={peerId} disabled={recipientCount === 0} connectionStatus={status} />
               </ComponentErrorBoundary>
             )}
 

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { MicOff, User, VideoOff, Maximize2, Minimize2 } from 'lucide-react'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { MicOff, User, VideoOff, Maximize2, Minimize2, Maximize, PictureInPicture2 } from 'lucide-react'
 
 interface VideoTileProps {
   stream: MediaStream | null
@@ -12,6 +12,10 @@ interface VideoTileProps {
   mini?: boolean
   onToggleFocus?: () => void
   volume?: number
+  // Loudness 0–1 supplied by the parent's analyser graph. Drives a subtle
+  // ring on the tile when the speaker is talking — same visual language as
+  // AudioTile so the two surfaces feel like one.
+  level?: number
 }
 
 // Clamp the container's aspect ratio so an unusual source can't produce a
@@ -19,16 +23,22 @@ interface VideoTileProps {
 const MIN_ASPECT = 9 / 16
 const MAX_ASPECT = 16 / 9
 
-export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus, volume = 1 }: VideoTileProps) {
-  const videoRef = useRef<HTMLVideoElement | null>(null)
-  // The container's aspect follows whatever the actual video source is so
-  // a landscape sender renders in a landscape tile and a portrait sender
-  // renders in a portrait tile — no cropping in either case.
-  const [srcAspect, setSrcAspect] = useState<number>(16 / 9)
+// Safari ships a legacy presentation-mode API instead of the standards PiP
+// methods. We type those extras as an optional bag and merge with HTMLVideoElement
+// at the use site rather than declaring an extending interface (which would
+// fight the standards types in lib.dom).
+type SafariPiPVideoExtras = {
+  webkitSupportsPresentationMode?: (mode: string) => boolean
+  webkitSetPresentationMode?: (mode: string) => void
+}
 
-  // Attach/detach srcObject whenever the stream reference changes. The
-  // <video> element is always mounted (see below), so this effect always
-  // runs against a live ref — no remount races when cameraOff toggles.
+export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus, volume = 1, level = 0 }: VideoTileProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const [srcAspect, setSrcAspect] = useState<number>(16 / 9)
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false)
+  const [isPip, setIsPip] = useState<boolean>(false)
+
   useEffect(() => {
     const el = videoRef.current
     if (!el) return
@@ -40,15 +50,11 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     }
   }, [stream])
 
-  // Remote audio comes through the <video> element when in video mode.
-  // Self-video is HTML-muted anyway, so this is a no-op for local preview.
   useEffect(() => {
     const el = videoRef.current
     if (el) el.volume = Math.max(0, Math.min(1, volume))
   }, [volume])
 
-  // Read the source's intrinsic dimensions whenever they become available
-  // (on loadedmetadata) or change (e.g., replaceTrack after a camera flip).
   useEffect(() => {
     const el = videoRef.current
     if (!el) return
@@ -69,6 +75,71 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     }
   }, [stream])
 
+  // Fullscreen state is owned by the document, not React. Subscribe to the
+  // change event so the button label stays correct when the user hits ESC
+  // or uses the browser UI.
+  useEffect(() => {
+    const onChange = (): void => {
+      setIsFullscreen(document.fullscreenElement === containerRef.current)
+    }
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+
+  // PiP state similarly lives on the document. enterpictureinpicture and
+  // leavepictureinpicture fire on the video element itself.
+  useEffect(() => {
+    const el = videoRef.current
+    if (!el) return
+    const onEnter = (): void => setIsPip(true)
+    const onLeave = (): void => setIsPip(false)
+    el.addEventListener('enterpictureinpicture', onEnter)
+    el.addEventListener('leavepictureinpicture', onLeave)
+    return () => {
+      el.removeEventListener('enterpictureinpicture', onEnter)
+      el.removeEventListener('leavepictureinpicture', onLeave)
+    }
+  }, [])
+
+  const toggleFullscreen = useCallback(async (): Promise<void> => {
+    const el = containerRef.current
+    if (!el) return
+    try {
+      if (document.fullscreenElement === el) {
+        await document.exitFullscreen()
+      } else {
+        await el.requestFullscreen()
+      }
+    } catch {
+      // Browser refused (e.g., iOS Safari without webkit support). Silent.
+    }
+  }, [])
+
+  const togglePip = useCallback(async (): Promise<void> => {
+    const el = videoRef.current
+    if (!el) return
+    try {
+      // Standards path
+      if (typeof el.requestPictureInPicture === 'function' && document.pictureInPictureEnabled) {
+        if (document.pictureInPictureElement === el) {
+          await document.exitPictureInPicture()
+        } else {
+          await el.requestPictureInPicture()
+        }
+        return
+      }
+      // Safari fallback (legacy presentation mode API)
+      const safari = el as unknown as SafariPiPVideoExtras
+      if (typeof safari.webkitSetPresentationMode === 'function' && safari.webkitSupportsPresentationMode?.('picture-in-picture')) {
+        const next = isPip ? 'inline' : 'picture-in-picture'
+        safari.webkitSetPresentationMode(next)
+        setIsPip(!isPip)
+      }
+    } catch {
+      // Refused (e.g., no video track yet). Silent.
+    }
+  }, [isPip])
+
   const hasAnyVideoTrack: boolean = !!(stream && stream.getVideoTracks().length > 0)
   const shouldShowBlackout: boolean = !hasAnyVideoTrack || cameraOff
   const clickable: boolean = !!onToggleFocus
@@ -79,27 +150,30 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     if (onToggleFocus) onToggleFocus()
   }
 
-  // Mini PiP tiles stay locked to a predictable landscape shape so the strip
-  // layout in focused mode stays neat. Full-size tiles follow the source.
+  // Mini PiP overlay tiles (the small strip in focused mode) stay locked to a
+  // landscape shape so the strip layout stays neat. Full-size tiles follow
+  // the source's intrinsic aspect.
   const effectiveAspect: number = mini ? 16 / 9 : srcAspect
+  const maxHeight: string | undefined = mini ? undefined : (isFullscreen ? undefined : 'min(60vh, 500px)')
 
-  // Cap full-size tiles so a portrait source in a narrow panel can't grow
-  // taller than the viewport. When aspect-ratio would blow past maxHeight,
-  // the browser honours maxHeight and object-cover on the inner <video>
-  // handles any resulting mismatch.
-  const maxHeight: string | undefined = mini ? undefined : 'min(60vh, 500px)'
+  // Highlight ring when the speaker is talking. Suppressed for self and
+  // mini overlay tiles to avoid visual noise.
+  const isSpeaking = !self && !mini && !micMuted && level > 0.1
+  // Keep the existing focus ring; layer the speaking ring as an outline so
+  // both can coexist without fighting border styles.
+
+  const showControls = clickable && !mini
 
   return (
     <div
-      onClick={clickable ? handleClick : undefined}
+      ref={containerRef}
+      onClick={clickable && !isFullscreen ? handleClick : undefined}
       style={{ aspectRatio: `${effectiveAspect}`, maxHeight }}
       className={`relative w-full rounded-xl overflow-hidden bg-surface-2/80 border border-border group ${
-        clickable ? 'cursor-pointer hover:border-accent/60 transition-colors' : ''
-      } ${focused ? 'ring-2 ring-accent/60' : ''}`}
-      title={clickable ? (focused ? 'Click to unfocus' : 'Click to focus') : undefined}
+        clickable && !isFullscreen ? 'cursor-pointer hover:border-accent/60 transition-colors' : ''
+      } ${focused ? 'ring-2 ring-accent/60' : ''} ${isSpeaking ? 'shadow-[0_0_0_2px_rgba(100,255,218,0.45)]' : ''}`}
+      title={clickable && !isFullscreen ? (focused ? 'Click to unfocus' : 'Click to focus') : undefined}
     >
-      {/* Always-mounted video element. Hidden (not unmounted) when blackout
-          applies so that toggling cameraOff never loses the srcObject binding. */}
       <video
         ref={videoRef}
         autoPlay
@@ -125,17 +199,39 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
         </div>
       )}
 
-      {/* Focus toggle button — top-right, appears on hover */}
-      {clickable && !mini && (
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); handleClick() }}
-          className="absolute top-2 right-2 p-1.5 rounded-md bg-black/60 hover:bg-black/80 text-white opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm"
-          aria-label={focused ? 'Unfocus' : 'Focus'}
-          title={focused ? 'Back to grid' : 'Focus'}
-        >
-          {focused ? <Minimize2 className="w-3 h-3" /> : <Maximize2 className="w-3 h-3" />}
-        </button>
+      {/* Top-right control cluster: PiP, fullscreen, focus toggle. */}
+      {showControls && (
+        <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          {hasAnyVideoTrack && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); void togglePip() }}
+              className="p-1.5 rounded-md bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm"
+              aria-label={isPip ? 'Exit Picture-in-Picture' : 'Picture-in-Picture'}
+              title={isPip ? 'Exit PiP' : 'Picture-in-Picture'}
+            >
+              <PictureInPicture2 className="w-3 h-3" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); void toggleFullscreen() }}
+            className="p-1.5 rounded-md bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm"
+            aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          >
+            <Maximize className="w-3 h-3" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); handleClick() }}
+            className="p-1.5 rounded-md bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm"
+            aria-label={focused ? 'Unfocus' : 'Focus'}
+            title={focused ? 'Back to grid' : 'Focus'}
+          >
+            {focused ? <Minimize2 className="w-3 h-3" /> : <Maximize2 className="w-3 h-3" />}
+          </button>
+        </div>
       )}
 
       {/* Name + mute badge overlay */}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { Mic, MicOff } from 'lucide-react'
 
 interface AudioTileProps {
@@ -7,67 +7,13 @@ interface AudioTileProps {
   self?: boolean
   micMuted?: boolean
   volume?: number
+  // Loudness 0–1 supplied by the parent's shared analyser graph. When
+  // omitted we don't compute it locally — silence is the safe default.
+  level?: number
 }
 
-// Small, inline speaking detector using the Web Audio API. Runs a cheap
-// time-domain analyzer and pulses the tile when RMS crosses a threshold.
-function useSpeakingLevel(stream: MediaStream | null, active: boolean): number {
-  const [level, setLevel] = useState<number>(0)
-
-  useEffect(() => {
-    if (!stream || !active) { setLevel(0); return }
-    const audioTracks = stream.getAudioTracks()
-    if (!audioTracks.length) { setLevel(0); return }
-
-    const AC: typeof AudioContext | undefined = (window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext)
-    if (!AC) return
-
-    let ctx: AudioContext
-    try { ctx = new AC() } catch { return }
-
-    let src: MediaStreamAudioSourceNode
-    try { src = ctx.createMediaStreamSource(stream) } catch { try { ctx.close() } catch {} ; return }
-
-    const analyser = ctx.createAnalyser()
-    analyser.fftSize = 512
-    analyser.smoothingTimeConstant = 0.6
-    src.connect(analyser)
-
-    const buf = new Uint8Array(analyser.fftSize)
-    let raf = 0
-    let lastUpdate = 0
-
-    const tick = (): void => {
-      analyser.getByteTimeDomainData(buf)
-      let sum = 0
-      for (let i = 0; i < buf.length; i++) {
-        const v = (buf[i] - 128) / 128
-        sum += v * v
-      }
-      const rms = Math.sqrt(sum / buf.length)
-      const now = performance.now()
-      if (now - lastUpdate > 100) {
-        lastUpdate = now
-        setLevel(Math.min(1, rms * 3))
-      }
-      raf = requestAnimationFrame(tick)
-    }
-    raf = requestAnimationFrame(tick)
-
-    return () => {
-      cancelAnimationFrame(raf)
-      try { src.disconnect() } catch {}
-      try { analyser.disconnect() } catch {}
-      try { ctx.close() } catch {}
-    }
-  }, [stream, active])
-
-  return level
-}
-
-export default function AudioTile({ stream, name, self = false, micMuted = false, volume = 1 }: AudioTileProps) {
+export default function AudioTile({ stream, name, self = false, micMuted = false, volume = 1, level = 0 }: AudioTileProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const speaking = useSpeakingLevel(stream, !self && !micMuted)
 
   useEffect(() => {
     const el = audioRef.current
@@ -81,7 +27,7 @@ export default function AudioTile({ stream, name, self = false, micMuted = false
     if (el) el.volume = Math.max(0, Math.min(1, volume))
   }, [volume])
 
-  const isSpeaking: boolean = speaking > 0.08
+  const isSpeaking: boolean = !self && !micMuted && level > 0.08
 
   return (
     <div
@@ -102,7 +48,7 @@ export default function AudioTile({ stream, name, self = false, micMuted = false
         {isSpeaking && (
           <span
             className="absolute inset-0 rounded-full ring-2 ring-accent/40 animate-pulse pointer-events-none"
-            style={{ opacity: Math.min(1, 0.3 + speaking) }}
+            style={{ opacity: Math.min(1, 0.3 + level) }}
           />
         )}
       </div>
