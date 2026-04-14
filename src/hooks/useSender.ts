@@ -4,8 +4,8 @@ import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDra
 import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
 import { STUN_ONLY } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
-import { generateVideoThumbnail, generateTextPreview, generateThumbnailsBatch } from '../utils/thumbnailWorker'
-import { ChatMessage, FileEntry, ManifestData } from '../types'
+import { buildManifestData } from '../utils/manifest'
+import { ChatMessage } from '../types'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -114,31 +114,6 @@ function connectionReducer(state: ConnectionState, action: ConnectionAction): Co
     }
     case 'RESET': return initialConnection
     default: return state
-  }
-}
-
-// ── Manifest builder ─────────────────────────────────────────────────────
-
-async function buildManifestData(files: File[], chatOnly: boolean): Promise<ManifestData> {
-  const thumbnails = await generateThumbnailsBatch(files, 80, 3)
-  const fileEntries: FileEntry[] = await Promise.all(files.map(async (f, i) => {
-    const entry: FileEntry = { name: f.name, size: f.size, type: f.type }
-    if (thumbnails[i]) {
-      entry.thumbnail = thumbnails[i]
-    } else if (f.type?.startsWith('video/') && f instanceof File) {
-      try { entry.thumbnail = await generateVideoThumbnail(f, 80) } catch {}
-    } else if (f.type?.startsWith('text/') || f.type === 'application/json') {
-      try { entry.textPreview = await generateTextPreview(f, 150) ?? undefined } catch {}
-    }
-    return entry
-  }))
-
-  return {
-    type: 'manifest',
-    chatOnly,
-    files: fileEntries,
-    totalSize: files.reduce((sum, f) => sum + f.size, 0),
-    sentAt: new Date().toISOString(),
   }
 }
 
