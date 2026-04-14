@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera } from 'lucide-react'
 import { UseCallReturn } from '../hooks/useCall'
 import { useViewport } from '../hooks/useViewport'
+import { usePopout } from '../hooks/usePopout'
 import VideoTile from './VideoTile'
 import AudioTile from './AudioTile'
 
@@ -12,22 +13,20 @@ interface CallPanelProps {
   disabled?: boolean
 }
 
-type PopoutPos = { x: number; y: number }
-type PopoutSize = { w: number; h: number }
-
-const POPOUT_DEFAULT: PopoutSize = { w: 420, h: 520 }
-const POPOUT_MIN: PopoutSize = { w: 320, h: 360 }
+const POPOUT_DEFAULT = { w: 420, h: 520 }
+const POPOUT_MIN = { w: 320, h: 360 }
 
 export default function CallPanel({ call, myName, disabled = false }: CallPanelProps) {
   const [open, setOpen] = useState<boolean>(false)
-  const [isPopout, setIsPopout] = useState<boolean>(false)
-  const [popoutPos, setPopoutPos] = useState<PopoutPos | null>(null)
-  const [popoutSize, setPopoutSize] = useState<PopoutSize>(POPOUT_DEFAULT)
   const [showSettings, setShowSettings] = useState<boolean>(false)
   // Viewport detection is shared with other panels via useViewport. `isMobile`
   // gates the popout and bumps control sizes; tile aspect is handled inside
   // VideoTile via the source's natural dimensions.
   const { isMobile } = useViewport()
+  // Popout drag/resize/dock logic lives in usePopout so it can be shared
+  // with ChatPanel. Consumer supplies default + minimum size only.
+  const popout = usePopout({ defaultSize: POPOUT_DEFAULT, minSize: POPOUT_MIN })
+  const { isPopout, pos: popoutPos, size: popoutSize, popOut, dockBack } = popout
   // Master remote-volume (0-1). Applied to every remote audio/video tile.
   // Ephemeral on purpose — we don't persist to localStorage (privacy ethos).
   const [volume, setVolume] = useState<number>(1)
@@ -35,8 +34,6 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
   // Discord-style focus: clicking a video tile spotlights it; others become
   // small overlays. Special sentinel 'self' refers to the local preview.
   const [focusedId, setFocusedId] = useState<string | null>(null)
-
-  const popoutRef = useRef<HTMLDivElement | null>(null)
 
   const handleVolumeChange = useCallback((v: number): void => {
     const clamped = Math.max(0, Math.min(1, v))
@@ -59,84 +56,11 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
     if (call.joined && !open) setOpen(true)
   }, [call.joined, open])
 
-  // Popout drag — window-level listeners so the cursor doesn't have to
-  // stay over the element while dragging (matches ChatPanel's pattern).
-  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null)
-  const handleDragStart = useCallback((e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>): void => {
-    if (!isPopout) return
-    const el = popoutRef.current
-    if (!el) return
-    const touch = (e as React.TouchEvent).touches
-    const clientX = touch ? touch[0].clientX : (e as React.MouseEvent).clientX
-    const clientY = touch ? touch[0].clientY : (e as React.MouseEvent).clientY
-    const rect = el.getBoundingClientRect()
-    dragRef.current = { startX: clientX, startY: clientY, origX: rect.left, origY: rect.top }
-
-    const onMove = (ev: MouseEvent | TouchEvent): void => {
-      const t = (ev as TouchEvent).touches
-      const cx = t ? t[0].clientX : (ev as MouseEvent).clientX
-      const cy = t ? t[0].clientY : (ev as MouseEvent).clientY
-      const d = dragRef.current
-      if (!d) return
-      const dx = cx - d.startX
-      const dy = cy - d.startY
-      const nx = Math.max(0, Math.min(window.innerWidth - 100, d.origX + dx))
-      const ny = Math.max(0, Math.min(window.innerHeight - 50, d.origY + dy))
-      setPopoutPos({ x: nx, y: ny })
-    }
-    const onEnd = (): void => {
-      dragRef.current = null
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onEnd)
-      window.removeEventListener('touchmove', onMove)
-      window.removeEventListener('touchend', onEnd)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onEnd)
-    window.addEventListener('touchmove', onMove, { passive: false })
-    window.addEventListener('touchend', onEnd)
+  // Open the panel whenever the popout is engaged — the user clearly
+  // wants to see it if they're detaching it.
+  useEffect(() => {
+    if (isPopout) setOpen(true)
   }, [isPopout])
-
-  const handleResizeStart = useCallback((e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>): void => {
-    e.preventDefault()
-    e.stopPropagation()
-    const el = popoutRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    const startRight = rect.right
-    const startBottom = rect.bottom
-
-    const onMove = (ev: MouseEvent | TouchEvent): void => {
-      ev.preventDefault()
-      const t = (ev as TouchEvent).touches
-      const cx = t ? t[0].clientX : (ev as MouseEvent).clientX
-      const cy = t ? t[0].clientY : (ev as MouseEvent).clientY
-      const newW = Math.max(POPOUT_MIN.w, Math.min(window.innerWidth - 16, startRight - cx))
-      const newH = Math.max(POPOUT_MIN.h, Math.min(window.innerHeight - 32, startBottom - cy))
-      setPopoutSize({ w: newW, h: newH })
-      setPopoutPos({ x: startRight - newW, y: startBottom - newH })
-    }
-    const onEnd = (): void => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onEnd)
-      window.removeEventListener('touchmove', onMove)
-      window.removeEventListener('touchend', onEnd)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onEnd)
-    window.addEventListener('touchmove', onMove, { passive: false })
-    window.addEventListener('touchend', onEnd)
-  }, [])
-
-  const popOut = useCallback((): void => {
-    setIsPopout(true)
-    setPopoutPos({
-      x: Math.round((window.innerWidth - POPOUT_DEFAULT.w) / 2),
-      y: Math.round((window.innerHeight - POPOUT_DEFAULT.h) / 2),
-    })
-    setOpen(true)
-  }, [])
-  const dockBack = useCallback((): void => { setIsPopout(false); setPopoutPos(null); setPopoutSize(POPOUT_DEFAULT) }, [])
 
   const remotePeers = call.remotePeers
   const videoRemotes = remotePeers.filter(p => p.mode === 'video')
@@ -399,15 +323,15 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
       className={`flex items-center justify-between px-3 py-2 border-b border-border bg-surface-2/40 relative ${
         isPopout && !isMobile ? 'cursor-move select-none' : ''
       }`}
-      onMouseDown={isPopout && !isMobile ? handleDragStart : undefined}
-      onTouchStart={isPopout && !isMobile ? handleDragStart : undefined}
+      onMouseDown={isPopout && !isMobile ? popout.onDragStart : undefined}
+      onTouchStart={isPopout && !isMobile ? popout.onDragStart : undefined}
     >
       {/* Top-left resize handle (popout only) */}
       {isPopout && !isMobile && (
         <div
           className="absolute -top-1 -left-1 w-5 h-5 cursor-nw-resize z-10 flex items-center justify-center opacity-40 hover:opacity-100 transition-opacity"
-          onMouseDown={handleResizeStart}
-          onTouchStart={handleResizeStart}
+          onMouseDown={popout.onResizeStart}
+          onTouchStart={popout.onResizeStart}
           title="Resize"
         >
           <svg width="10" height="10" viewBox="0 0 10 10" className="text-muted">
@@ -480,7 +404,7 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
 
   return (
     <div
-      ref={popoutRef}
+      ref={popout.elementRef}
       className={`animate-fade-in-up ${
         popoutActive
           ? 'fixed z-50 rounded-2xl shadow-2xl border border-border bg-bg flex flex-col overflow-hidden'
