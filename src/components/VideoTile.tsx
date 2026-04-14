@@ -83,10 +83,16 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
   // layout in focused mode stays neat. Full-size tiles follow the source.
   const effectiveAspect: number = mini ? 16 / 9 : srcAspect
 
+  // Cap full-size tiles so a portrait source in a narrow panel can't grow
+  // taller than the viewport. When aspect-ratio would blow past maxHeight,
+  // the browser honours maxHeight and object-cover on the inner <video>
+  // handles any resulting mismatch.
+  const maxHeight: string | undefined = mini ? undefined : 'min(60vh, 500px)'
+
   return (
     <div
       onClick={clickable ? handleClick : undefined}
-      style={{ aspectRatio: `${effectiveAspect}` }}
+      style={{ aspectRatio: `${effectiveAspect}`, maxHeight }}
       className={`relative w-full rounded-xl overflow-hidden bg-surface-2/80 border border-border group ${
         clickable ? 'cursor-pointer hover:border-accent/60 transition-colors' : ''
       } ${focused ? 'ring-2 ring-accent/60' : ''}`}

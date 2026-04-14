@@ -280,9 +280,11 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
           ) : (
             // Grid: 1 tile full-width, 2 tiles side-by-side. Each tile's
             // aspect follows its own source (VideoTile derives from
-            // videoWidth/videoHeight) so no forced crop.
+            // videoWidth/videoHeight). items-center vertically centers a
+            // shorter tile in a row dominated by a taller sibling so a
+            // landscape + portrait pair doesn't leave one orphaned.
             <div
-              className="grid gap-2 items-start"
+              className="grid gap-2 items-center"
               style={{
                 gridTemplateColumns: videoTiles.length === 1 ? '1fr' : '1fr 1fr',
               }}
