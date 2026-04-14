@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Mic, MicOff } from 'lucide-react'
+import { Mic, MicOff, VolumeX, Volume2 } from 'lucide-react'
 
 interface AudioTileProps {
   stream: MediaStream | null
@@ -10,9 +10,13 @@ interface AudioTileProps {
   // Loudness 0–1 supplied by the parent's shared analyser graph. When
   // omitted we don't compute it locally — silence is the safe default.
   level?: number
+  // Per-peer mute: silences this peer locally without affecting anyone
+  // else in the call. Independent of the master volume slider.
+  mutedForMe?: boolean
+  onToggleMutedForMe?: () => void
 }
 
-export default function AudioTile({ stream, name, self = false, micMuted = false, volume = 1, level = 0 }: AudioTileProps) {
+export default function AudioTile({ stream, name, self = false, micMuted = false, volume = 1, level = 0, mutedForMe = false, onToggleMutedForMe }: AudioTileProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   useEffect(() => {
@@ -24,10 +28,15 @@ export default function AudioTile({ stream, name, self = false, micMuted = false
 
   useEffect(() => {
     const el = audioRef.current
-    if (el) el.volume = Math.max(0, Math.min(1, volume))
-  }, [volume])
+    if (!el) return
+    el.volume = Math.max(0, Math.min(1, volume))
+    el.muted = mutedForMe
+  }, [volume, mutedForMe])
 
-  const isSpeaking: boolean = !self && !micMuted && level > 0.08
+  // Speaking ring is suppressed when the listener has muted this peer —
+  // it would be misleading to show a "talking" pulse for someone you can't
+  // actually hear.
+  const isSpeaking: boolean = !self && !micMuted && !mutedForMe && level > 0.08
 
   return (
     <div
@@ -56,6 +65,20 @@ export default function AudioTile({ stream, name, self = false, micMuted = false
       <span className="font-mono text-xs text-text truncate flex-1 min-w-0">
         {name}{self ? ' (you)' : ''}
       </span>
+
+      {!self && onToggleMutedForMe && (
+        <button
+          type="button"
+          onClick={onToggleMutedForMe}
+          className={`shrink-0 w-5 h-5 rounded-md flex items-center justify-center transition-colors ${
+            mutedForMe ? 'text-danger hover:bg-danger/10' : 'text-muted hover:text-accent hover:bg-accent/10'
+          }`}
+          title={mutedForMe ? 'Unmute for me' : 'Mute for me'}
+          aria-label={mutedForMe ? 'Unmute for me' : 'Mute for me'}
+        >
+          {mutedForMe ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+        </button>
+      )}
 
       {micMuted ? (
         <MicOff className="w-3.5 h-3.5 text-danger shrink-0" />

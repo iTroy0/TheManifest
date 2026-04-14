@@ -52,6 +52,18 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
   // Manual focus state. When the user explicitly focuses a tile, auto
   // active-speaker switching is suspended until they unfocus.
   const [manualFocusId, setManualFocusId] = useState<string | null>(null)
+  // Per-peer mute set — peers the local listener has silenced. Independent
+  // of the master volume slider and of the peer's own mic state. Cleared
+  // automatically when the peer leaves (filtered on read).
+  const [mutedForMe, setMutedForMe] = useState<Set<string>>(new Set())
+  const togglePeerMute = useCallback((peerId: string): void => {
+    setMutedForMe(prev => {
+      const next = new Set(prev)
+      if (next.has(peerId)) next.delete(peerId)
+      else next.add(peerId)
+      return next
+    })
+  }, [])
 
   const handleVolumeChange = useCallback((v: number): void => {
     const clamped = Math.max(0, Math.min(1, v))
@@ -120,14 +132,18 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
   const levels = useSpeakingLevels(speakingEntries)
 
   // Feed levels back to useCall for active-speaker selection. Only the
-  // remote levels matter for spotlight selection.
+  // remote levels matter for spotlight selection, AND we exclude peers
+  // the listener has muted — auto-focusing someone you can't hear would
+  // be misleading.
   useEffect(() => {
     const remoteOnly: Record<string, number> = {}
     for (const [id, level] of Object.entries(levels)) {
-      if (id !== 'self') remoteOnly[id] = level
+      if (id === 'self') continue
+      if (mutedForMe.has(id)) continue
+      remoteOnly[id] = level
     }
     call.reportSpeakingLevels(remoteOnly)
-  }, [levels, call])
+  }, [levels, mutedForMe, call])
 
   // ── Pre-join screen ────────────────────────────────────────────────────
 
@@ -296,6 +312,8 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
                 connecting={focusedTile.connecting}
                 volume={focusedTile.isSelf ? 1 : volume}
                 level={levels[focusedTile.id] || 0}
+                mutedForMe={!focusedTile.isSelf && mutedForMe.has(focusedTile.id)}
+                onToggleMutedForMe={focusedTile.isSelf ? undefined : () => togglePeerMute(focusedTile.id)}
                 focused
                 onToggleFocus={handleUnfocus}
               />
@@ -312,6 +330,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
                       connecting={v.connecting}
                       volume={v.isSelf ? 1 : volume}
                       level={levels[v.id] || 0}
+                      mutedForMe={!v.isSelf && mutedForMe.has(v.id)}
                       mini
                       onToggleFocus={() => handleFocusToggle(v.id)}
                     />
@@ -337,6 +356,8 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
                   connecting={v.connecting}
                   volume={v.isSelf ? 1 : volume}
                   level={levels[v.id] || 0}
+                  mutedForMe={!v.isSelf && mutedForMe.has(v.id)}
+                  onToggleMutedForMe={v.isSelf ? undefined : () => togglePeerMute(v.id)}
                   onToggleFocus={() => handleFocusToggle(v.id)}
                 />
               ))}
@@ -366,6 +387,8 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
               micMuted={p.micMuted}
               volume={volume}
               level={levels[p.peerId] || 0}
+              mutedForMe={mutedForMe.has(p.peerId)}
+              onToggleMutedForMe={() => togglePeerMute(p.peerId)}
             />
           ))}
         </div>

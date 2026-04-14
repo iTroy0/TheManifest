@@ -33,12 +33,19 @@ export interface CallError {
     | 'peer-error'
     | 'media-conn-failed'
     | 'media-failed'
+    | 'duplicate-tab'
     | 'unknown'
   message: string
   recoverable: boolean
   // Optional peer id when the error is scoped to a specific remote.
   peerId?: string
 }
+
+// Stable id for THIS browsing context — used by the duplicate-tab guard
+// to distinguish between BroadcastChannel messages we sent ourselves vs.
+// ones from a sibling tab. Generated once per module load (so within a
+// hot-reload cycle it can change; that's fine).
+const TAB_ID = Math.random().toString(36).slice(2) + Date.now().toString(36)
 
 // Why a call ended — surfaced after `leave()` so the UI can post-mortem
 // honestly instead of silently snapping back to the pre-join screen.
@@ -141,6 +148,11 @@ export function useCall(options: UseCallOptions) {
   // Per-join token. Any async work that captures this value can compare it
   // to the current ref to detect a stale join attempt.
   const joinAttemptRef = useRef<symbol>(Symbol('initial'))
+  // BroadcastChannel used to detect "this user is already in the same call
+  // in another tab", which would create an audio feedback loop. We only
+  // claim a channel when joining as a non-host (the host's peerId is
+  // stable per-tab, so two host tabs can't be in the same room anyway).
+  const tabChannelRef = useRef<BroadcastChannel | null>(null)
 
   useEffect(() => { joinedRef.current = joined }, [joined])
   useEffect(() => { modeRef.current = mode }, [mode])
@@ -273,12 +285,16 @@ export function useCall(options: UseCallOptions) {
       try { mc.answer(localStreamRef.current) } catch { return }
       mediaConnsRef.current.set(mc.peer, mc)
 
-      // Only the metadata.name from the host is trusted to overwrite an
-      // existing roster name — peer-supplied names from a known peer are
-      // accepted (since they're already in the roster).
+      // Existing roster name (from the host's snapshot or call-peer-joined
+      // broadcast) ALWAYS wins over the metadata name a peer claims for
+      // themselves — otherwise a peer can impersonate any display name on
+      // the metadata channel. Only fall back to metadata when we have no
+      // prior name at all (defensive; should be rare since call-roster
+      // pre-populates everything).
       const incomingMode: CallMode = meta.mode || 'audio'
+      const existingName = rosterRef.current.get(mc.peer)?.name
       upsertRoster(mc.peer, {
-        name: meta.name || rosterRef.current.get(mc.peer)?.name || 'Anon',
+        name: existingName || meta.name || 'Anon',
         mode: incomingMode,
       })
 
@@ -533,6 +549,12 @@ export function useCall(options: UseCallOptions) {
       }
 
       if (type === 'call-rejected') {
+        // Only the host is allowed to reject us. Otherwise any peer could
+        // forge a rejection and trick us into stopping our local media.
+        if (fromPeerId !== hostPeerIdRef.current) {
+          console.warn('Ignoring call-rejected from non-host', fromPeerId)
+          return
+        }
         setCallError({ code: 'rejected', message: 'Call join rejected.', recoverable: true })
         setEndReason('rejected')
         setJoining(false)
@@ -564,6 +586,53 @@ export function useCall(options: UseCallOptions) {
     setJoining(true)
     setCallError(null)
     setEndReason(null)
+
+    // Duplicate-tab guard: ask any sibling tabs whether they're already in
+    // this room. If anyone responds within 150ms, refuse the join. The
+    // "room" is the host's peerId for non-hosts, which is shared across
+    // tabs of the same browser. Hosts have a unique peerId per tab, so
+    // they can't accidentally double-join the same room.
+    if (!isHost && hostPeerId && typeof BroadcastChannel !== 'undefined') {
+      let conflict = false
+      let probe: BroadcastChannel | null = null
+      try {
+        probe = new BroadcastChannel('manifest-call-' + hostPeerId)
+        const probeHandler = (e: MessageEvent): void => {
+          const data = e.data as { type?: string; tabId?: string }
+          if (data?.type === 'i-am-here' && data.tabId !== TAB_ID) {
+            conflict = true
+          }
+        }
+        probe.addEventListener('message', probeHandler)
+        probe.postMessage({ type: 'who', tabId: TAB_ID })
+        await new Promise<void>(resolve => setTimeout(resolve, 150))
+        probe.removeEventListener('message', probeHandler)
+      } catch {
+        // BroadcastChannel unavailable / blocked — skip the guard.
+      }
+      if (conflict) {
+        try { probe?.close() } catch {}
+        setCallError({
+          code: 'duplicate-tab',
+          message: "You're already in this call in another tab. Close the other tab to join here.",
+          recoverable: false,
+        })
+        setJoining(false)
+        return
+      }
+      // No conflict — keep the channel open and listen for future probes
+      // so a sibling tab that opens later sees us.
+      if (probe) {
+        probe.addEventListener('message', (e: MessageEvent) => {
+          const data = e.data as { type?: string; tabId?: string }
+          if (data?.type === 'who' && data.tabId !== TAB_ID) {
+            try { probe?.postMessage({ type: 'i-am-here', tabId: TAB_ID }) } catch {}
+          }
+        })
+        tabChannelRef.current = probe
+      }
+    }
+
     try {
       const stream = await localMedia.start('audio')
       // If a newer attempt or a leave/unmount has happened during the
@@ -606,6 +675,11 @@ export function useCall(options: UseCallOptions) {
       } else {
         sendToHost?.({ type: 'call-leave', from: myPeerId })
       }
+    }
+    // Release the duplicate-tab claim so a sibling tab can take over.
+    if (tabChannelRef.current) {
+      try { tabChannelRef.current.close() } catch {}
+      tabChannelRef.current = null
     }
     localMedia.stop()
     setMode('none')
@@ -672,6 +746,10 @@ export function useCall(options: UseCallOptions) {
     return () => {
       mediaConnsRef.current.forEach(mc => { try { mc.close() } catch {} })
       mediaConnsRef.current.clear()
+      if (tabChannelRef.current) {
+        try { tabChannelRef.current.close() } catch {}
+        tabChannelRef.current = null
+      }
       if (joinedRef.current) {
         try { localMediaStopRef.current() } catch {}
         setMode('none')
