@@ -6,76 +6,10 @@ import Linkify from './chat/Linkify'
 import VoicePlayer from './chat/VoicePlayer'
 import TypingDots from './chat/TypingDots'
 import ImagePreviewOverlay, { type ViewImage } from './chat/ImagePreviewOverlay'
+import { useChatPanelState } from '../hooks/useChatPanelState'
 import { ChatMessage } from '../types'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
-
-// ── panelReducer ─────────────────────────────────────────────────────────────
-
-interface PopoutPos {
-  x: number
-  y: number
-}
-
-interface PopoutSize {
-  w: number
-  h: number
-}
-
-interface MenuPos {
-  top: number
-  right: number
-}
-
-interface PanelState {
-  open: boolean
-  unread: number
-  isFullscreen: boolean
-  isPopout: boolean
-  showMenu: boolean
-  showClearConfirm: boolean
-  showScrollBtn: boolean
-  isNearBottom: boolean
-  menuPos: MenuPos
-  popoutPos: PopoutPos | null
-  popoutSize: PopoutSize
-  viewportHeight: string
-  viewportOffset: number
-}
-
-type PanelAction =
-  | { type: 'SET'; payload: Partial<PanelState> }
-  | { type: 'TOGGLE_OPEN' }
-  | { type: 'TOGGLE_MENU' }
-  | { type: 'INCREMENT_UNREAD'; count: number }
-  | { type: 'RESET_POPOUT' }
-
-const initialPanel: PanelState = {
-  open: false,
-  unread: 0,
-  isFullscreen: false,
-  isPopout: false,
-  showMenu: false,
-  showClearConfirm: false,
-  showScrollBtn: false,
-  isNearBottom: true,
-  menuPos: { top: 0, right: 0 },
-  popoutPos: null,
-  popoutSize: { w: 384, h: 600 },
-  viewportHeight: '100dvh',
-  viewportOffset: 0,
-}
-
-function panelReducer(state: PanelState, action: PanelAction): PanelState {
-  switch (action.type) {
-    case 'SET': return { ...state, ...action.payload }
-    case 'TOGGLE_OPEN': return { ...state, open: !state.open }
-    case 'TOGGLE_MENU': return { ...state, showMenu: !state.showMenu }
-    case 'INCREMENT_UNREAD': return { ...state, unread: state.unread + action.count }
-    case 'RESET_POPOUT': return { ...state, isPopout: false, popoutPos: null, popoutSize: { w: 384, h: 600 } }
-    default: return state
-  }
-}
 
 // ── interactionReducer ───────────────────────────────────────────────────────
 
@@ -151,7 +85,7 @@ interface ChatPanelProps {
 }
 
 export default function ChatPanel({ messages, onSend, onClearMessages, disabled, nickname, onNicknameChange, onlineCount, onTyping, typingUsers, onReaction }: ChatPanelProps) {
-  const [panel, dispatchPanel] = useReducer(panelReducer, initialPanel)
+  const [panel, dispatchPanel] = useChatPanelState()
   const { open, unread, isFullscreen, isPopout, showMenu, showClearConfirm, showScrollBtn, isNearBottom, menuPos, popoutPos, popoutSize, viewportHeight, viewportOffset } = panel
   const [interact, dispatchInteract] = useReducer(interactionReducer, initialInteraction)
   const { replyTo, reactingIdx, activeMsg, imagePreview, viewImage, isDragOver, dropError } = interact
