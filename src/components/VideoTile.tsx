@@ -28,12 +28,15 @@ const MIN_ASPECT = 9 / 16
 const MAX_ASPECT = 16 / 9
 
 // Safari ships a legacy presentation-mode API instead of the standards PiP
-// methods. We type those extras as an optional bag and merge with HTMLVideoElement
-// at the use site rather than declaring an extending interface (which would
-// fight the standards types in lib.dom).
-type SafariPiPVideoExtras = {
+// and fullscreen methods. We type those extras as an optional bag and merge
+// with HTMLVideoElement at the use site rather than declaring an extending
+// interface (which would fight the standards types in lib.dom).
+type WebkitVideoExtras = {
   webkitSupportsPresentationMode?: (mode: string) => boolean
   webkitSetPresentationMode?: (mode: string) => void
+  webkitEnterFullscreen?: () => void
+  webkitExitFullscreen?: () => void
+  webkitDisplayingFullscreen?: boolean
 }
 
 export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus, volume = 1, level = 0, mutedForMe = false, onToggleMutedForMe }: VideoTileProps) {
@@ -43,6 +46,11 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false)
   const [isPip, setIsPip] = useState<boolean>(false)
 
+  // Bind srcObject and kick playback. Mobile browsers (iOS Safari in
+  // particular) don't always autoplay when srcObject changes on an
+  // already-mounted element, even with the autoplay attribute — they
+  // insist on an explicit .play() call. Swallow the resulting promise
+  // rejection for the autoplay-policy case.
   useEffect(() => {
     const el = videoRef.current
     if (!el) return
@@ -51,6 +59,16 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     }
     if (!stream && el.srcObject) {
       el.srcObject = null
+      return
+    }
+    if (stream) {
+      // Let the browser finish attaching the new srcObject before we call
+      // play(); otherwise Chrome sometimes rejects the call with a
+      // "AbortError: interrupted by a new load request".
+      const raf = requestAnimationFrame(() => {
+        el.play().catch(() => {})
+      })
+      return () => cancelAnimationFrame(raf)
     }
   }, [stream])
 
@@ -83,19 +101,30 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     }
   }, [stream])
 
-  // Fullscreen state is owned by the document, not React. Subscribe to the
-  // change event so the button label stays correct when the user hits ESC
-  // or uses the browser UI.
+  // Fullscreen state tracking. The standards path raises fullscreenchange
+  // on the document. iOS Safari, where only <video> elements can enter
+  // fullscreen, raises webkitbegin/endfullscreen on the <video> itself.
   useEffect(() => {
-    const onChange = (): void => {
-      setIsFullscreen(document.fullscreenElement === containerRef.current)
+    const container = containerRef.current
+    const videoEl = videoRef.current
+    if (!container || !videoEl) return
+
+    const onStandardsChange = (): void => {
+      setIsFullscreen(document.fullscreenElement === container || document.fullscreenElement === videoEl)
     }
-    document.addEventListener('fullscreenchange', onChange)
-    return () => document.removeEventListener('fullscreenchange', onChange)
+    const onWebkitBegin = (): void => setIsFullscreen(true)
+    const onWebkitEnd = (): void => setIsFullscreen(false)
+
+    document.addEventListener('fullscreenchange', onStandardsChange)
+    videoEl.addEventListener('webkitbeginfullscreen', onWebkitBegin)
+    videoEl.addEventListener('webkitendfullscreen', onWebkitEnd)
+    return () => {
+      document.removeEventListener('fullscreenchange', onStandardsChange)
+      videoEl.removeEventListener('webkitbeginfullscreen', onWebkitBegin)
+      videoEl.removeEventListener('webkitendfullscreen', onWebkitEnd)
+    }
   }, [])
 
-  // PiP state similarly lives on the document. enterpictureinpicture and
-  // leavepictureinpicture fire on the video element itself.
   useEffect(() => {
     const el = videoRef.current
     if (!el) return
@@ -109,17 +138,40 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     }
   }, [])
 
+  // Fullscreen has three paths and we need all three:
+  //   1. Standards requestFullscreen() on the container (desktop Chrome,
+  //      Firefox, Edge, Safari 16.4+).
+  //   2. webkitEnterFullscreen() on the <video> element (iOS Safari —
+  //      cannot fullscreen divs, only media elements).
+  //   3. Gracefully no-op if neither is supported.
   const toggleFullscreen = useCallback(async (): Promise<void> => {
-    const el = containerRef.current
-    if (!el) return
+    const container = containerRef.current
+    const videoEl = videoRef.current as (HTMLVideoElement & WebkitVideoExtras) | null
+    if (!container || !videoEl) return
     try {
-      if (document.fullscreenElement === el) {
+      // Already in standards fullscreen → exit standards.
+      if (document.fullscreenElement === container || document.fullscreenElement === videoEl) {
         await document.exitFullscreen()
-      } else {
-        await el.requestFullscreen()
+        return
+      }
+      // Already in iOS webkit fullscreen → exit webkit.
+      if (videoEl.webkitDisplayingFullscreen && typeof videoEl.webkitExitFullscreen === 'function') {
+        videoEl.webkitExitFullscreen()
+        return
+      }
+      // Enter: prefer standards (container keeps our custom overlay UI).
+      if (typeof container.requestFullscreen === 'function') {
+        await container.requestFullscreen()
+        return
+      }
+      // Fall back to iOS: native video player takes over — our overlay
+      // vanishes but the user sees a proper fullscreen video.
+      if (typeof videoEl.webkitEnterFullscreen === 'function') {
+        videoEl.webkitEnterFullscreen()
+        return
       }
     } catch {
-      // Browser refused (e.g., iOS Safari without webkit support). Silent.
+      // Refused by the browser (permissions policy, no user gesture, etc.).
     }
   }, [])
 
@@ -136,11 +188,11 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
         }
         return
       }
-      // Safari fallback (legacy presentation mode API)
-      const safari = el as unknown as SafariPiPVideoExtras
-      if (typeof safari.webkitSetPresentationMode === 'function' && safari.webkitSupportsPresentationMode?.('picture-in-picture')) {
+      // Safari legacy presentation-mode fallback
+      const webkit = el as unknown as WebkitVideoExtras
+      if (typeof webkit.webkitSetPresentationMode === 'function' && webkit.webkitSupportsPresentationMode?.('picture-in-picture')) {
         const next = isPip ? 'inline' : 'picture-in-picture'
-        safari.webkitSetPresentationMode(next)
+        webkit.webkitSetPresentationMode(next)
         setIsPip(!isPip)
       }
     } catch {
@@ -158,26 +210,40 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     if (onToggleFocus) onToggleFocus()
   }
 
-  // Mini PiP overlay tiles (the small strip in focused mode) stay locked to a
-  // landscape shape so the strip layout stays neat. Full-size tiles follow
-  // the source's intrinsic aspect.
+  // Mini PiP overlay tiles (the small strip in focused mode) stay locked
+  // to a landscape shape so the strip layout stays neat. Full-size tiles
+  // follow the source's intrinsic aspect. In fullscreen we drop the
+  // aspect-ratio hint entirely so the container can fill the viewport.
   const effectiveAspect: number = mini ? 16 / 9 : srcAspect
-  const maxHeight: string | undefined = mini ? undefined : (isFullscreen ? undefined : 'min(60vh, 500px)')
+  const maxHeight: string | undefined = mini || isFullscreen ? undefined : 'min(60vh, 500px)'
 
   // Highlight ring when the speaker is talking. Suppressed for self, mini
-  // overlay tiles, and peers the listener has muted (the "you can't hear
-  // them" state).
+  // overlay tiles, and peers the listener has muted.
   const isSpeaking = !self && !mini && !micMuted && !mutedForMe && level > 0.1
-  // Keep the existing focus ring; layer the speaking ring as an outline so
-  // both can coexist without fighting border styles.
 
+  // Controls are visible on any tile that's clickable (not a mini overlay).
   const showControls = clickable && !mini
+
+  // Object-fit selection:
+  //   - Mini tiles: cover (uniform thumbnail look — cropping is OK)
+  //   - Grid tiles: cover (uniform grid cells)
+  //   - Focused or fullscreen: contain (show the full frame honestly —
+  //     portrait mobile sources on a desktop focus were being zoomed and
+  //     cropped because maxHeight clamped the container into a different
+  //     aspect than the source)
+  const objectFitClass: string = (focused || isFullscreen) && !mini ? 'object-contain' : 'object-cover'
+
+  // Control button sizing: 40px tap targets on mobile (minimum touch
+  // target), compact 24px on sm+ so they don't dominate desktop tiles.
+  // The always-visible path for touch devices is `[@media(hover:none)]`.
+  const controlButtonBase = 'flex items-center justify-center w-10 h-10 sm:w-7 sm:h-7 rounded-md backdrop-blur-sm transition-colors'
+  const controlIconSize = 'w-4 h-4 sm:w-3 sm:h-3'
 
   return (
     <div
       ref={containerRef}
       onClick={clickable && !isFullscreen ? handleClick : undefined}
-      style={{ aspectRatio: `${effectiveAspect}`, maxHeight }}
+      style={{ aspectRatio: isFullscreen ? undefined : `${effectiveAspect}`, maxHeight }}
       className={`relative w-full rounded-xl overflow-hidden bg-surface-2/80 border border-border group ${
         clickable && !isFullscreen ? 'cursor-pointer hover:border-accent/60 transition-colors' : ''
       } ${focused ? 'ring-2 ring-accent/60' : ''} ${isSpeaking ? 'shadow-[0_0_0_2px_rgba(100,255,218,0.45)]' : ''}`}
@@ -188,7 +254,7 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
         autoPlay
         playsInline
         muted={self}
-        className={`absolute inset-0 w-full h-full object-cover bg-black transition-opacity duration-200 ${
+        className={`absolute inset-0 w-full h-full ${objectFitClass} bg-black transition-opacity duration-200 ${
           shouldShowBlackout ? 'opacity-0 pointer-events-none' : 'opacity-100'
         }`}
         style={{ transform: self ? 'scaleX(-1)' : undefined }}
@@ -208,50 +274,52 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
         </div>
       )}
 
-      {/* Top-right control cluster: per-peer mute, PiP, fullscreen, focus toggle. */}
+      {/* Control cluster: per-peer mute, PiP, fullscreen, focus toggle.
+          Hidden by default on hover-capable pointers and revealed on
+          group-hover; always visible on touch devices (no hover). */}
       {showControls && (
-        <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
           {!self && onToggleMutedForMe && (
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); onToggleMutedForMe() }}
-              className={`p-1.5 rounded-md backdrop-blur-sm ${
+              className={`${controlButtonBase} ${
                 mutedForMe ? 'bg-danger/70 hover:bg-danger/90 text-white' : 'bg-black/60 hover:bg-black/80 text-white'
               }`}
               aria-label={mutedForMe ? 'Unmute for me' : 'Mute for me'}
               title={mutedForMe ? 'Unmute for me' : 'Mute for me'}
             >
-              {mutedForMe ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+              {mutedForMe ? <VolumeX className={controlIconSize} /> : <Volume2 className={controlIconSize} />}
             </button>
           )}
           {hasAnyVideoTrack && (
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); void togglePip() }}
-              className="p-1.5 rounded-md bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm"
+              className={`${controlButtonBase} bg-black/60 hover:bg-black/80 text-white`}
               aria-label={isPip ? 'Exit Picture-in-Picture' : 'Picture-in-Picture'}
               title={isPip ? 'Exit PiP' : 'Picture-in-Picture'}
             >
-              <PictureInPicture2 className="w-3 h-3" />
+              <PictureInPicture2 className={controlIconSize} />
             </button>
           )}
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); void toggleFullscreen() }}
-            className="p-1.5 rounded-md bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm"
+            className={`${controlButtonBase} bg-black/60 hover:bg-black/80 text-white`}
             aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
             title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
           >
-            <Maximize className="w-3 h-3" />
+            <Maximize className={controlIconSize} />
           </button>
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); handleClick() }}
-            className="p-1.5 rounded-md bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm"
+            className={`${controlButtonBase} bg-black/60 hover:bg-black/80 text-white`}
             aria-label={focused ? 'Unfocus' : 'Focus'}
             title={focused ? 'Back to grid' : 'Focus'}
           >
-            {focused ? <Minimize2 className="w-3 h-3" /> : <Maximize2 className="w-3 h-3" />}
+            {focused ? <Minimize2 className={controlIconSize} /> : <Maximize2 className={controlIconSize} />}
           </button>
         </div>
       )}

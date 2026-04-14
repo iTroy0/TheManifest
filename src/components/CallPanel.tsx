@@ -245,7 +245,6 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
       ? manualFocusId
       : null
     const focusedTile: VideoTileInfo | null = effectiveFocus ? videoTiles.find(v => v.id === effectiveFocus) || null : null
-    const miniTiles: VideoTileInfo[] = focusedTile ? videoTiles.filter(v => v.id !== focusedTile.id) : []
 
     const handleFocusToggle = (id: string): void => {
       setManualFocusId(prev => prev === id ? null : id)
@@ -286,68 +285,60 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
 
       {videoTiles.length > 0 && (
         <div className="px-3 pt-3 pb-2">
-          {focusedTile ? (
-            <div className="relative">
-              <VideoTile
-                stream={focusedTile.stream}
-                name={focusedTile.name}
-                self={focusedTile.isSelf}
-                micMuted={focusedTile.micMuted}
-                cameraOff={focusedTile.cameraOff}
-                connecting={focusedTile.connecting}
-                volume={focusedTile.isSelf ? 1 : volume}
-                level={levels[focusedTile.id] || 0}
-                mutedForMe={!focusedTile.isSelf && mutedForMe.has(focusedTile.id)}
-                onToggleMutedForMe={focusedTile.isSelf ? undefined : () => togglePeerMute(focusedTile.id)}
-                focused
-                onToggleFocus={handleUnfocus}
-              />
-              {miniTiles.length > 0 && (
-                <div className="absolute top-2 left-2 flex flex-col gap-1.5 w-24 sm:w-28">
-                  {miniTiles.map(v => (
-                    <VideoTile
-                      key={v.id}
-                      stream={v.stream}
-                      name={v.name}
-                      self={v.isSelf}
-                      micMuted={v.micMuted}
-                      cameraOff={v.cameraOff}
-                      connecting={v.connecting}
-                      volume={v.isSelf ? 1 : volume}
-                      level={levels[v.id] || 0}
-                      mutedForMe={!v.isSelf && mutedForMe.has(v.id)}
-                      mini
-                      onToggleFocus={() => handleFocusToggle(v.id)}
-                    />
-                  ))}
+          {/* Unified, stable render tree: every VideoTile instance stays
+              mounted across focus changes, the wrapper's style is swapped
+              instead of swapping parent divs. Keeping the underlying
+              <video> element alive is what stops the local preview from
+              freezing on mobile when the user taps between tiles quickly. */}
+          <div
+            className={focusedTile ? 'relative' : 'grid gap-2 items-center'}
+            style={focusedTile ? undefined : {
+              gridTemplateColumns: videoTiles.length === 1 ? '1fr' : videoTiles.length === 2 ? '1fr 1fr' : 'repeat(2, 1fr)',
+            }}
+          >
+            {videoTiles.map(v => {
+              const isFocused = focusedTile?.id === v.id
+              const isMini = !!focusedTile && !isFocused
+              // Stable mini stacking: compute the index within the mini
+              // list so each tile gets a predictable top offset.
+              const miniIdx = isMini && focusedTile
+                ? videoTiles.filter(t => t.id !== focusedTile.id).findIndex(t => t.id === v.id)
+                : -1
+              // MINI_SLOT is the per-tile vertical footprint (tile height +
+              // gap). Width is fixed at 96px, mini aspect is 16/9 → height
+              // ≈ 54, plus 6px gap ≈ 60.
+              const wrapperStyle: React.CSSProperties | undefined = focusedTile
+                ? (isFocused
+                    ? { position: 'relative', zIndex: 1, width: '100%' }
+                    : {
+                        position: 'absolute',
+                        top: `${8 + miniIdx * 60}px`,
+                        left: '8px',
+                        width: '96px',
+                        zIndex: 10,
+                      })
+                : undefined
+              return (
+                <div key={v.id} style={wrapperStyle}>
+                  <VideoTile
+                    stream={v.stream}
+                    name={v.name}
+                    self={v.isSelf}
+                    micMuted={v.micMuted}
+                    cameraOff={v.cameraOff}
+                    connecting={v.connecting}
+                    volume={v.isSelf ? 1 : volume}
+                    level={levels[v.id] || 0}
+                    mutedForMe={!v.isSelf && mutedForMe.has(v.id)}
+                    onToggleMutedForMe={v.isSelf ? undefined : () => togglePeerMute(v.id)}
+                    focused={isFocused}
+                    mini={isMini}
+                    onToggleFocus={isFocused ? handleUnfocus : () => handleFocusToggle(v.id)}
+                  />
                 </div>
-              )}
-            </div>
-          ) : (
-            <div
-              className="grid gap-2 items-center"
-              style={{
-                gridTemplateColumns: videoTiles.length === 1 ? '1fr' : videoTiles.length === 2 ? '1fr 1fr' : 'repeat(2, 1fr)',
-              }}
-            >
-              {videoTiles.map(v => (
-                <VideoTile
-                  key={v.id}
-                  stream={v.stream}
-                  name={v.name}
-                  self={v.isSelf}
-                  micMuted={v.micMuted}
-                  cameraOff={v.cameraOff}
-                  connecting={v.connecting}
-                  volume={v.isSelf ? 1 : volume}
-                  level={levels[v.id] || 0}
-                  mutedForMe={!v.isSelf && mutedForMe.has(v.id)}
-                  onToggleMutedForMe={v.isSelf ? undefined : () => togglePeerMute(v.id)}
-                  onToggleFocus={() => handleFocusToggle(v.id)}
-                />
-              ))}
-            </div>
-          )}
+              )
+            })}
+          </div>
         </div>
       )}
 

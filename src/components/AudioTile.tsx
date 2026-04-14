@@ -70,13 +70,13 @@ export default function AudioTile({ stream, name, self = false, micMuted = false
         <button
           type="button"
           onClick={onToggleMutedForMe}
-          className={`shrink-0 w-5 h-5 rounded-md flex items-center justify-center transition-colors ${
+          className={`shrink-0 w-9 h-9 sm:w-6 sm:h-6 rounded-md flex items-center justify-center transition-colors ${
             mutedForMe ? 'text-danger hover:bg-danger/10' : 'text-muted hover:text-accent hover:bg-accent/10'
           }`}
           title={mutedForMe ? 'Unmute for me' : 'Mute for me'}
           aria-label={mutedForMe ? 'Unmute for me' : 'Mute for me'}
         >
-          {mutedForMe ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+          {mutedForMe ? <VolumeX className="w-4 h-4 sm:w-3 sm:h-3" /> : <Volume2 className="w-4 h-4 sm:w-3 sm:h-3" />}
         </button>
       )}
 
