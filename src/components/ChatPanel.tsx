@@ -2,25 +2,13 @@ import React, { useState, useReducer, useRef, useEffect, useCallback, useMemo } 
 import { createPortal } from 'react-dom'
 import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, Minimize2, MoreVertical, ExternalLink, Mic, Play, Pause } from 'lucide-react'
 import { sounds, canNotify, requestNotificationPermission, alertNewMessage } from '../utils/notifications'
+import { URL_REGEX, safeUrl } from '../utils/url'
 import { ChatMessage } from '../types'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
-const URL_REGEX = /(https?:\/\/[^\s<>"']+[^\s<>"'.,;:!?\])}>])/
 
 interface LinkifyProps {
   text: string
-}
-
-function safeUrl(raw: string): string {
-  try {
-    const u = new URL(raw)
-    // Allowlist — regex already restricts to http(s), but defense-in-depth in
-    // case the regex is ever relaxed.
-    if (u.protocol === 'http:' || u.protocol === 'https:') return u.toString()
-    return '#'
-  } catch {
-    return '#'
-  }
 }
 
 function Linkify({ text }: LinkifyProps) {
