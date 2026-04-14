@@ -1,17 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { getSharedAudioContext } from '../utils/audioContext'
+import { getSharedAudioContext, ensureAudioContextRunning } from '../utils/audioContext'
 
-// Tracks audio loudness (0–1) for an arbitrary set of MediaStreams using the
-// shared AudioContext. Returns a stable map keyed by an opaque id chosen by
-// the caller (peerId, 'self', etc.).
+// Tracks audio loudness (0–1) for an arbitrary set of MediaStreams using
+// the shared AudioContext. Returns a stable map keyed by an opaque id
+// chosen by the caller (peerId, 'self', etc.).
 //
 // One analyser per stream is unavoidable, but they all share a single
-// AudioContext — which is the resource that browsers cap. Analyser nodes
-// themselves are cheap.
-//
-// `activeId` (optional): if provided, only that id is sampled. Useful when
-// you want a single rAF loop following the spotlight rather than every tile.
-// Pass `null`/undefined to sample everything.
+// AudioContext — the capped resource. Analyser nodes themselves are cheap.
 
 export interface StreamEntry {
   id: string
@@ -85,6 +80,15 @@ export function useSpeakingLevels(entries: StreamEntry[]): Record<string, number
     })
 
     const tick = (): void => {
+      // P4: skip the math entirely while the shared AudioContext is
+      // suspended (tab backgrounded, browser autoplay policy, OS audio
+      // ducking). Analysers return stale zeros in that state and we'd
+      // just be spinning. The rAF continues at the browser's throttled
+      // rate so we resume sampling as soon as the context wakes.
+      if (ctx.state !== 'running') {
+        rafRef.current = requestAnimationFrame(tick)
+        return
+      }
       const now = performance.now()
       if (now - lastSampleRef.current >= POLL_INTERVAL_MS) {
         lastSampleRef.current = now
@@ -118,6 +122,11 @@ export function useSpeakingLevels(entries: StreamEntry[]): Record<string, number
     }
 
     if (slotsRef.current.size > 0) {
+      // Best-effort: if the context was suspended (returning from a hidden
+      // tab, say), try to resume. Browsers block silent resumes without a
+      // user gesture so this often no-ops — the tick guard above handles
+      // that case by skipping samples until the context wakes naturally.
+      ensureAudioContextRunning()
       rafRef.current = requestAnimationFrame(tick)
     }
 

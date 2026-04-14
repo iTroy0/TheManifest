@@ -239,15 +239,39 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
   const controlButtonBase = 'flex items-center justify-center w-10 h-10 sm:w-7 sm:h-7 rounded-md backdrop-blur-sm transition-colors'
   const controlIconSize = 'w-4 h-4 sm:w-3 sm:h-3'
 
+  // U3: keyboard accessibility. A clickable tile is reachable via Tab,
+  // announces itself via aria-label, and toggles focus on Enter/Space.
+  // We keep role="button" despite the nested <button>s in the control
+  // cluster because the primary affordance of the tile IS click-to-focus;
+  // screen readers announce nested interactive children anyway.
+  const interactive = clickable && !isFullscreen
+  const onKeyDown = interactive
+    ? (e: React.KeyboardEvent<HTMLDivElement>): void => {
+        if (e.target !== e.currentTarget) return // nested button handled it
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          handleClick()
+        }
+      }
+    : undefined
+  const ariaLabel = interactive
+    ? `${name}${self ? ' (you)' : ''}. ${focused ? 'Focused tile. Press Enter or Escape to unfocus.' : 'Press Enter to focus.'}`
+    : undefined
+
   return (
     <div
       ref={containerRef}
-      onClick={clickable && !isFullscreen ? handleClick : undefined}
+      onClick={interactive ? handleClick : undefined}
+      onKeyDown={onKeyDown}
+      tabIndex={interactive ? 0 : undefined}
+      role={interactive ? 'button' : undefined}
+      aria-pressed={interactive ? focused : undefined}
+      aria-label={ariaLabel}
       style={{ aspectRatio: isFullscreen ? undefined : `${effectiveAspect}`, maxHeight }}
       className={`relative w-full rounded-xl overflow-hidden bg-surface-2/80 border border-border group ${
-        clickable && !isFullscreen ? 'cursor-pointer hover:border-accent/60 transition-colors' : ''
+        interactive ? 'cursor-pointer hover:border-accent/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg' : ''
       } ${focused ? 'ring-2 ring-accent/60' : ''} ${isSpeaking ? 'shadow-[0_0_0_2px_rgba(100,255,218,0.45)]' : ''}`}
-      title={clickable && !isFullscreen ? (focused ? 'Click to unfocus' : 'Click to focus') : undefined}
+      title={interactive ? (focused ? 'Click to unfocus' : 'Click to focus') : undefined}
     >
       <video
         ref={videoRef}

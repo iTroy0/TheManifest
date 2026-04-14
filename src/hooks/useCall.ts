@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Peer, { MediaConnection } from 'peerjs'
 import { UseLocalMediaReturn, LocalMediaMode } from './useLocalMedia'
 
@@ -6,11 +6,8 @@ import { UseLocalMediaReturn, LocalMediaMode } from './useLocalMedia'
 
 export type CallMode = 'audio' | 'video'
 
-// Per-peer roster entry. `mode` is the *current* publishing mode and is
-// updated live as peers turn their cameras on/off — it is NOT frozen at
-// join time. `hasVideo` is the lower-level truth derived from the actual
-// MediaStream, which we use as a fallback when track-state messages haven't
-// arrived yet.
+// Per-peer roster entry. `mode` is the current publishing mode, updated
+// live as peers turn their cameras on/off — not frozen at join time.
 export interface RemotePeer {
   peerId: string
   name: string
@@ -87,6 +84,8 @@ function classifyMediaError(e: unknown): CallError {
     case 'NotReadableError':
     case 'TrackStartError':
       return { code: 'device-in-use', message: 'Your microphone is in use by another app. Close it and try again.', recoverable: true }
+    case 'TimeoutError':
+      return { code: 'media-failed', message: msg || "Timed out waiting for media access. Check your browser's permission prompt and try again.", recoverable: true }
     default:
       return { code: 'media-failed', message: msg, recoverable: true }
   }
@@ -105,6 +104,8 @@ function liftLocalMediaError(err: { code: string; message: string }): CallError 
       return { code: 'device-in-use', message: err.message, recoverable: true }
     case 'overconstrained':
       return { code: 'overconstrained', message: err.message, recoverable: true }
+    case 'timeout':
+      return { code: 'media-failed', message: err.message, recoverable: true }
     case 'unsupported':
       return { code: 'media-failed', message: err.message, recoverable: false }
     default:
@@ -118,11 +119,56 @@ function streamHasLiveVideo(stream: MediaStream | null): boolean {
   return tracks.length > 0 && tracks.some(t => t.readyState !== 'ended')
 }
 
+// Minimum shape of a roster-snapshot entry sent by the host. We parse
+// with runtime checks rather than trusting a blind cast — a malformed
+// payload (wrong types, nested junk) could otherwise crash the signaling
+// handler and take the whole call lane down.
+interface RosterEntry {
+  peerId: string
+  name: string
+  mode: CallMode
+}
+
+function parseRosterSnapshot(input: unknown): RosterEntry[] {
+  if (!Array.isArray(input)) return []
+  const out: RosterEntry[] = []
+  for (const raw of input) {
+    if (!raw || typeof raw !== 'object') continue
+    const entry = raw as { peerId?: unknown; name?: unknown; mode?: unknown }
+    if (typeof entry.peerId !== 'string' || entry.peerId.length === 0) continue
+    const name = typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : 'Anon'
+    const mode: CallMode = entry.mode === 'video' ? 'video' : 'audio'
+    out.push({ peerId: entry.peerId, name, mode })
+  }
+  return out
+}
+
+// Per-peer retry state for an outbound MediaConnection that errored.
+// We make one silent retry after RETRY_DELAY_MS; a second failure (or any
+// failure while the peer is no longer in the roster) escalates to a user-
+// visible error banner.
+interface MediaConnRetry {
+  attempts: number
+  timer: ReturnType<typeof setTimeout> | null
+}
+
+const MEDIA_CONN_RETRY_DELAY_MS = 2_000
+const MEDIA_CONN_MAX_ATTEMPTS = 2 // initial + 1 retry
+// Grace window before pruning a peer from the host roster after their
+// DataConnection drops. Absorbs brief flaps without evicting a peer
+// that is about to reconnect.
+const GHOST_PRUNE_GRACE_MS = 3_000
+// Minimum gap between accepted call-track-state messages from the same
+// peer. Higher-frequency updates are silently dropped to prevent a
+// hostile (or buggy) peer from flooding the host with re-renders.
+const TRACK_STATE_MIN_INTERVAL_MS = 100
+
 // ── Hook ─────────────────────────────────────────────────────────────────
 
 export function useCall(options: UseCallOptions) {
   const {
     peer, myPeerId, myName, isHost, hostPeerId,
+    participants,
     sendToHost, sendToPeer, broadcast, setMessageHandler,
     localMedia,
   } = options
@@ -130,9 +176,8 @@ export function useCall(options: UseCallOptions) {
   const [joined, setJoined] = useState<boolean>(false)
   const [joining, setJoining] = useState<boolean>(false)
   const [mode, setMode] = useState<LocalMediaMode>('none')
-  // Internal call-layer errors (rejection, peer-unavailable, …). Local-media
-  // errors come in via `localMedia.error` and we merge them into the public
-  // `error` field below so consumers only watch one surface.
+  // Call-layer errors only. Local-media errors are merged into the public
+  // `error` field below via liftLocalMediaError.
   const [callError, setCallError] = useState<CallError | null>(null)
   const [endReason, setEndReason] = useState<CallEndReason | null>(null)
   const [roster, setRoster] = useState<Map<string, RemotePeer>>(new Map())
@@ -143,6 +188,10 @@ export function useCall(options: UseCallOptions) {
   const rosterRef = useRef<Map<string, RemotePeer>>(new Map())
   const myNameRef = useRef<string>(myName)
   const localStreamRef = useRef<MediaStream | null>(localMedia.stream)
+  // Mirrors localMedia.micMuted so effects can read the current value
+  // without subscribing to it in their deps (which would re-run them on
+  // every mute toggle even when they only care about mode).
+  const micMutedRef = useRef<boolean>(localMedia.micMuted)
   const hostPeerIdRef = useRef<string | null>(hostPeerId)
   // Per-join token. Any async work that captures this value can compare it
   // to the current ref to detect a stale join attempt.
@@ -152,12 +201,26 @@ export function useCall(options: UseCallOptions) {
   // claim a channel when joining as a non-host (the host's peerId is
   // stable per-tab, so two host tabs can't be in the same room anyway).
   const tabChannelRef = useRef<BroadcastChannel | null>(null)
+  // Per-peer retry state for outbound MediaConnection errors. Keyed by
+  // peerId so retries are independent. We clear the entry on success
+  // and on roster removal; any pending timer is cancelled if the hook
+  // unmounts or the user leaves the call.
+  const mediaConnRetryRef = useRef<Map<string, MediaConnRetry>>(new Map())
+  // Host-side: pending "peer is gone" prunes that are waiting out the
+  // grace window. If the peer reappears in `participants` within the
+  // window we cancel the timer; otherwise it fires and removes them.
+  const pruneTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  // Per-peer last-accepted timestamp for call-track-state messages. Used
+  // as a simple rate-limit to drop high-frequency spam before it triggers
+  // setRoster re-renders.
+  const lastTrackStateAtRef = useRef<Map<string, number>>(new Map())
 
   useEffect(() => { joinedRef.current = joined }, [joined])
   useEffect(() => { modeRef.current = mode }, [mode])
   useEffect(() => { rosterRef.current = roster }, [roster])
   useEffect(() => { myNameRef.current = myName }, [myName])
   useEffect(() => { localStreamRef.current = localMedia.stream }, [localMedia.stream])
+  useEffect(() => { micMutedRef.current = localMedia.micMuted }, [localMedia.micMuted])
   useEffect(() => { hostPeerIdRef.current = hostPeerId }, [hostPeerId])
 
   // ── Roster helpers ─────────────────────────────────────────────────────
@@ -186,6 +249,14 @@ export function useCall(options: UseCallOptions) {
       next.delete(peerId)
       return next
     })
+    // Drop the rate-limit bookkeeping for this peer.
+    lastTrackStateAtRef.current.delete(peerId)
+  }, [])
+
+  const clearRetryState = useCallback((peerId: string): void => {
+    const existing = mediaConnRetryRef.current.get(peerId)
+    if (existing?.timer) { clearTimeout(existing.timer) }
+    mediaConnRetryRef.current.delete(peerId)
   }, [])
 
   const closeMediaConn = useCallback((peerId: string): void => {
@@ -194,23 +265,44 @@ export function useCall(options: UseCallOptions) {
       try { mc.close() } catch {}
       mediaConnsRef.current.delete(peerId)
     }
-  }, [])
+    clearRetryState(peerId)
+  }, [clearRetryState])
 
-  // ── Soft cap (informational only) ──────────────────────────────────────
+  // ── Memoized derivations — avoid a new array on every parent render ───
+  // P1/P2: `roster` is a Map whose identity only changes on actual
+  // mutation, so memoizing the derived array and counts keeps downstream
+  // `useMemo`s (notably `speakingEntries` in CallPanel) stable.
 
-  const videoTileCount = Array.from(roster.values()).filter(p => p.mode === 'video').length
-    + (mode === 'video' ? 1 : 0)
+  const remotePeers = useMemo(() => Array.from(roster.values()), [roster])
+
+  const videoTileCount = useMemo(() => {
+    let count = 0
+    roster.forEach(p => { if (p.mode === 'video') count++ })
+    if (mode === 'video') count++
+    return count
+  }, [roster, mode])
+
   const overSoftVideoCap = videoTileCount > SOFT_VIDEO_CAP
 
   // ── Outgoing: call a specific peer ─────────────────────────────────────
 
-  const callPeerWithStream = useCallback((peerId: string, stream: MediaStream, myMode: CallMode): void => {
+  // Ref to the latest `callPeerWithStream` so the retry timer scheduled
+  // inside `mc.on('error')` can re-invoke it without capturing a stale
+  // closure identity. The function depends on `peer`/`myPeerId` which are
+  // effectively stable per session, but going through a ref makes the
+  // recursion safe under any re-creation.
+  type CallPeerFn = (peerId: string, stream: MediaStream, myMode: CallMode) => void
+  const callPeerWithStreamRef = useRef<CallPeerFn | null>(null)
+
+  const callPeerWithStream = useCallback<CallPeerFn>((peerId, stream, myMode) => {
     if (!peer || peerId === myPeerId) return
     if (mediaConnsRef.current.has(peerId)) return
     try {
       const mc = peer.call(peerId, stream, { metadata: { kind: 'manifest-call', mode: myMode, name: myNameRef.current } })
       mediaConnsRef.current.set(peerId, mc)
       mc.on('stream', (remoteStream: MediaStream) => {
+        // A successful stream clears any prior retry state for this peer.
+        clearRetryState(peerId)
         upsertRoster(peerId, {
           stream: remoteStream,
           mode: streamHasLiveVideo(remoteStream) ? 'video' : 'audio',
@@ -223,11 +315,39 @@ export function useCall(options: UseCallOptions) {
       mc.on('error', (err: unknown) => {
         mediaConnsRef.current.delete(peerId)
         upsertRoster(peerId, { stream: null })
-        // Surface a scoped error so the user knows which peer dropped.
-        // We don't override a more important global error if one already exists.
+
+        // One-shot retry: transient media errors (ICE glitch, TURN reroute)
+        // often recover within a few seconds. A second failure escalates.
+        const prev = mediaConnRetryRef.current.get(peerId)
+        const attempts = (prev?.attempts ?? 0) + 1
+        if (prev?.timer) { clearTimeout(prev.timer); prev.timer = null }
+
+        if (attempts < MEDIA_CONN_MAX_ATTEMPTS) {
+          console.warn('media connection error (will retry)', peerId, err)
+          const timer = setTimeout(() => {
+            const slot = mediaConnRetryRef.current.get(peerId)
+            if (slot) slot.timer = null
+            // Re-verify the retry is still valid when the timer fires.
+            if (!joinedRef.current) return
+            if (!rosterRef.current.has(peerId)) return
+            if (mediaConnsRef.current.has(peerId)) return
+            const currentStream = localStreamRef.current
+            if (!currentStream) return
+            const currentMode = modeRef.current
+            if (currentMode === 'none') return
+            const fn = callPeerWithStreamRef.current
+            fn?.(peerId, currentStream, currentMode)
+          }, MEDIA_CONN_RETRY_DELAY_MS)
+          mediaConnRetryRef.current.set(peerId, { attempts, timer })
+          return
+        }
+
+        // Exhausted: escalate to banner and reset retry state so a future
+        // manual action can try again from zero.
+        clearRetryState(peerId)
         const peerName = rosterRef.current.get(peerId)?.name || 'A peer'
-        console.warn('media connection error', peerId, err)
-        setCallError(prev => prev ?? {
+        console.warn('media connection error (giving up)', peerId, err)
+        setCallError(existing => existing ?? {
           code: 'media-conn-failed',
           message: `Lost media connection to ${peerName}.`,
           recoverable: true,
@@ -244,7 +364,9 @@ export function useCall(options: UseCallOptions) {
         peerId,
       })
     }
-  }, [peer, myPeerId, upsertRoster])
+  }, [peer, myPeerId, upsertRoster, clearRetryState])
+
+  useEffect(() => { callPeerWithStreamRef.current = callPeerWithStream }, [callPeerWithStream])
 
   // ── Incoming: answer media calls ───────────────────────────────────────
   // peerjs does not implement EventEmitter.off() reliably across versions, so
@@ -406,11 +528,17 @@ export function useCall(options: UseCallOptions) {
 
   // ── Local mode change → reconnect media ────────────────────────────────
   // When the user toggles their camera on or off, the local stream gains or
-  // loses a video track. RTCPeerConnection sender lists are negotiated up-front
-  // and peerjs has no public renegotiation API, so the honest fix is to close
-  // the existing media connections and re-call everyone with the new stream.
-  // The brief audio drop is the cost — alternative approaches that fudge the
-  // black-frame state cause more confusion than they save.
+  // loses a video track. RTCPeerConnection sender lists are negotiated
+  // up-front and peerjs has no public renegotiation API, so the honest fix
+  // is to close the existing media connections and re-call everyone with
+  // the new stream. The brief audio drop is the cost — alternative
+  // approaches that fudge the black-frame state cause more confusion than
+  // they save.
+  //
+  // The deps list is narrowed to `localMedia.mode` only; stream identity
+  // and mic-mute state are read through refs. Stream-identity-only changes
+  // (device swap) are handled by the track hot-swap effect below, and
+  // mic-only changes are noise for this effect.
   useEffect(() => {
     if (!joinedRef.current) return
     const newMode: LocalMediaMode = localMedia.mode
@@ -420,7 +548,7 @@ export function useCall(options: UseCallOptions) {
     modeRef.current = newMode
     setMode(newMode)
 
-    const stream = localMedia.stream
+    const stream = localStreamRef.current
     if (!stream) return
 
     // Snapshot existing peer ids before tearing down (which mutates the map).
@@ -429,6 +557,8 @@ export function useCall(options: UseCallOptions) {
       const mc = mediaConnsRef.current.get(pid)
       if (mc) { try { mc.close() } catch {} }
       mediaConnsRef.current.delete(pid)
+      // A reconnect invalidates any retry state for this peer — start fresh.
+      clearRetryState(pid)
     })
     // Re-call every roster member with the new stream.
     rosterRef.current.forEach((_, pid) => {
@@ -437,20 +567,42 @@ export function useCall(options: UseCallOptions) {
     // Tell everyone our new track-state so their tile renders the right kind.
     const payload = {
       type: 'call-track-state',
-      micMuted: localMedia.micMuted,
+      micMuted: micMutedRef.current,
       cameraOff: newMode !== 'video',
       mode: newMode,
       from: myPeerId,
     }
     if (isHost) broadcast?.(payload)
     else sendToHost?.(payload)
-  }, [localMedia.mode, localMedia.stream, localMedia.micMuted, isHost, broadcast, sendToHost, myPeerId, callPeerWithStream])
+  }, [localMedia.mode, isHost, broadcast, sendToHost, myPeerId, callPeerWithStream, clearRetryState])
 
   // ── Signaling message handler ──────────────────────────────────────────
 
   useEffect(() => {
     const handler = (fromPeerId: string, msg: Record<string, unknown>): void => {
       const type = msg.type as string
+
+      // S4 — If the sender stamped a `from` field, it must match the
+      // transport-layer peer id. A mismatch indicates a relay bug or a
+      // spoof attempt; drop it either way. Messages without `from` are
+      // passed through (not all senders populate it).
+      const claimedFrom = msg.from
+      if (typeof claimedFrom === 'string' && claimedFrom !== fromPeerId) {
+        console.warn('Dropping call message with mismatched from field', { transport: fromPeerId, claimed: claimedFrom, type })
+        return
+      }
+
+      // S5 — Rate-limit call-track-state per peer. Humans toggle mute at
+      // human speed; anything faster is noise or abuse and is dropped
+      // before it reaches the roster setState path.
+      if (type === 'call-track-state') {
+        const now = performance.now()
+        const last = lastTrackStateAtRef.current.get(fromPeerId) ?? 0
+        if (now - last < TRACK_STATE_MIN_INTERVAL_MS) {
+          return
+        }
+        lastTrackStateAtRef.current.set(fromPeerId, now)
+      }
 
       // ── Host-side ─────────────────────────────────────────────────────
 
@@ -497,7 +649,7 @@ export function useCall(options: UseCallOptions) {
           console.warn('Ignoring call-roster from non-host', fromPeerId)
           return
         }
-        const peers = (msg.peers as Array<{ peerId: string; name: string; mode: CallMode }>) || []
+        const peers = parseRosterSnapshot(msg.peers)
         peers.forEach(p => { upsertRoster(p.peerId, { name: p.name, mode: p.mode, cameraOff: p.mode !== 'video' }) })
         const stream = localStreamRef.current
         if (stream && modeRef.current !== 'none') {
@@ -558,7 +710,9 @@ export function useCall(options: UseCallOptions) {
         setEndReason('rejected')
         setJoining(false)
         if (modeRef.current !== 'none') {
-          localMedia.stop()
+          // Read localMedia.stop through a ref so this effect doesn't
+          // depend on the (unstable-identity) localMedia return object.
+          try { localMediaStopRef.current() } catch {}
           setMode('none')
         }
         return
@@ -566,7 +720,7 @@ export function useCall(options: UseCallOptions) {
     }
     setMessageHandler(handler)
     return () => { setMessageHandler(null) }
-  }, [isHost, myPeerId, sendToPeer, broadcast, setMessageHandler, upsertRoster, removeFromRoster, closeMediaConn, callPeerWithStream, localMedia])
+  }, [isHost, myPeerId, sendToPeer, broadcast, setMessageHandler, upsertRoster, removeFromRoster, closeMediaConn, callPeerWithStream])
 
   // ── Actions ────────────────────────────────────────────────────────────
 
@@ -655,19 +809,37 @@ export function useCall(options: UseCallOptions) {
       setJoined(true)
       joinedRef.current = true
     } catch (e) {
+      // Release the duplicate-tab claim that we optimistically took before
+      // the media prompt. Without this, a failed join leaves the tab
+      // channel dangling and every retry sees itself as a sibling conflict.
+      if (tabChannelRef.current) {
+        try { tabChannelRef.current.close() } catch {}
+        tabChannelRef.current = null
+      }
+      // AbortError comes from useLocalMedia when the attempt was
+      // superseded (e.g., the user hit Leave during the permission prompt,
+      // or the component unmounted). Don't surface it as an error banner.
+      if ((e as Error).name === 'AbortError') return
       const err = classifyMediaError(e)
       setCallError(err)
       setEndReason(null) // join failure isn't a "call ended"
     } finally {
       if (joinAttemptRef.current === attempt) setJoining(false)
     }
-  }, [peer, myPeerId, joining, localMedia, isHost, broadcast, sendToHost, callPeerWithStream])
+  }, [peer, myPeerId, joining, localMedia, isHost, hostPeerId, broadcast, sendToHost, callPeerWithStream])
 
   const leave = useCallback((reason: CallEndReason = 'user-left'): void => {
     // Invalidate any in-flight join attempt.
     joinAttemptRef.current = Symbol('leave')
     mediaConnsRef.current.forEach(mc => { try { mc.close() } catch {} })
     mediaConnsRef.current.clear()
+    // Drop any pending retry / ghost-prune work so a rejoin starts clean.
+    mediaConnRetryRef.current.forEach(slot => {
+      if (slot.timer) { try { clearTimeout(slot.timer) } catch {} }
+    })
+    mediaConnRetryRef.current.clear()
+    pruneTimersRef.current.forEach(timer => { try { clearTimeout(timer) } catch {} })
+    pruneTimersRef.current.clear()
     if (joinedRef.current) {
       if (isHost) {
         broadcast?.({ type: 'call-peer-left', peerId: myPeerId, from: myPeerId })
@@ -675,6 +847,12 @@ export function useCall(options: UseCallOptions) {
         sendToHost?.({ type: 'call-leave', from: myPeerId })
       }
     }
+    // Flip joinedRef BEFORE calling localMedia.stop() so the mode-watcher
+    // effect (which guards on joinedRef.current to tell user-initiated
+    // leaves apart from involuntary device loss) sees the correct value
+    // when it re-runs after localMedia's state update.
+    setJoined(false)
+    joinedRef.current = false
     // Release the duplicate-tab claim so a sibling tab can take over.
     if (tabChannelRef.current) {
       try { tabChannelRef.current.close() } catch {}
@@ -683,8 +861,6 @@ export function useCall(options: UseCallOptions) {
     localMedia.stop()
     setMode('none')
     modeRef.current = 'none'
-    setJoined(false)
-    joinedRef.current = false
     setRoster(new Map())
     setEndReason(reason)
   }, [isHost, broadcast, sendToHost, myPeerId, localMedia])
@@ -693,15 +869,14 @@ export function useCall(options: UseCallOptions) {
     setEndReason(null)
   }, [])
 
-  // Clear both layers. localMedia.error gets reset by the next start()
-  // attempt; until then dismissing only the call-layer copy is enough.
+  // Dismissing clears the call-layer copy; localMedia.error resets on the
+  // next start() attempt, so no explicit wiring is needed for it.
   const dismissError = useCallback((): void => {
     setCallError(null)
   }, [])
 
-  // Merge call-layer + media-layer errors into one surface for the UI.
-  // Call-layer errors take priority because they're usually about a
-  // specific remote (more time-sensitive); media errors fall through.
+  // Public error surface: call-layer wins over media-layer (call-layer is
+  // usually scoped to a specific peer and more time-sensitive).
   const error: CallError | null = callError
     ?? (localMedia.error ? liftLocalMediaError(localMedia.error) : null)
 
@@ -715,9 +890,71 @@ export function useCall(options: UseCallOptions) {
     void localMedia.toggleCamera()
   }, [localMedia])
 
-  // Broadcast track state changes so remote peers can show mute icons.
-  // Mode changes are handled by the mode-reconnect effect above (which also
-  // emits a track-state message), so this effect handles mic-only changes.
+  // Involuntary media loss: if useLocalMedia transitions to 'none' while
+  // we're joined, the device died on us (mic unplugged, permission revoked,
+  // both tracks ended). Treat as an involuntary leave. useLocalMedia has
+  // already set an error banner that the merged `error` field will surface.
+  //
+  // Note: during a normal user-initiated leave(), joinedRef.current is
+  // flipped to false *before* localMedia.stop() runs, so the guard below
+  // bails and we don't double-fire with the wrong reason.
+  useEffect(() => {
+    if (!joinedRef.current) return
+    if (localMedia.mode !== 'none') return
+    leave('error')
+  }, [localMedia.mode, leave])
+
+  // ── Host: prune ghost peers when their DataConnection dies ─────────────
+  // The host's useSender owns DataConnection lifecycle and exposes the
+  // current live set via `participants`. When a peer's data channel drops
+  // but their RTCPeerConnection is still stuck on TURN, we'd otherwise
+  // render them as a "ghost" tile forever. We prune them with a grace
+  // window so brief network flaps don't evict a reconnecting peer.
+  //
+  // Only the host runs this — non-hosts get their signaling lifecycle
+  // driven by the `peer` identity change in useReceiver, which triggers
+  // the cleanup effect below.
+  useEffect(() => {
+    if (!isHost) return
+    if (!joinedRef.current) return
+
+    const aliveIds = new Set(participants.map(p => p.peerId))
+    const timers = pruneTimersRef.current
+
+    rosterRef.current.forEach((_, pid) => {
+      if (pid === myPeerId) return
+      if (aliveIds.has(pid)) {
+        // Peer is alive (or came back within the grace window). Cancel
+        // any pending prune.
+        const pending = timers.get(pid)
+        if (pending) {
+          clearTimeout(pending)
+          timers.delete(pid)
+        }
+        return
+      }
+      // Peer is gone from the data layer. Schedule the prune, but only
+      // if we haven't already scheduled one for this peer.
+      if (timers.has(pid)) return
+      const timer = setTimeout(() => {
+        timers.delete(pid)
+        if (!joinedRef.current) return
+        if (!rosterRef.current.has(pid)) return
+        // One last guard: if by the time the timer fires the peer is back
+        // (participants updated between schedule and fire), skip.
+        // Reading participants here is stale, so we just trust the timer —
+        // if they came back, the effect above would have cleared the timer.
+        closeMediaConn(pid)
+        removeFromRoster(pid)
+        // Tell remaining peers so their rosters also prune.
+        broadcast?.({ type: 'call-peer-left', peerId: pid, from: myPeerId })
+      }, GHOST_PRUNE_GRACE_MS)
+      timers.set(pid, timer)
+    })
+  }, [isHost, participants, myPeerId, closeMediaConn, removeFromRoster, broadcast])
+
+  // Mic-only track state broadcast. Mode changes emit their own payload
+  // from the mode-reconnect effect above, so this handles mute toggles.
   const prevMicMutedRef = useRef<boolean>(false)
   useEffect(() => {
     if (!joinedRef.current) return
@@ -744,6 +981,15 @@ export function useCall(options: UseCallOptions) {
     return () => {
       mediaConnsRef.current.forEach(mc => { try { mc.close() } catch {} })
       mediaConnsRef.current.clear()
+      // Cancel any in-flight media-conn retry timers.
+      mediaConnRetryRef.current.forEach(slot => {
+        if (slot.timer) { try { clearTimeout(slot.timer) } catch {} }
+      })
+      mediaConnRetryRef.current.clear()
+      // Cancel any in-flight ghost-prune timers.
+      pruneTimersRef.current.forEach(timer => { try { clearTimeout(timer) } catch {} })
+      pruneTimersRef.current.clear()
+      lastTrackStateAtRef.current.clear()
       if (tabChannelRef.current) {
         try { tabChannelRef.current.close() } catch {}
         tabChannelRef.current = null
@@ -768,7 +1014,7 @@ export function useCall(options: UseCallOptions) {
     endReason,
     dismissEndReason,
     dismissError,
-    remotePeers: Array.from(roster.values()),
+    remotePeers,
     videoTileCount,
     overSoftVideoCap,
     softVideoCap: SOFT_VIDEO_CAP,

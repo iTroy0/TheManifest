@@ -8,8 +8,7 @@ import { ensureAudioContextRunning } from '../utils/audioContext'
 import VideoTile from './VideoTile'
 import AudioTile from './AudioTile'
 
-// Lifecycle states the parent connection can be in. We accept the loose
-// receiver/sender status strings rather than imposing a tighter union here.
+// Loose union — receiver/sender status strings can grow without rippling.
 export type CallPanelConnectionStatus =
   | 'connecting'
   | 'retrying'
@@ -45,16 +44,11 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
   const { isMobile } = useViewport()
   const popout = usePopout({ defaultSize: POPOUT_DEFAULT, minSize: POPOUT_MIN })
   const { isPopout, pos: popoutPos, size: popoutSize, popOut, dockBack } = popout
-  // Master remote-volume (0–1). Applied to every remote tile. Ephemeral on
-  // purpose — we don't persist to localStorage (privacy ethos).
+  // Master remote-volume (0–1). Ephemeral on purpose — we don't persist it.
   const [volume, setVolume] = useState<number>(1)
   const lastNonZeroVolumeRef = useRef<number>(1)
-  // Manual focus state. When the user explicitly focuses a tile, auto
-  // active-speaker switching is suspended until they unfocus.
   const [manualFocusId, setManualFocusId] = useState<string | null>(null)
-  // Per-peer mute set — peers the local listener has silenced. Independent
-  // of the master volume slider and of the peer's own mic state. Cleared
-  // automatically when the peer leaves (filtered on read).
+  // Peers the local listener has silenced. Independent of master volume.
   const [mutedForMe, setMutedForMe] = useState<Set<string>>(new Set())
   const togglePeerMute = useCallback((peerId: string): void => {
     setMutedForMe(prev => {
@@ -64,6 +58,13 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
       return next
     })
   }, [])
+  // U2: dismissed state for the soft-cap informational banner. Reset
+  // automatically when the count drops back under the cap so subsequent
+  // surges re-surface the warning.
+  const [softCapDismissed, setSoftCapDismissed] = useState<boolean>(false)
+  useEffect(() => {
+    if (!call.overSoftVideoCap) setSoftCapDismissed(false)
+  }, [call.overSoftVideoCap])
 
   const handleVolumeChange = useCallback((v: number): void => {
     const clamped = Math.max(0, Math.min(1, v))
@@ -81,7 +82,6 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
     })
   }, [])
 
-  // When a call becomes active, auto-open the panel.
   useEffect(() => {
     if (call.joined && !open) setOpen(true)
   }, [call.joined, open])
@@ -104,18 +104,25 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
     }
   }, [isConnectionDead, call])
 
+  // U4: Escape-to-unfocus. Only subscribe while a tile is focused — keeps
+  // us out of the keyboard event bus when there's nothing to handle.
+  useEffect(() => {
+    if (!manualFocusId) return
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        setManualFocusId(null)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [manualFocusId])
+
   const remotePeers = call.remotePeers
-  // Tile classification is now derived from the peer's *current* mode (which
-  // useCall keeps in sync with track-state messages and stream contents),
-  // not a frozen-at-join-time value.
   const videoRemotes = remotePeers.filter(p => p.mode === 'video')
   const audioRemotes = remotePeers.filter(p => p.mode !== 'video')
   const showLocalVideo: boolean = call.mode === 'video'
 
-  // ── Speaking levels — single shared analyser graph for everyone ────────
-  // We sample every remote audio stream plus self (so the local "you're
-  // talking" hint stays accurate). Self is sampled but excluded from active-
-  // speaker auto-focus below.
+  // Speaking levels: one shared analyser graph drives every tile's pulse.
   const speakingEntries: StreamEntry[] = useMemo(() => {
     const entries: StreamEntry[] = []
     if (call.localStream && call.joined) {
@@ -125,8 +132,6 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
       entries.push({ id: p.peerId, stream: p.stream, skip: p.micMuted })
     })
     return entries
-    // localStream identity changes on restart; remotePeers re-derives on each
-    // roster mutation.
   }, [call.localStream, call.joined, call.micMuted, remotePeers])
 
   const levels = useSpeakingLevels(speakingEntries)
@@ -136,6 +141,9 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
 
   const renderPreJoin = (): React.ReactElement => {
     const lastReason = call.endReason
+    // U1: skip the banner for explicit user leaves — users who just tapped
+    // Leave know they left; surfacing it again is noise.
+    const showEndReason = lastReason !== null && lastReason !== 'user-left'
     return (
     <div className="flex flex-col items-center justify-center gap-5 py-6 px-4 text-center">
       <div className="w-14 h-14 rounded-2xl bg-accent/10 flex items-center justify-center ring-2 ring-accent/20">
@@ -146,14 +154,13 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         <p className="font-mono text-[10px] text-muted mt-1">Mic on, camera off — toggle anytime.</p>
       </div>
 
-      {/* Post-call reason banner. Honest about why we're back here. */}
-      {lastReason && (
+      {/* Post-call reason banner — only for unexpected ends. */}
+      {showEndReason && lastReason && (
         <div className="flex items-start gap-2 max-w-[300px] w-full bg-surface-2/60 border border-border rounded-lg px-3 py-2 text-left">
           <div className="shrink-0 mt-0.5">
             {lastReason === 'connection-lost' && <WifiOff className="w-3.5 h-3.5 text-warning" />}
             {lastReason === 'rejected' && <AlertTriangle className="w-3.5 h-3.5 text-danger" />}
             {lastReason === 'host-ended' && <PhoneOff className="w-3.5 h-3.5 text-muted" />}
-            {lastReason === 'user-left' && <PhoneOff className="w-3.5 h-3.5 text-muted" />}
             {lastReason === 'error' && <AlertTriangle className="w-3.5 h-3.5 text-danger" />}
           </div>
           <p className="flex-1 font-mono text-[10px] text-muted leading-relaxed">
@@ -189,15 +196,25 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
       <button
         type="button"
         onClick={() => { ensureAudioContextRunning(); void call.join() }}
-        disabled={disabled || call.joining || isConnectionDead}
+        disabled={disabled || call.joining || isConnectionDead || isReconnecting}
+        // U7/U8: explain WHY the button is unavailable so the user isn't
+        // staring at a dead button wondering what went wrong.
+        title={joinDisabledTooltip(disabled, call.joining, isConnectionDead, isReconnecting)}
         className="w-full max-w-[260px] flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-accent/15 hover:bg-accent/25 border border-accent/30 text-accent font-mono text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
       >
         {call.joining ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
         {call.joining ? 'Joining…' : 'Join Call'}
       </button>
 
+      {/* U6: pre-join status line reflects the true transport state. */}
       <p className="font-mono text-[10px] text-muted/60">
-        {remotePeers.length > 0 ? `${remotePeers.length} already in call` : 'No one is in the call yet'}
+        {isReconnecting
+          ? 'Reconnecting…'
+          : isConnectionDead
+          ? 'Connection closed'
+          : remotePeers.length > 0
+          ? `${remotePeers.length} already in call`
+          : 'No one is in the call yet'}
       </p>
     </div>
     )
@@ -238,13 +255,24 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         connecting: !p.stream,
       })
     })
-    // Focus is fully manual — auto active-speaker focus caused visible lag
-    // and flicker when the dominant speaker flipped, so it's gone. The
-    // speaking ring on each tile (driven by useSpeakingLevels) is kept.
+    // Focus is fully manual. Auto active-speaker focus was removed because
+    // the switching jitter hurt the UX more than the convenience helped.
     const effectiveFocus: string | null = manualFocusId && videoTiles.some(v => v.id === manualFocusId)
       ? manualFocusId
       : null
     const focusedTile: VideoTileInfo | null = effectiveFocus ? videoTiles.find(v => v.id === effectiveFocus) || null : null
+
+    // P3: precompute the mini-tile index in a single O(n) pass instead of
+    // doing an O(n) filter+findIndex inside every map iteration below.
+    const miniIndexById = new Map<string, number>()
+    if (focusedTile) {
+      let i = 0
+      for (const t of videoTiles) {
+        if (t.id !== focusedTile.id) {
+          miniIndexById.set(t.id, i++)
+        }
+      }
+    }
 
     const handleFocusToggle = (id: string): void => {
       setManualFocusId(prev => prev === id ? null : id)
@@ -252,8 +280,6 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
     const handleUnfocus = (): void => {
       setManualFocusId(null)
     }
-
-    const cameraButtonDisabled: boolean = call.cameraStarting
 
     return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -271,14 +297,23 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         </div>
       )}
 
-      {/* Soft cap warning — informational only; we don't block the join. */}
-      {call.overSoftVideoCap && (
+      {/* Soft cap warning — informational, dismissible per surge. */}
+      {call.overSoftVideoCap && !softCapDismissed && (
         <div className="px-3 pt-2">
           <div className="flex items-center gap-2 rounded-lg bg-info/10 border border-info/30 px-3 py-2">
             <AlertTriangle className="w-3.5 h-3.5 text-info shrink-0" />
             <p className="font-mono text-[10px] text-info/90 flex-1">
               {call.videoTileCount} video tiles — bandwidth may suffer above {call.softVideoCap}.
             </p>
+            <button
+              type="button"
+              onClick={() => setSoftCapDismissed(true)}
+              className="shrink-0 text-info/70 hover:text-info transition-colors"
+              aria-label="Dismiss bandwidth warning"
+              title="Dismiss"
+            >
+              <X className="w-3 h-3" />
+            </button>
           </div>
         </div>
       )}
@@ -299,11 +334,8 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
             {videoTiles.map(v => {
               const isFocused = focusedTile?.id === v.id
               const isMini = !!focusedTile && !isFocused
-              // Stable mini stacking: compute the index within the mini
-              // list so each tile gets a predictable top offset.
-              const miniIdx = isMini && focusedTile
-                ? videoTiles.filter(t => t.id !== focusedTile.id).findIndex(t => t.id === v.id)
-                : -1
+              // Stable mini stacking: predictable top offset per mini tile.
+              const miniIdx = isMini ? (miniIndexById.get(v.id) ?? -1) : -1
               // MINI_SLOT is the per-tile vertical footprint (tile height +
               // gap). Width is fixed at 96px, mini aspect is 16/9 → height
               // ≈ 54, plus 6px gap ≈ 60.
@@ -397,38 +429,33 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
       <div className="border-t border-border bg-surface-2/40 px-3 py-2">
         <div className="flex items-center justify-center gap-1.5 flex-wrap">
           <ControlButton
-            active={!call.micMuted}
             onClick={call.toggleMic}
             title={call.micMuted ? 'Unmute' : 'Mute'}
             icon={call.micMuted ? MicOff : Mic}
             danger={call.micMuted}
           />
           <ControlButton
-            active={!call.cameraOff}
             onClick={call.toggleCamera}
             title={call.cameraStarting ? 'Camera starting…' : call.cameraOff ? 'Turn camera on' : 'Turn camera off'}
             icon={call.cameraStarting ? Loader2 : call.cameraOff ? VideoOff : Video}
             danger={call.cameraOff}
-            disabled={cameraButtonDisabled}
+            disabled={call.cameraStarting}
             spinning={call.cameraStarting}
           />
           {call.mode === 'video' && call.cameraDevices.length > 1 && (
             <ControlButton
-              active
               onClick={() => { void call.flipCamera() }}
               title="Switch camera"
               icon={SwitchCamera}
             />
           )}
           <ControlButton
-            active={volume > 0}
             onClick={toggleSpeakerMute}
             title={volume === 0 ? 'Unmute speakers' : 'Mute speakers'}
             icon={volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2}
             danger={volume === 0}
           />
           <ControlButton
-            active={showSettings}
             onClick={() => setShowSettings(s => !s)}
             title="Settings"
             icon={Settings2}
@@ -595,18 +622,25 @@ function endReasonLabel(reason: NonNullable<UseCallReturn['endReason']>): string
   }
 }
 
+function joinDisabledTooltip(disabled: boolean, joining: boolean, connectionDead: boolean, reconnecting: boolean): string | undefined {
+  if (joining) return 'Joining — check your browser permission prompt'
+  if (reconnecting) return 'Reconnecting to the session…'
+  if (connectionDead) return 'Connection closed — refresh the page to rejoin'
+  if (disabled) return 'Not available right now'
+  return undefined
+}
+
 // ── Internal components ──────────────────────────────────────────────────
 
 interface ControlButtonProps {
   icon: React.ComponentType<{ className?: string }>
   onClick: () => void
   title: string
-  active?: boolean
   danger?: boolean
   disabled?: boolean
   spinning?: boolean
 }
-function ControlButton({ icon: Icon, onClick, title, active: _active = true, danger = false, disabled = false, spinning = false }: ControlButtonProps) {
+function ControlButton({ icon: Icon, onClick, title, danger = false, disabled = false, spinning = false }: ControlButtonProps) {
   return (
     <button
       type="button"
