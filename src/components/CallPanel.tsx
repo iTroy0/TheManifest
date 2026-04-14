@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera } from 'lucide-react'
 import { UseCallReturn } from '../hooks/useCall'
+import { useViewport } from '../hooks/useViewport'
 import VideoTile from './VideoTile'
 import AudioTile from './AudioTile'
 
@@ -23,7 +24,10 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
   const [popoutPos, setPopoutPos] = useState<PopoutPos | null>(null)
   const [popoutSize, setPopoutSize] = useState<PopoutSize>(POPOUT_DEFAULT)
   const [showSettings, setShowSettings] = useState<boolean>(false)
-  const [isMobile, setIsMobile] = useState<boolean>(false)
+  // Viewport detection is shared with other panels via useViewport. `isMobile`
+  // gates the popout and bumps control sizes; tile aspect is handled inside
+  // VideoTile via the source's natural dimensions.
+  const { isMobile } = useViewport()
   // Master remote-volume (0-1). Applied to every remote audio/video tile.
   // Ephemeral on purpose — we don't persist to localStorage (privacy ethos).
   const [volume, setVolume] = useState<number>(1)
@@ -33,22 +37,6 @@ export default function CallPanel({ call, myName, disabled = false }: CallPanelP
   const [focusedId, setFocusedId] = useState<string | null>(null)
 
   const popoutRef = useRef<HTMLDivElement | null>(null)
-
-  // Viewport detection: mobile gates the popout and bumps control sizes.
-  // Tile aspect is handled inside VideoTile itself via the source's natural
-  // dimensions, so we don't track orientation here anymore.
-  useEffect(() => {
-    const check = (): void => {
-      setIsMobile(window.innerWidth < 720)
-    }
-    check()
-    window.addEventListener('resize', check)
-    window.addEventListener('orientationchange', check)
-    return () => {
-      window.removeEventListener('resize', check)
-      window.removeEventListener('orientationchange', check)
-    }
-  }, [])
 
   const handleVolumeChange = useCallback((v: number): void => {
     const clamped = Math.max(0, Math.min(1, v))
