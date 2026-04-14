@@ -2,28 +2,10 @@ import React, { useState, useReducer, useRef, useEffect, useCallback, useMemo } 
 import { createPortal } from 'react-dom'
 import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, Minimize2, MoreVertical, ExternalLink, Mic, Play, Pause } from 'lucide-react'
 import { sounds, canNotify, requestNotificationPermission, alertNewMessage } from '../utils/notifications'
-import { URL_REGEX, safeUrl } from '../utils/url'
+import Linkify from './chat/Linkify'
 import { ChatMessage } from '../types'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
-
-interface LinkifyProps {
-  text: string
-}
-
-function Linkify({ text }: LinkifyProps) {
-  if (!text) return null
-  const parts = text.split(URL_REGEX)
-  return (
-    <>
-      {parts.map((part, i) =>
-        URL_REGEX.test(part)
-          ? <a key={i} href={safeUrl(part)} target="_blank" rel="noopener noreferrer" className="text-info underline hover:text-info/80 break-all">{part}</a>
-          : part
-      )}
-    </>
-  )
-}
 
 const TYPING_DELAY_0 = { animationDelay: '0ms' }
 const TYPING_DELAY_1 = { animationDelay: '150ms' }
