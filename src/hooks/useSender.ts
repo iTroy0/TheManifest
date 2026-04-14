@@ -5,6 +5,12 @@ import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, enc
 import { STUN_ONLY } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { buildManifestData } from '../utils/manifest'
+import {
+  transferReducer,
+  connectionReducer,
+  initialTransfer,
+  initialConnection,
+} from './state/senderState'
 import { ChatMessage } from '../types'
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -50,71 +56,6 @@ interface ConnState {
   pendingRemoteKey?: Uint8Array | null
   keyExchangeTimeout?: ReturnType<typeof setTimeout>
   fingerprint?: string
-}
-
-// ── Transfer reducer ─────────────────────────────────────────────────────
-
-interface TransferState {
-  progress: Record<string, number>
-  overallProgress: number
-  speed: number
-  eta: number | null
-  currentFileIndex: number
-  totalSent: number
-}
-
-type TransferAction =
-  | { type: 'SET'; payload: Partial<TransferState> }
-  | { type: 'RESET' }
-
-const initialTransfer: TransferState = {
-  progress: {},
-  overallProgress: 0,
-  speed: 0,
-  eta: null,
-  currentFileIndex: -1,
-  totalSent: 0,
-}
-
-function transferReducer(state: TransferState, action: TransferAction): TransferState {
-  switch (action.type) {
-    case 'SET': return { ...state, ...action.payload }
-    case 'RESET': return initialTransfer
-    default: return state
-  }
-}
-
-// ── Connection reducer ───────────────────────────────────────────────────
-
-interface ConnectionState {
-  peerId: string | null
-  status: string
-  fingerprint: string | null
-  recipientCount: number
-}
-
-type ConnectionAction =
-  | { type: 'SET'; payload: Partial<ConnectionState> }
-  | { type: 'SET_STATUS'; payload: string | ((prev: string) => string) }
-  | { type: 'RESET' }
-
-const initialConnection: ConnectionState = {
-  peerId: null,
-  status: 'initializing',
-  fingerprint: null,
-  recipientCount: 0,
-}
-
-function connectionReducer(state: ConnectionState, action: ConnectionAction): ConnectionState {
-  switch (action.type) {
-    case 'SET': return { ...state, ...action.payload }
-    case 'SET_STATUS': {
-      const next = typeof action.payload === 'function' ? action.payload(state.status) : action.payload
-      return next === state.status ? state : { ...state, status: next }
-    }
-    case 'RESET': return initialConnection
-    default: return state
-  }
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────
