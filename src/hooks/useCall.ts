@@ -136,7 +136,6 @@ export function useCall(options: UseCallOptions) {
   const [callError, setCallError] = useState<CallError | null>(null)
   const [endReason, setEndReason] = useState<CallEndReason | null>(null)
   const [roster, setRoster] = useState<Map<string, RemotePeer>>(new Map())
-  const [activeSpeakerId, setActiveSpeakerId] = useState<string | null>(null)
 
   const mediaConnsRef = useRef<Map<string, MediaConnection>>(new Map())
   const joinedRef = useRef<boolean>(false)
@@ -687,7 +686,6 @@ export function useCall(options: UseCallOptions) {
     setJoined(false)
     joinedRef.current = false
     setRoster(new Map())
-    setActiveSpeakerId(null)
     setEndReason(reason)
   }, [isHost, broadcast, sendToHost, myPeerId, localMedia])
 
@@ -757,35 +755,10 @@ export function useCall(options: UseCallOptions) {
         setJoined(false)
         joinedRef.current = false
         setRoster(new Map())
-        setActiveSpeakerId(null)
         setEndReason('connection-lost')
       }
     }
   }, [peer])
-
-  // ── Active speaker selection ───────────────────────────────────────────
-  // CallPanel feeds us a peerId+level table; we apply hysteresis so the
-  // spotlight doesn't ping-pong between near-equal speakers.
-  const lastSpeakerSwitchRef = useRef<number>(0)
-  const reportSpeakingLevels = useCallback((levels: Record<string, number>): void => {
-    // Only consider levels above an audible threshold.
-    let bestId: string | null = null
-    let bestLevel = 0.12
-    for (const [id, level] of Object.entries(levels)) {
-      if (level > bestLevel) {
-        bestLevel = level
-        bestId = id
-      }
-    }
-    const now = performance.now()
-    setActiveSpeakerId(prev => {
-      if (bestId === prev) return prev
-      // Require 600ms of dominance before switching to avoid flicker.
-      if (now - lastSpeakerSwitchRef.current < 600 && prev !== null) return prev
-      lastSpeakerSwitchRef.current = now
-      return bestId
-    })
-  }, [])
 
   return {
     joined,
@@ -799,8 +772,6 @@ export function useCall(options: UseCallOptions) {
     videoTileCount,
     overSoftVideoCap,
     softVideoCap: SOFT_VIDEO_CAP,
-    activeSpeakerId,
-    reportSpeakingLevels,
     join,
     leave,
     toggleMic,

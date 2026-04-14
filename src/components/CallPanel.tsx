@@ -131,19 +131,6 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
 
   const levels = useSpeakingLevels(speakingEntries)
 
-  // Feed levels back to useCall for active-speaker selection. Only the
-  // remote levels matter for spotlight selection, AND we exclude peers
-  // the listener has muted — auto-focusing someone you can't hear would
-  // be misleading.
-  useEffect(() => {
-    const remoteOnly: Record<string, number> = {}
-    for (const [id, level] of Object.entries(levels)) {
-      if (id === 'self') continue
-      if (mutedForMe.has(id)) continue
-      remoteOnly[id] = level
-    }
-    call.reportSpeakingLevels(remoteOnly)
-  }, [levels, mutedForMe, call])
 
   // ── Pre-join screen ────────────────────────────────────────────────────
 
@@ -251,14 +238,12 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         connecting: !p.stream,
       })
     })
-    // Effective focus: manual override > auto active speaker (only when there
-    // are 2+ video tiles, since auto-focus is meaningless on a single tile).
-    const autoFocusId: string | null = videoTiles.length >= 2 && call.activeSpeakerId && videoTiles.some(v => v.id === call.activeSpeakerId)
-      ? call.activeSpeakerId
-      : null
+    // Focus is fully manual — auto active-speaker focus caused visible lag
+    // and flicker when the dominant speaker flipped, so it's gone. The
+    // speaking ring on each tile (driven by useSpeakingLevels) is kept.
     const effectiveFocus: string | null = manualFocusId && videoTiles.some(v => v.id === manualFocusId)
       ? manualFocusId
-      : autoFocusId
+      : null
     const focusedTile: VideoTileInfo | null = effectiveFocus ? videoTiles.find(v => v.id === effectiveFocus) || null : null
     const miniTiles: VideoTileInfo[] = focusedTile ? videoTiles.filter(v => v.id !== focusedTile.id) : []
 
