@@ -130,7 +130,9 @@ export function useCollabGuest(roomId: string) {
   const downloadTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
   // Active file transfers (when sending files to other peers)
-  const activeTransfersRef = useRef<Map<string, { fileId: string; aborted: boolean; paused: boolean; pauseResolver?: () => void }>>(new Map())
+  // targetPeerId === null means the transfer is going through the host relay;
+  // any other value is a direct mesh transfer to that specific guest.
+  const activeTransfersRef = useRef<Map<string, { fileId: string; targetPeerId: string | null; aborted: boolean; paused: boolean; pauseResolver?: () => void }>>(new Map())
 
   // Keep fresh reference to files state
   const filesRef = useRef(files)
@@ -300,12 +302,14 @@ export function useCollabGuest(roomId: string) {
     // host relay. If requester is another guest and mesh is missing, reject.
     let conn: DataConnection | null = null
     let key: CryptoKey | null = null
+    let targetPeerId: string | null = null
 
     if (requesterPeerId) {
       const mesh = peerConnectionsRef.current.get(requesterPeerId)
       if (mesh?.conn?.open && mesh.encryptKey) {
         conn = mesh.conn
         key = mesh.encryptKey
+        targetPeerId = requesterPeerId
       } else {
         // H7 — no direct mesh. Tell the requester we can't send (through host).
         if (decryptKeyRef.current && hostConnRef.current) {
@@ -329,8 +333,9 @@ export function useCollabGuest(roomId: string) {
 
     if (!conn || !key) return
 
-    // Create transfer state for this file
-    const transfer = { fileId, aborted: false, paused: false, pauseResolver: undefined as (() => void) | undefined }
+    // Create transfer state for this file, tagged with its target so
+    // teardownMesh can abort only the uploads that were going to a dead conn.
+    const transfer = { fileId, targetPeerId, aborted: false, paused: false, pauseResolver: undefined as (() => void) | undefined }
     activeTransfersRef.current.set(fileId, transfer)
 
     const chunker = new AdaptiveChunker()
@@ -421,11 +426,12 @@ export function useCollabGuest(roomId: string) {
       }
       entry.inProgressFiles.clear()
     }
-    // H10 — abort any outbound transfers on this conn so their pause loop exits.
+    // H10 — selectively abort outbound transfers whose target was this mesh
+    // peer. Transfers going through the host relay (targetPeerId === null) or
+    // to a different mesh peer are untouched.
     activeTransfersRef.current.forEach(t => {
-      // We can't easily match transfer→conn here; the outer close path will
-      // handle any uploads still using this connection when send() throws.
-      // Unblock paused transfers so they can check `aborted` and exit.
+      if (t.targetPeerId !== peerId) return
+      t.aborted = true
       if (t.pauseResolver) { t.pauseResolver(); t.pauseResolver = undefined }
     })
     if (entry.conn) {
@@ -1639,6 +1645,11 @@ export function useCollabGuest(roomId: string) {
     dispatchFiles({ type: 'REMOVE_DOWNLOAD', fileId })
   }, [sendToHost, clearDownloadTimeout])
 
+  // Clear a download entry (e.g. dismiss an error chip)
+  const clearDownload = useCallback((fileId: string): void => {
+    dispatchFiles({ type: 'REMOVE_DOWNLOAD', fileId })
+  }, [])
+
   // M4 — don't wipe sharedFiles; only clear `downloads`.
   const cancelAll = useCallback((): void => {
     sendToHost({ type: 'collab-cancel-all' })
@@ -1713,6 +1724,7 @@ export function useCollabGuest(roomId: string) {
     pauseFile,
     resumeFile,
     cancelFile,
+    clearDownload,
     cancelAll,
   }
 }

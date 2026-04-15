@@ -51,6 +51,7 @@
 | End-to-end encrypted | ✅ | ❌ | ❌ | ❌ |
 | Zero server storage | ✅ | ❌ | ❌ | ❌ |
 | Real-time chat | ✅ | ❌ | ❌ | ❌ |
+| Multi-party collab rooms | ✅ | ❌ | ❌ | ❌ |
 | Voice notes | ✅ | ❌ | ❌ | ❌ |
 | Voice & video calls | ✅ | ❌ | ❌ | ❌ |
 | No third-party requests | ✅ | ❌ | ❌ | ❌ |
@@ -79,6 +80,17 @@
 - **Live file sharing** — Add or remove files while recipients are connected
 - **Bulk zip download** — Download all files as a single streaming archive
 - **File previews** — Image/video thumbnails & text previews via Web Worker
+
+### Collaborative Rooms
+- **Multi-party shared space** — A host creates a room; guests join via link or password. Everyone can share files, chat, and call in one workspace.
+- **Hybrid mesh topology** — Guests form direct peer-to-peer connections with each other whenever NAT allows, with the host as a signaling relay and silent fallback path. File transfers prefer direct mesh so the host never sees plaintext guest-to-guest traffic.
+- **Per-peer fingerprint verification** — Every pair-wise connection (host↔guest and guest↔guest) gets its own ECDH fingerprint you can compare out-of-band to detect MITM.
+- **Password-protected rooms** — Host can lock or unlock a room, with mid-session changes blocked while guests are connected to avoid confusing admitted peers.
+- **Rate-limited password prompts** — Five wrong attempts close the connection; guests get a clear error instead of an infinite loop.
+- **Per-file pause, resume, cancel, retry** — Full transfer control with elapsed-time counters and error recovery per file.
+- **Live file list with filters** — Search, sort by newest/name/size, and filter by owner when the room grows past a handful of files.
+- **Concurrent transfers** — Per-fileId upload and download tracking so multiple files in flight don't clobber each other.
+- **Graceful disconnect handling** — Selective teardown per mesh peer; unrelated transfers keep running when one peer leaves.
 
 ### Chat & Collaboration
 - **Encrypted chat rooms** — Standalone group chat mode
@@ -133,7 +145,7 @@ npm run dev
 Run the test suite:
 
 ```bash
-npm test                        # 196 tests
+npm test                        # 209 tests
 npm test -- --reporter=verbose  # see each test name
 ```
 
@@ -184,7 +196,7 @@ With self-hosted infrastructure, the only external connections during a session 
   <img src="https://img.shields.io/badge/Tailwind-4-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white" />
   <img src="https://img.shields.io/badge/WebRTC-P2P-333333?style=flat-square&logo=webrtc&logoColor=white" />
   <img src="https://img.shields.io/badge/Web%20Crypto-AES--256-000000?style=flat-square" />
-  <img src="https://img.shields.io/badge/Vitest-196%20tests-6E9F18?style=flat-square&logo=vitest&logoColor=white" />
+  <img src="https://img.shields.io/badge/Vitest-209%20tests-6E9F18?style=flat-square&logo=vitest&logoColor=white" />
 </p>
 
 - **Language:** TypeScript (strict mode)
@@ -192,13 +204,15 @@ With self-hosted infrastructure, the only external connections during a session 
 - **P2P:** PeerJS (WebRTC), Web Crypto API (ECDH + AES-256-GCM)
 - **Streaming:** StreamSaver.js, fflate (zip)
 - **Fonts:** Self-hosted Inter & JetBrains Mono via @fontsource
-- **Testing:** Vitest (196 tests — crypto, chunking, transfer pipeline, connection helpers, integration)
+- **Testing:** Vitest (209 tests — crypto, chunking, transfer pipeline, connection helpers, integration)
 
 **No backend. No database. Deploy as a static site.**
 
 ---
 
 ## Architecture
+
+### 1:N Portal (sender → receivers)
 
 ```
 ┌─────────────┐                    ┌─────────────┐
@@ -224,6 +238,36 @@ With self-hosted infrastructure, the only external connections during a session 
        │      (DTLS encrypted P2P)        │
        │                                  │
 ```
+
+### Collaborative Room (multi-party mesh + relay)
+
+```
+                   ┌─────────────┐
+                   │    Host     │
+                   │  (Browser)  │
+                   └──┬────┬────┘
+          control +   │    │   control +
+          signaling   │    │   signaling
+                      │    │
+              ┌───────┘    └───────┐
+              │                    │
+              ▼                    ▼
+       ┌─────────────┐      ┌─────────────┐
+       │   Guest A   │◄────►│   Guest B   │
+       │  (Browser)  │ mesh │  (Browser)  │
+       └─────────────┘      └─────────────┘
+              ▲                    ▲
+              │  direct P2P file   │
+              │  transfer (AES-GCM │
+              │  with guest-pair   │
+              │  ECDH key)         │
+              └────────────────────┘
+```
+
+- Every pair-wise link (host↔guest, guest↔guest) runs its own ECDH + AES-256-GCM layer.
+- The host carries only control plane: room state, participant list, chat fan-out, file-list broadcast, WebRTC signaling for the mesh.
+- File chunks flow **direct guest-to-guest** whenever NAT allows. When the mesh can't form, transfers fall back to a host relay that forwards already-encrypted bytes — the host still can't read them.
+- Each connection exposes an independently verifiable fingerprint in the UI so users can detect MITM.
 
 ---
 

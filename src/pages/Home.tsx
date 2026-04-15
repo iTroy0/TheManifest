@@ -204,8 +204,9 @@ export default function Home() {
               <InfoCard icon={EyeOff} title="Zero knowledge" desc="No accounts. No logs. No analytics. Self-hosted signaling for full privacy." />
               <InfoCard icon={Zap} title="Ephemeral" desc="Close the tab and it's gone. No traces left behind." />
               <InfoCard icon={Users} title="Multi-recipient" desc="Unlimited simultaneous connections. Each gets their own encrypted channel." />
-              <InfoCard icon={Lock} title="Password protect" desc="Lock your portal or chat room with an encrypted password." />
+              <InfoCard icon={Lock} title="Password protect" desc="Lock your portal, chat, or collab room with an encrypted password." />
               <InfoCard icon={MessagesSquare} title="Chat rooms" desc="Encrypted group chat with reactions, replies, image sharing, and typing indicators." />
+              <InfoCard icon={Share2} title="Collaborative rooms" desc="Multi-party workspaces where every guest can share files. Direct mesh P2P with per-pair fingerprints." />
               <InfoCard icon={Phone} title="Voice & video calls" desc="Live voice up to 20 peers, 1:1 video. DTLS-SRTP encrypted, mobile-friendly controls." />
               <InfoCard icon={Mic} title="Voice notes" desc="Record and send encrypted voice messages up to 3 minutes with seekable playback." />
             </div>

@@ -153,7 +153,7 @@ function CollabHostView() {
 
   const [copied, setCopied] = useState(false)
   const [passwordInput, setPasswordInput] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
+  const [passwordLockNotice, setPasswordLockNotice] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [roomExpanded, setRoomExpanded] = useState(true)
   const [filesExpanded, setFilesExpanded] = useState(true)
@@ -170,11 +170,25 @@ function CollabHostView() {
   }, [shareLink])
 
   const handlePasswordSet = useCallback(() => {
-    if (passwordInput.trim()) {
-      host.setPassword(passwordInput.trim())
-      setShowPassword(true)
+    const pwd = passwordInput.trim()
+    if (!pwd) return
+    const ok = host.setPassword(pwd)
+    if (!ok) {
+      setPasswordLockNotice('Password can\'t be changed while guests are connected.')
+      setTimeout(() => setPasswordLockNotice(null), 4000)
+      return
     }
+    setPasswordInput('')
+    setPasswordLockNotice(null)
   }, [passwordInput, host])
+
+  const handlePasswordUnset = useCallback(() => {
+    const ok = host.setPassword('')
+    if (!ok) {
+      setPasswordLockNotice('Password can\'t be removed while guests are connected.')
+      setTimeout(() => setPasswordLockNotice(null), 4000)
+    }
+  }, [host])
 
   const handleFileSelect = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
@@ -314,31 +328,54 @@ function CollabHostView() {
                     </button>
                   </div>
 
-                  {/* Password (optional) */}
-                  {!showPassword && (
-                    <div className="mt-3 flex items-center gap-2">
-                      <input
-                        type="password"
-                        placeholder="Set password (optional)"
-                        value={passwordInput}
-                        onChange={e => setPasswordInput(e.target.value)}
-                        className="flex-1 bg-bg border border-border rounded-lg px-3 py-2 font-mono text-xs text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50"
-                      />
-                      <button
-                        onClick={handlePasswordSet}
-                        disabled={!passwordInput.trim()}
-                        className="px-3 py-2 rounded-lg font-mono text-xs border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors disabled:opacity-40"
-                      >
-                        <Lock className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  )}
-                  {showPassword && (
-                    <div className="mt-3 flex items-center gap-2 text-accent">
-                      <Lock className="w-3.5 h-3.5" />
-                      <span className="font-mono text-xs">Password protected</span>
-                    </div>
-                  )}
+                  {/* Password (optional) — locked while guests are connected */}
+                  {(() => {
+                    const hasGuests = host.onlineCount > 0
+                    const isSet = host.passwordRequired
+                    return (
+                      <>
+                        {!isSet && (
+                          <div className="mt-3 flex items-center gap-2">
+                            <input
+                              type="password"
+                              placeholder={hasGuests ? 'Password locked — guests connected' : 'Set password (optional)'}
+                              value={passwordInput}
+                              onChange={e => setPasswordInput(e.target.value)}
+                              disabled={hasGuests}
+                              className="flex-1 bg-bg border border-border rounded-lg px-3 py-2 font-mono text-xs text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                            <button
+                              onClick={handlePasswordSet}
+                              disabled={!passwordInput.trim() || hasGuests}
+                              title={hasGuests ? 'Cannot set a password while guests are in the room' : 'Set password'}
+                              className="px-3 py-2 rounded-lg font-mono text-xs border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <Lock className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
+                        {isSet && (
+                          <div className="mt-3 flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 text-accent">
+                              <Lock className="w-3.5 h-3.5" />
+                              <span className="font-mono text-xs">Password protected</span>
+                            </div>
+                            <button
+                              onClick={handlePasswordUnset}
+                              disabled={hasGuests}
+                              title={hasGuests ? 'Cannot remove the password while guests are in the room' : 'Remove password'}
+                              className="px-2.5 py-1.5 rounded-lg font-mono text-[11px] border border-border text-muted hover:border-danger/40 hover:text-danger transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              Unset
+                            </button>
+                          </div>
+                        )}
+                        {passwordLockNotice && (
+                          <p className="mt-2 font-mono text-[10px] text-danger/80">{passwordLockNotice}</p>
+                        )}
+                      </>
+                    )
+                  })()}
                 </div>
 
                 {/* Participants */}
@@ -514,6 +551,8 @@ function CollabHostView() {
                         onPause={(fileId) => host.pauseFile?.(fileId)}
                         onResume={(fileId) => host.resumeFile?.(fileId)}
                         onCancel={(fileId) => host.cancelFile?.(fileId)}
+                        onDismissError={(fileId) => host.clearDownload?.(fileId)}
+                        uploadsByFileId={host.uploads}
                       />
                     </ComponentErrorBoundary>
                   </div>
@@ -1005,6 +1044,8 @@ function CollabGuestView({ roomId }: { roomId: string }) {
                       onPause={(fileId) => guest.pauseFile?.(fileId)}
                       onResume={(fileId) => guest.resumeFile?.(fileId)}
                       onCancel={(fileId) => guest.cancelFile?.(fileId)}
+                      onDismissError={(fileId) => guest.clearDownload?.(fileId)}
+                      uploadsByFileId={guest.uploads}
                     />
                   </ComponentErrorBoundary>
                 </div>

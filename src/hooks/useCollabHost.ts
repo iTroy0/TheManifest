@@ -135,8 +135,17 @@ export function useCollabHost() {
   const [participantsList, setParticipantsList] = useState<Array<{ peerId: string; name: string }>>([])
   const callMessageHandlerRef = useRef<((fromPeerId: string, msg: Record<string, unknown>) => void) | null>(null)
 
-  const setPassword = useCallback((pwd: string): void => {
-    passwordRef.current = pwd || null
+  // Returns true if the password was applied, false if rejected because
+  // guests are already connected (see CollabPortal UX: changing the
+  // password mid-session is blocked to avoid confusing admitted guests).
+  const setPassword = useCallback((pwd: string): boolean => {
+    const next = pwd || null
+    if (connectionsRef.current.size > 0 && (passwordRef.current || next)) {
+      return false
+    }
+    passwordRef.current = next
+    dispatchRoom({ type: 'SET', payload: { passwordRequired: !!next, password: next } })
+    return true
   }, [])
 
   const refreshParticipantsList = useCallback((): void => {
@@ -323,6 +332,11 @@ export function useCollabHost() {
       peerCurrentFileRef.current.delete(current.fromPeerId)
     }
   }, [clearDownloadTimeout])
+
+  // Clear a download entry (e.g. dismiss an error chip)
+  const clearDownload = useCallback((fileId: string): void => {
+    dispatchFiles({ type: 'REMOVE_DOWNLOAD', fileId })
+  }, [])
 
   // Close the room
   const closeRoom = useCallback((): void => {
@@ -1442,6 +1456,7 @@ export function useCollabHost() {
     isHost: true,
     fingerprint: room.fingerprint,
     errorMessage: room.errorMessage,
+    passwordRequired: room.passwordRequired,
 
     // Participants
     participants: participants.participants,
@@ -1477,6 +1492,7 @@ export function useCollabHost() {
     pauseFile,
     resumeFile,
     cancelFile,
+    clearDownload,
     kickUser,
     closeRoom,
     sendMessage,

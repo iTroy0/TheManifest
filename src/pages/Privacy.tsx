@@ -39,6 +39,16 @@ const sections: SectionData[] = [
           via ECDH (P-256). The encryption happens before data leaves your device. We could not
           read your files or messages even if we wanted to &mdash; we do not have the keys.
         </p>
+        <p>
+          <span className="text-text">Collaborative rooms</span> work the same way. The host&apos;s
+          browser acts as a small in-memory coordinator for the participant list and chat fan-out,
+          but each pair of guests also forms a direct mesh connection whenever their networks
+          allow, and every link runs its own independent ECDH key exchange. File transfers prefer
+          the direct guest-to-guest path. When a direct path is not possible the host forwards
+          already-encrypted bytes &mdash; the host&apos;s browser cannot decrypt them, and neither
+          can we. Each connection shows a fingerprint in the UI that you can compare out-of-band
+          to verify nobody is in the middle.
+        </p>
       </div>
     ),
   },
