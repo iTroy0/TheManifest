@@ -11,7 +11,7 @@ import ProgressBar from '../components/ProgressBar'
 import ChatPanel from '../components/ChatPanel'
 import CallPanel from '../components/CallPanel'
 import { ComponentErrorBoundary } from '../components/ErrorBoundary'
-import { useState, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent } from 'react'
+import { useState, useRef, useCallback, useMemo, useEffect, type ChangeEvent, type DragEvent } from 'react'
 import {
   ArrowLeft,
   AlertCircle,
@@ -56,6 +56,8 @@ function CollabHostView() {
   const [isDragging, setIsDragging] = useState(false)
   const [roomExpanded, setRoomExpanded] = useState(true)
   const [filesExpanded, setFilesExpanded] = useState(true)
+  const [editingName, setEditingName] = useState(false)
+  const [nameInput, setNameInput] = useState(host.myName)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const shareLink = host.roomId ? `${window.location.origin}/collab/${host.roomId}` : ''
@@ -173,6 +175,61 @@ function CollabHostView() {
           </div>
         )}
 
+        {/* Nickname Bar */}
+        {isConnected && (
+          <div className="glow-card px-4 py-3 animate-fade-in-up">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <Users className="w-4 h-4 text-accent shrink-0" />
+                {editingName ? (
+                  <input
+                    type="text"
+                    value={nameInput}
+                    onChange={e => setNameInput(e.target.value)}
+                    onBlur={() => {
+                      if (nameInput.trim() && nameInput.trim() !== host.myName) {
+                        host.changeNickname(nameInput.trim())
+                      }
+                      setEditingName(false)
+                    }}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        if (nameInput.trim() && nameInput.trim() !== host.myName) {
+                          host.changeNickname(nameInput.trim())
+                        }
+                        setEditingName(false)
+                      } else if (e.key === 'Escape') {
+                        setNameInput(host.myName)
+                        setEditingName(false)
+                      }
+                    }}
+                    className="flex-1 min-w-0 bg-bg border border-accent/30 rounded-lg px-2 py-1 font-mono text-sm text-text focus:outline-none focus:border-accent"
+                    autoFocus
+                  />
+                ) : (
+                  <button
+                    onClick={() => { setNameInput(host.myName); setEditingName(true) }}
+                    className="flex items-center gap-1.5 font-mono text-sm text-text hover:text-accent transition-colors truncate"
+                  >
+                    <span className="truncate">{host.myName}</span>
+                    <span className="text-[10px] text-muted">(click to edit)</span>
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
+                  <Crown className="w-3 h-3 text-accent" />
+                  <span className="font-mono text-[10px] text-accent">Host</span>
+                </div>
+                <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
+                  <Users className="w-3 h-3 text-accent" />
+                  <span className="font-mono text-[10px] text-accent">{host.onlineCount + 1}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Room Active - Collapsible Card */}
         {isConnected && (
           <div className="glow-card overflow-hidden animate-fade-in-up">
@@ -187,16 +244,8 @@ function CollabHostView() {
                 <span className="font-mono text-sm text-accent font-medium">Room Active</span>
                 <div className="flex items-center gap-2">
                   <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
-                    <Crown className="w-3 h-3 text-accent" />
-                    <span className="font-mono text-[10px] text-accent">Host</span>
-                  </div>
-                  <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
                     <Shield className="w-3 h-3 text-accent" />
                     <span className="font-mono text-[10px] text-accent">E2E</span>
-                  </div>
-                  <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
-                    <Users className="w-3 h-3 text-accent" />
-                    <span className="font-mono text-[10px] text-accent">{host.onlineCount + 1}</span>
                   </div>
                 </div>
               </div>
@@ -455,6 +504,8 @@ function CollabGuestView({ roomId }: { roomId: string }) {
   const [roomExpanded, setRoomExpanded] = useState(true)
   const [filesExpanded, setFilesExpanded] = useState(true)
   const [isDragging, setIsDragging] = useState(false)
+  const [editingName, setEditingName] = useState(false)
+  const [nameInput, setNameInput] = useState(guest.myName)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Check if any download is in progress
@@ -502,11 +553,15 @@ function CollabGuestView({ roomId }: { roomId: string }) {
     guest.submitPassword(passwordInput)
   }, [passwordInput, guest])
 
-  // Reset password loading on error
   const isPasswordRequired = guest.status === 'password-required'
   const isConnecting = guest.status === 'joining' || guest.status === 'reconnecting'
   const isConnected = guest.status === 'connected'
   const isDead = guest.status === 'closed' || guest.status === 'error' || guest.status === 'kicked'
+
+  // Reset password loading on error or when password is accepted
+  useEffect(() => {
+    if (!isPasswordRequired || guest.passwordError) setPasswordLoading(false)
+  }, [isPasswordRequired, guest.passwordError])
 
   return (
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
@@ -647,6 +702,61 @@ function CollabGuestView({ roomId }: { roomId: string }) {
           </div>
         )}
 
+        {/* Nickname Bar */}
+        {isConnected && (
+          <div className="glow-card px-4 py-3 animate-fade-in-up">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <Users className="w-4 h-4 text-accent shrink-0" />
+                {editingName ? (
+                  <input
+                    type="text"
+                    value={nameInput}
+                    onChange={e => setNameInput(e.target.value)}
+                    onBlur={() => {
+                      if (nameInput.trim() && nameInput.trim() !== guest.myName) {
+                        guest.changeNickname(nameInput.trim())
+                      }
+                      setEditingName(false)
+                    }}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        if (nameInput.trim() && nameInput.trim() !== guest.myName) {
+                          guest.changeNickname(nameInput.trim())
+                        }
+                        setEditingName(false)
+                      } else if (e.key === 'Escape') {
+                        setNameInput(guest.myName)
+                        setEditingName(false)
+                      }
+                    }}
+                    className="flex-1 min-w-0 bg-bg border border-accent/30 rounded-lg px-2 py-1 font-mono text-sm text-text focus:outline-none focus:border-accent"
+                    autoFocus
+                  />
+                ) : (
+                  <button
+                    onClick={() => { setNameInput(guest.myName); setEditingName(true) }}
+                    className="flex items-center gap-1.5 font-mono text-sm text-text hover:text-accent transition-colors truncate"
+                  >
+                    <span className="truncate">{guest.myName}</span>
+                    <span className="text-[10px] text-muted">(click to edit)</span>
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
+                  <Wifi className="w-3 h-3 text-accent" />
+                  <span className="font-mono text-[10px] text-accent">P2P</span>
+                </div>
+                <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
+                  <Users className="w-3 h-3 text-accent" />
+                  <span className="font-mono text-[10px] text-accent">{guest.onlineCount}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Connected - Room Info */}
         {isConnected && (
           <div className="glow-card overflow-hidden animate-fade-in-up">
@@ -659,16 +769,8 @@ function CollabGuestView({ roomId }: { roomId: string }) {
               <div className="flex items-center gap-3">
                 <StatusIndicator status="connected" embedded>
                   <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
-                    <Wifi className="w-3 h-3 text-accent" />
-                    <span className="font-mono text-[10px] text-accent">P2P</span>
-                  </div>
-                  <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
                     <Shield className="w-3 h-3 text-accent" />
                     <span className="font-mono text-[10px] text-accent">E2E</span>
-                  </div>
-                  <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
-                    <Users className="w-3 h-3 text-accent" />
-                    <span className="font-mono text-[10px] text-accent">{guest.onlineCount}</span>
                   </div>
                 </StatusIndicator>
               </div>
