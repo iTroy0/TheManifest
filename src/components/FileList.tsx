@@ -113,6 +113,7 @@ interface SortableFileItemProps {
   showThumb: boolean
   Icon: LucideIcon
   canDrag: boolean
+  canRemoveItem: boolean
   onRequest?: ((index: number) => void) | null
   onRemove?: ((index: number) => void) | null
   onCancel?: ((index: number) => void) | null
@@ -120,7 +121,7 @@ interface SortableFileItemProps {
   onResume?: ((index: number) => void) | null
 }
 
-function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, isPaused, showThumb, Icon, canDrag, onRequest, onRemove, onCancel, onPause, onResume }: SortableFileItemProps) {
+function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, isPaused, showThumb, Icon, canDrag, canRemoveItem, onRequest, onRemove, onCancel, onPause, onResume }: SortableFileItemProps) {
   const {
     attributes,
     listeners,
@@ -306,9 +307,9 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, i
           </button>
         )}
 
-        {onRemove && (
-          <button
-            onClick={(e: React.MouseEvent) => { e.stopPropagation(); onRemove(index) }}
+{onRemove && canRemoveItem && (
+              <button
+                onClick={(e: React.MouseEvent) => { e.stopPropagation(); onRemove(index) }}
             className="p-2 rounded-lg text-muted hover:text-danger hover:bg-danger/10 active:scale-95 transition-all
               opacity-100 sm:opacity-0 sm:group-hover/file:opacity-100 focus:opacity-100"
           >
@@ -350,6 +351,7 @@ function FileItemContent({ file, Icon, showThumb, isDone }: FileItemContentProps
 interface FileListProps {
   files: (File | FileEntry)[]
   onRemove?: ((index: number) => void) | null
+  canRemove?: boolean[] | Record<number, boolean> | null // Which files can be removed
   onReorder?: ((from: number, to: number) => void) | null
   progress?: Record<string, number> | null
   pendingFiles?: boolean[] | Record<number, boolean> | null
@@ -361,7 +363,7 @@ interface FileListProps {
   currentFileIndex?: number | null
 }
 
-export default function FileList({ files, onRemove, onReorder, progress, pendingFiles, pausedFiles, onRequest, onCancel, onPause, onResume, currentFileIndex }: FileListProps) {
+export default function FileList({ files, onRemove, canRemove, onReorder, progress, pendingFiles, pausedFiles, onRequest, onCancel, onPause, onResume, currentFileIndex }: FileListProps) {
   const totalSize = files.reduce((sum, f) => sum + f.size, 0)
   const canDrag = !!onReorder && files.length > 1
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -403,6 +405,8 @@ export default function FileList({ files, onRemove, onReorder, progress, pending
     const isPaused = pausedFiles ? pausedFiles[i] : undefined
     const isActive = currentFileIndex === i && pct != null && !isDone
     const showThumb = isImageType(file.type) && file instanceof window.File
+    // If canRemove not provided, default to true for all when onRemove exists
+    const canRemoveItem = canRemove ? !!canRemove[i] : true
 
     return (
       <SortableFileItem
@@ -417,6 +421,7 @@ export default function FileList({ files, onRemove, onReorder, progress, pending
         showThumb={showThumb}
         Icon={Icon}
         canDrag={canDrag}
+        canRemoveItem={canRemoveItem}
         isPaused={isPaused}
         onRequest={onRequest}
         onRemove={onRemove}

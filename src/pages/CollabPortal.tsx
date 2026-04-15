@@ -373,7 +373,18 @@ function CollabHostView() {
                         pendingFiles={host.pendingFiles}
                         pausedFiles={host.pausedFiles}
                         currentFileIndex={host.currentFileIndex}
-                        onRequest={null}
+                        canRemove={host.sharedFiles.map(f => f.owner === host.myPeerId)}
+                        onRemove={(index) => {
+                          const file = host.sharedFiles[index]
+                          if (file) host.removeFile(file.id)
+                        }}
+                        onRequest={(index) => {
+                          // Don't allow requesting own files
+                          const file = host.sharedFiles[index]
+                          if (file && file.owner !== host.myPeerId) {
+                            host.requestFile(file.id, file.owner)
+                          }
+                        }}
                         onCancel={null}
                         onPause={null}
                         onResume={null}
@@ -800,6 +811,11 @@ function CollabGuestView({ roomId }: { roomId: string }) {
                         pendingFiles={guest.pendingFiles}
                         pausedFiles={guest.pausedFiles}
                         currentFileIndex={guest.currentFileIndex}
+                        canRemove={guest.sharedFiles.map(f => guest.mySharedFiles.has(f.id))}
+                        onRemove={(index) => {
+                          const file = guest.sharedFiles[index]
+                          if (file) guest.removeFile(file.id)
+                        }}
                         onRequest={isDead || hasPending ? null : (index) => {
                           // Don't allow requesting own files
                           const file = guest.sharedFiles[index]

@@ -4,6 +4,7 @@ import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, enc
 import { STUN_ONLY } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
+import { createFileStream } from '../utils/streamWriter'
 import { generateThumbnailAsync, generateVideoThumbnail, generateTextPreview } from '../utils/thumbnailWorker'
 import { ChatMessage, FileEntry } from '../types'
 import {
@@ -90,6 +91,22 @@ export function useCollabHost() {
   const myFilesRef = useRef<Map<string, File>>(new Map()) // fileId -> File object
   const imageBlobUrlsRef = useRef<string[]>([])
   const sessionKeyRef = useRef<number>(0)
+  const filesRef = useRef(files) // Keep fresh reference to files state
+  filesRef.current = files
+  
+  // For receiving files from guests
+  const inProgressFileRef = useRef<{
+    fileId: string
+    name: string
+    size: number
+    totalChunks: number
+    chunks: Uint8Array[]
+    receivedBytes: number
+    stream: ReturnType<typeof createFileStream> | null
+    startTime: number
+    fromPeerId: string
+  } | null>(null)
+  const chunkQueueRef = useRef<Promise<void>>(Promise.resolve())
   
   // For calls
   const [peerInstance, setPeerInstance] = useState<InstanceType<typeof Peer> | null>(null)
@@ -168,6 +185,41 @@ export function useCollabHost() {
         try { gs.conn.close() } catch {}
       }, 100)
     }
+  }, [])
+
+  // Remove a shared file (only owner can remove)
+  const removeFile = useCallback(async (fileId: string): Promise<void> => {
+    const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
+    if (!file) return
+    
+    // Only owner can remove their own files
+    if (file.owner !== room.myPeerId) return
+    
+    // Remove from local state
+    myFilesRef.current.delete(fileId)
+    dispatchFiles({ type: 'REMOVE_SHARED_FILE', fileId })
+    
+    // Broadcast removal to all guests
+    for (const gs of connectionsRef.current.values()) {
+      if (!gs.encryptKey || (!gs.passwordVerified && passwordRef.current)) continue
+      try {
+        const encrypted = await encryptJSON(gs.encryptKey, { type: 'collab-file-removed', fileId })
+        gs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+      } catch {}
+    }
+  }, [room.myPeerId])
+
+  // Request a file from a guest
+  const requestFile = useCallback(async (fileId: string, ownerId: string): Promise<void> => {
+    const ownerGs = Array.from(connectionsRef.current.values()).find(g => g.peerId === ownerId)
+    if (!ownerGs?.encryptKey) return
+    
+    dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download: { status: 'requesting', progress: 0, speed: 0 } })
+    
+    try {
+      const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-request-file', fileId })
+      ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+    } catch {}
   }, [])
 
   // Close the room
@@ -382,13 +434,16 @@ export function useCollabHost() {
       
       async function sendFileListToGuest(guest: GuestConnection): Promise<void> {
         if (!guest.encryptKey) return
-        const fileList = files.sharedFiles.map(f => ({
+        // Use ref to get current files state (not stale closure)
+        const fileList = filesRef.current.sharedFiles.map(f => ({
           id: f.id,
           name: f.name,
           size: f.size,
           type: f.type,
           owner: f.owner,
           ownerName: f.ownerName,
+          thumbnail: f.thumbnail,
+          textPreview: f.textPreview,
           addedAt: f.addedAt,
         }))
         try {
@@ -682,6 +737,26 @@ export function useCollabHost() {
             return
           }
           
+          // Guest removed their file
+          if (payload.type === 'collab-file-removed') {
+            const fileId = payload.fileId as string
+            const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
+            // Only allow owner to remove their files
+            if (file && file.owner === gs.peerId) {
+              dispatchFiles({ type: 'REMOVE_SHARED_FILE', fileId })
+              // Relay to other guests
+              for (const [otherId, otherGs] of connectionsRef.current) {
+                if (otherId === connId || !otherGs.encryptKey) continue
+                if (!otherGs.passwordVerified && passwordRef.current) continue
+                try {
+                  const encrypted = await encryptJSON(otherGs.encryptKey, { type: 'collab-file-removed', fileId })
+                  otherGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+                } catch {}
+              }
+            }
+            return
+          }
+          
           // Pause file transfer from guest
           if (payload.type === 'collab-pause-file') {
             const fileId = payload.fileId as string
@@ -778,6 +853,61 @@ export function useCollabHost() {
                 transfer.pauseResolver = undefined
               }
             }
+            return
+          }
+          
+          // File transfer start (host receiving file from guest)
+          if (payload.type === 'collab-file-start') {
+            const fileId = payload.fileId as string
+            const fileName = payload.name as string
+            const fileSize = payload.size as number
+            
+            const stream = createFileStream(fileName, fileSize)
+            
+            inProgressFileRef.current = {
+              fileId,
+              name: fileName,
+              size: fileSize,
+              totalChunks: payload.totalChunks as number,
+              chunks: [],
+              receivedBytes: 0,
+              stream,
+              startTime: Date.now(),
+              fromPeerId: gs.peerId,
+            }
+            dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download: { status: 'downloading', progress: 0, speed: 0 } })
+            return
+          }
+          
+          // File transfer end (host receiving file from guest)
+          if (payload.type === 'collab-file-end') {
+            await chunkQueueRef.current
+            const inFlight = inProgressFileRef.current
+            inProgressFileRef.current = null
+            if (!inFlight) return
+            
+            if (inFlight.stream) {
+              try { await inFlight.stream.close() } catch {}
+            } else {
+              const totalLen = inFlight.chunks.reduce((s, c) => s + c.byteLength, 0)
+              const fullBytes = new Uint8Array(totalLen)
+              let off = 0
+              for (const c of inFlight.chunks) { fullBytes.set(c, off); off += c.byteLength }
+              
+              const mimeType = filesRef.current.sharedFiles.find(f => f.id === inFlight.fileId)?.type || 'application/octet-stream'
+              const blob = new Blob([fullBytes], { type: mimeType })
+              const url = URL.createObjectURL(blob)
+              
+              const a = document.createElement('a')
+              a.href = url
+              a.download = inFlight.name
+              document.body.appendChild(a)
+              a.click()
+              document.body.removeChild(a)
+              URL.revokeObjectURL(url)
+            }
+            
+            dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: inFlight.fileId, payload: { status: 'complete', progress: 100 } })
             return
           }
           
@@ -946,16 +1076,40 @@ export function useCollabHost() {
       return
     }
     
-    // Collab file chunk (0xFFFE)
-    if (parsed.fileIndex === 0xFFFE) {
-      if (!gs.inProgressFile) return
-      try {
-        const decrypted = await decryptChunk(gs.encryptKey, new Uint8Array(parsed.data))
-        gs.inProgressFile.chunks.push(new Uint8Array(decrypted))
-        gs.inProgressFile.receivedBytes += decrypted.byteLength
-      } catch {}
-      return
-    }
+  // Collab file chunk (0xFFFE)
+  if (parsed.fileIndex === 0xFFFE) {
+  // Could be for guest-to-guest transfer (gs.inProgressFile) or host downloading from guest (inProgressFileRef)
+  if (gs.inProgressFile) {
+    try {
+      const decrypted = await decryptChunk(gs.encryptKey, new Uint8Array(parsed.data))
+      gs.inProgressFile.chunks.push(new Uint8Array(decrypted))
+      gs.inProgressFile.receivedBytes += decrypted.byteLength
+    } catch {}
+    return
+  }
+  
+  // Host receiving a file from this guest
+  if (inProgressFileRef.current && inProgressFileRef.current.fromPeerId === gs.peerId) {
+    const inFlight = inProgressFileRef.current
+    try {
+      const decrypted = await decryptChunk(gs.encryptKey, new Uint8Array(parsed.data))
+      
+      if (inFlight.stream) {
+        try { await inFlight.stream.write(new Uint8Array(decrypted)) } catch {}
+      } else {
+        inFlight.chunks.push(new Uint8Array(decrypted))
+      }
+      inFlight.receivedBytes += decrypted.byteLength
+      
+      const progress = Math.round((inFlight.receivedBytes / inFlight.size) * 100)
+      const elapsed = (Date.now() - inFlight.startTime) / 1000
+      const speed = elapsed > 0.5 ? inFlight.receivedBytes / elapsed : 0
+      dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: inFlight.fileId, payload: { progress, speed } })
+    } catch {}
+    return
+  }
+  return
+  }
   }
 
   // Send message
@@ -1102,12 +1256,15 @@ export function useCollabHost() {
     setPassword,
     setMyName,
     shareFile,
+    removeFile,
+    requestFile,
     kickUser,
     closeRoom,
     sendMessage,
     sendTyping,
     sendReaction,
     clearMessages,
+    changeNickname: setMyName,
     reset,
   }
 }

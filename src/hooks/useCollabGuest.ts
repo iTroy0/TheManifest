@@ -197,6 +197,27 @@ export function useCollabGuest(roomId: string) {
     } catch {}
   }, [sendToHost, room.myPeerId, nickname])
 
+  // Remove a file that I shared
+  const removeFile = useCallback(async (fileId: string): Promise<void> => {
+    if (!decryptKeyRef.current || !room.myPeerId) return
+    
+    // Only remove if I own this file
+    if (!files.mySharedFiles.has(fileId)) return
+    
+    // Remove locally
+    myFilesRef.current.delete(fileId)
+    dispatchFiles({ type: 'REMOVE_SHARED_FILE', fileId })
+    
+    // Notify host (who will broadcast to others)
+    try {
+      const encrypted = await encryptJSON(decryptKeyRef.current, {
+        type: 'collab-file-removed',
+        fileId,
+      })
+      sendToHost({ type: 'collab-msg-enc', data: encrypted })
+    } catch {}
+  }, [sendToHost, room.myPeerId, files.mySharedFiles])
+
   // Send file to requester - supports pause/resume/cancel and multiple concurrent transfers
   const sendFileToRequester = useCallback(async (conn: DataConnection, key: CryptoKey, fileId: string): Promise<void> => {
     const file = myFilesRef.current.get(fileId)
@@ -549,6 +570,13 @@ export function useCollabGuest(roomId: string) {
             if (payload.type === 'collab-file-shared') {
               const fileData = payload.file as SharedFile
               dispatchFiles({ type: 'ADD_SHARED_FILE', payload: fileData })
+              return
+            }
+            
+            // File removed by owner
+            if (payload.type === 'collab-file-removed') {
+              const fileId = payload.fileId as string
+              dispatchFiles({ type: 'REMOVE_SHARED_FILE', fileId })
               return
             }
 
@@ -1024,6 +1052,7 @@ export function useCollabGuest(roomId: string) {
     // For useCall
     peer: peerInstance,
     hostPeerId: roomId,
+    participantsList: participants.participants.map(p => ({ peerId: p.peerId, name: p.name })),
     setCallMessageHandler,
     sendCallMessage,
     sendToHost,
@@ -1032,11 +1061,13 @@ export function useCollabGuest(roomId: string) {
     submitPassword,
     setMyName,
     shareFile,
+    removeFile,
     requestFile,
     sendMessage,
     sendTyping,
     sendReaction,
     clearMessages,
+    changeNickname: setMyName,
     retryWithRelay,
     leave,
 
