@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef, type ChangeEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, MessagesSquare, Phone, Mic, Plus, type LucideIcon } from 'lucide-react'
+import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, MessagesSquare, Phone, Mic, Plus, Share2, type LucideIcon } from 'lucide-react'
 import { useSender } from '../hooks/useSender'
 import { formatSpeed, formatTime, formatBytes } from '../utils/formatBytes'
 import { usePageTitle } from '../hooks/usePageTitle'
@@ -170,8 +170,8 @@ export default function Home() {
         {!isActive && (
           <>
             <DropZone onFiles={handleFiles} disabled={isTransferring || isFinished} />
-            <div className="flex items-center justify-center gap-4">
-              <div className="h-px flex-1 bg-border/50" />
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4">
+              <div className="h-px flex-1 bg-border/50 hidden sm:block" />
               <button
                 onClick={startChatRoom}
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm
@@ -180,7 +180,15 @@ export default function Home() {
                 <MessagesSquare className="w-4 h-4" />
                 Start a chat room
               </button>
-              <div className="h-px flex-1 bg-border/50" />
+              <Link
+                to="/collab"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm
+                  bg-accent/10 border border-accent/30 text-accent hover:bg-accent/20 hover:border-accent/50 active:scale-[0.98] transition-all"
+              >
+                <Share2 className="w-4 h-4" />
+                Collaborative room
+              </Link>
+              <div className="h-px flex-1 bg-border/50 hidden sm:block" />
             </div>
           </>
         )}

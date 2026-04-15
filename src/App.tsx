@@ -1,6 +1,7 @@
 import { Routes, Route } from 'react-router-dom'
 import Home from './pages/Home'
 import Portal from './pages/Portal'
+import CollabPortal from './pages/CollabPortal'
 import FAQ from './pages/FAQ'
 import Privacy from './pages/Privacy'
 
@@ -10,6 +11,8 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/portal/:peerId" element={<Portal />} />
+        <Route path="/collab" element={<CollabPortal />} />
+        <Route path="/collab/:roomId" element={<CollabPortal />} />
         <Route path="/faq" element={<FAQ />} />
         <Route path="/privacy" element={<Privacy />} />
         <Route path="*" element={
