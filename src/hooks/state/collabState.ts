@@ -33,6 +33,7 @@ export interface SharedFile {
   owner: string        // peerId of who shared it
   ownerName: string
   thumbnail?: string
+  textPreview?: string
   addedAt: number
 }
 

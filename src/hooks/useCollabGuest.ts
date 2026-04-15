@@ -5,6 +5,7 @@ import { STUN_ONLY, getWithTurn } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
 import { createFileStream } from '../utils/streamWriter'
+import { generateThumbnailAsync, generateVideoThumbnail, generateTextPreview } from '../utils/thumbnailWorker'
 import { ChatMessage } from '../types'
 import { generateNickname } from '../utils/nickname'
 import {
@@ -98,6 +99,9 @@ export function useCollabGuest(roomId: string) {
   const reconnectTokenRef = useRef<symbol>(Symbol('reconnect'))
   const pendingManifestRef = useRef<string | null>(null)
   
+  // Active file transfers (when sending files to other peers)
+  const activeTransfersRef = useRef<Map<string, { fileId: string; aborted: boolean; paused: boolean; pauseResolver?: () => void }>>(new Map())
+  
   // P2P connections to other guests (mesh)
   const peerConnectionsRef = useRef<Map<string, PeerConnection>>(new Map())
   
@@ -150,6 +154,24 @@ export function useCollabGuest(roomId: string) {
     const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     myFilesRef.current.set(fileId, file)
     
+    // Generate thumbnail/preview using thumbnailWorker (same as Portal)
+    let thumbnail: string | undefined
+    let textPreview: string | undefined
+    
+    if (file.type.startsWith('image/') && file.size < 10 * 1024 * 1024) {
+      try {
+        thumbnail = await generateThumbnailAsync(file, 80)
+      } catch {}
+    } else if (file.type.startsWith('video/') && file.size < 50 * 1024 * 1024) {
+      try {
+        thumbnail = await generateVideoThumbnail(file, 80)
+      } catch {}
+    } else if (file.type === 'text/plain' || file.name.endsWith('.txt') || file.name.endsWith('.md')) {
+      try {
+        textPreview = await generateTextPreview(file)
+      } catch {}
+    }
+    
     const sharedFile: SharedFile = {
       id: fileId,
       name: file.name,
@@ -157,6 +179,8 @@ export function useCollabGuest(roomId: string) {
       type: file.type,
       owner: room.myPeerId,
       ownerName: nickname,
+      thumbnail,
+      textPreview,
       addedAt: Date.now(),
     }
     
@@ -173,10 +197,14 @@ export function useCollabGuest(roomId: string) {
     } catch {}
   }, [sendToHost, room.myPeerId, nickname])
 
-  // Send file to requester
+  // Send file to requester - supports pause/resume/cancel and multiple concurrent transfers
   const sendFileToRequester = useCallback(async (conn: DataConnection, key: CryptoKey, fileId: string): Promise<void> => {
     const file = myFilesRef.current.get(fileId)
     if (!file) return
+    
+    // Create transfer state for this file
+    const transfer = { fileId, aborted: false, paused: false, pauseResolver: undefined as (() => void) | undefined }
+    activeTransfersRef.current.set(fileId, transfer)
     
     const chunker = new AdaptiveChunker()
     const throttler = new ProgressThrottler(80)
@@ -192,7 +220,10 @@ export function useCollabGuest(roomId: string) {
         totalChunks,
       })
       conn.send({ type: 'collab-msg-enc', data: startMsg })
-    } catch { return }
+    } catch { 
+      activeTransfersRef.current.delete(fileId)
+      return 
+    }
     
     let chunkIndex = 0
     let fileSent = 0
@@ -201,6 +232,25 @@ export function useCollabGuest(roomId: string) {
     dispatchTransfer({ type: 'START_UPLOAD', fileId, fileName: file.name })
     
     for await (const { buffer: chunkData } of chunkFileAdaptive(file, chunker)) {
+      // Check if transfer was cancelled
+      if (transfer.aborted) {
+        activeTransfersRef.current.delete(fileId)
+        dispatchTransfer({ type: 'END_UPLOAD' })
+        return
+      }
+      
+      // Handle pause
+      while (transfer.paused && !transfer.aborted) {
+        await new Promise<void>(resolve => {
+          transfer.pauseResolver = resolve
+        })
+      }
+      if (transfer.aborted) {
+        activeTransfersRef.current.delete(fileId)
+        dispatchTransfer({ type: 'END_UPLOAD' })
+        return
+      }
+      
       const dataToSend = await encryptChunk(key, new Uint8Array(chunkData))
       const packet = buildChunkPacket(0xFFFE, chunkIndex, dataToSend)
       conn.send(packet)
@@ -217,11 +267,14 @@ export function useCollabGuest(roomId: string) {
     }
     
     // Send file end
-    try {
-      const endMsg = await encryptJSON(key, { type: 'collab-file-end', fileId })
-      conn.send({ type: 'collab-msg-enc', data: endMsg })
-    } catch {}
+    if (!transfer.aborted) {
+      try {
+        const endMsg = await encryptJSON(key, { type: 'collab-file-end', fileId })
+        conn.send({ type: 'collab-msg-enc', data: endMsg })
+      } catch {}
+    }
     
+    activeTransfersRef.current.delete(fileId)
     dispatchTransfer({ type: 'END_UPLOAD' })
   }, [])
 
@@ -564,6 +617,45 @@ export function useCollabGuest(roomId: string) {
               const fileId = payload.fileId as string
               if (myFilesRef.current.has(fileId) && decryptKeyRef.current) {
                 await sendFileToRequester(conn, decryptKeyRef.current, fileId)
+              }
+              return
+            }
+
+            // Pause request from requester (via host relay)
+            if (payload.type === 'collab-pause-file') {
+              const fileId = payload.fileId as string
+              const transfer = activeTransfersRef.current.get(fileId)
+              if (transfer) {
+                transfer.paused = true
+              }
+              return
+            }
+
+            // Resume request from requester (via host relay)
+            if (payload.type === 'collab-resume-file') {
+              const fileId = payload.fileId as string
+              const transfer = activeTransfersRef.current.get(fileId)
+              if (transfer) {
+                transfer.paused = false
+                if (transfer.pauseResolver) {
+                  transfer.pauseResolver()
+                  transfer.pauseResolver = undefined
+                }
+              }
+              return
+            }
+
+            // Cancel request from requester (via host relay)
+            if (payload.type === 'collab-cancel-file') {
+              const fileId = payload.fileId as string
+              const transfer = activeTransfersRef.current.get(fileId)
+              if (transfer) {
+                transfer.aborted = true
+                transfer.paused = false
+                if (transfer.pauseResolver) {
+                  transfer.pauseResolver()
+                  transfer.pauseResolver = undefined
+                }
               }
               return
             }

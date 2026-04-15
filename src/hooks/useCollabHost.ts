@@ -4,6 +4,7 @@ import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, enc
 import { STUN_ONLY } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
+import { generateThumbnailAsync, generateVideoThumbnail, generateTextPreview } from '../utils/thumbnailWorker'
 import { ChatMessage, FileEntry } from '../types'
 import {
   roomReducer,
@@ -20,6 +21,13 @@ import {
 
 // ── Types ────────────────────────────────────────────────────────────────
 
+interface ActiveTransfer {
+  fileId: string
+  aborted: boolean
+  paused: boolean
+  pauseResolver?: () => void
+}
+
 interface GuestConnection {
   conn: DataConnection
   peerId: string
@@ -35,6 +43,8 @@ interface GuestConnection {
   passwordVerified: boolean
   chunker?: InstanceType<typeof AdaptiveChunker>
   progressThrottler?: InstanceType<typeof ProgressThrottler>
+  // Active file transfers TO this guest (supports concurrent)
+  activeTransfers: Map<string, ActiveTransfer>
   // For file receiving from this guest
   inProgressFile?: {
     id: string
@@ -179,12 +189,21 @@ export function useCollabHost() {
     const fileId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     myFilesRef.current.set(fileId, file)
     
-    // Generate thumbnail for images
+    // Generate thumbnail/preview using thumbnailWorker (same as Portal)
     let thumbnail: string | undefined
-    if (file.type.startsWith('image/') && file.size < 5 * 1024 * 1024) {
+    let textPreview: string | undefined
+    
+    if (file.type.startsWith('image/') && file.size < 10 * 1024 * 1024) {
       try {
-        const url = URL.createObjectURL(file)
-        thumbnail = url
+        thumbnail = await generateThumbnailAsync(file, 80)
+      } catch {}
+    } else if (file.type.startsWith('video/') && file.size < 50 * 1024 * 1024) {
+      try {
+        thumbnail = await generateVideoThumbnail(file, 80)
+      } catch {}
+    } else if (file.type === 'text/plain' || file.name.endsWith('.txt') || file.name.endsWith('.md')) {
+      try {
+        textPreview = await generateTextPreview(file)
       } catch {}
     }
     
@@ -196,6 +215,7 @@ export function useCollabHost() {
       owner: room.myPeerId || '',
       ownerName: room.myName,
       thumbnail,
+      textPreview,
       addedAt: Date.now(),
     }
     
@@ -225,10 +245,14 @@ export function useCollabHost() {
     }
   }, [room.myPeerId, room.myName])
 
-  // Send file to a specific requester
+  // Send file to a specific requester - supports pause/resume/cancel and concurrent transfers
   const sendFileToRequester = useCallback(async (gs: GuestConnection, fileId: string): Promise<void> => {
     const file = myFilesRef.current.get(fileId)
     if (!file || !gs.encryptKey) return
+    
+    // Create transfer state for this specific file+requester combo
+    const transfer: ActiveTransfer = { fileId, aborted: false, paused: false }
+    gs.activeTransfers.set(fileId, transfer)
     
     if (!gs.chunker) gs.chunker = new AdaptiveChunker()
     if (!gs.progressThrottler) gs.progressThrottler = new ProgressThrottler(80)
@@ -245,14 +269,34 @@ export function useCollabHost() {
         totalChunks,
       })
       gs.conn.send({ type: 'collab-msg-enc', data: startMsg })
-    } catch { return }
+    } catch { 
+      gs.activeTransfers.delete(fileId)
+      return 
+    }
     
     let chunkIndex = 0
     let fileSent = 0
     const startTime = Date.now()
     
     for await (const { buffer: chunkData } of chunkFileAdaptive(file, gs.chunker)) {
-      const dataToSend = await encryptChunk(gs.encryptKey, new Uint8Array(chunkData))
+      // Check if transfer was cancelled
+      if (transfer.aborted) {
+        gs.activeTransfers.delete(fileId)
+        return
+      }
+      
+      // Handle pause
+      while (transfer.paused && !transfer.aborted) {
+        await new Promise<void>(resolve => {
+          transfer.pauseResolver = resolve
+        })
+      }
+      if (transfer.aborted) {
+        gs.activeTransfers.delete(fileId)
+        return
+      }
+      
+      const dataToSend = await encryptChunk(gs.encryptKey!, new Uint8Array(chunkData))
       const packet = buildChunkPacket(0xFFFE, chunkIndex, dataToSend) // 0xFFFE for collab file
       gs.conn.send(packet)
       await waitForBufferDrain(gs.conn)
@@ -260,7 +304,7 @@ export function useCollabHost() {
       chunkIndex++
       fileSent += chunkData.byteLength
       
-      if (gs.progressThrottler.shouldUpdate()) {
+      if (gs.progressThrottler!.shouldUpdate()) {
         const elapsed = (Date.now() - startTime) / 1000
         const speed = elapsed > 0.5 ? fileSent / elapsed : 0
         dispatchTransfer({ type: 'UPDATE_UPLOAD', progress: Math.round((fileSent / file.size) * 100), speed })
@@ -268,11 +312,14 @@ export function useCollabHost() {
     }
     
     // Send file end
-    try {
-      const endMsg = await encryptJSON(gs.encryptKey, { type: 'collab-file-end', fileId })
-      gs.conn.send({ type: 'collab-msg-enc', data: endMsg })
-    } catch {}
+    if (!transfer.aborted) {
+      try {
+        const endMsg = await encryptJSON(gs.encryptKey, { type: 'collab-file-end', fileId })
+        gs.conn.send({ type: 'collab-msg-enc', data: endMsg })
+      } catch {}
+    }
     
+    gs.activeTransfers.delete(fileId)
     dispatchTransfer({ type: 'END_UPLOAD' })
   }, [])
 
@@ -310,6 +357,7 @@ export function useCollabHost() {
         encryptKey: null,
         keyPair: null,
         passwordVerified: false,
+        activeTransfers: new Map(),
         chunkQueue: Promise.resolve(),
         imageSendQueue: Promise.resolve(),
       }
@@ -630,6 +678,105 @@ export function useCollabHost() {
                 })
                 otherGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
               } catch {}
+            }
+            return
+          }
+          
+          // Pause file transfer from guest
+          if (payload.type === 'collab-pause-file') {
+            const fileId = payload.fileId as string
+            // If host is sending this file to the guest, pause it
+            const transfer = gs.activeTransfers.get(fileId)
+            if (transfer) {
+              transfer.paused = true
+            }
+            // Otherwise relay to file owner
+            const sharedFile = files.sharedFiles.find(f => f.id === fileId)
+            if (sharedFile && sharedFile.owner !== room.myPeerId) {
+              const ownerGs = Array.from(connectionsRef.current.values()).find(g => g.peerId === sharedFile.owner)
+              if (ownerGs?.encryptKey) {
+                try {
+                  const encrypted = await encryptJSON(ownerGs.encryptKey, {
+                    type: 'collab-pause-file',
+                    fileId,
+                    requesterPeerId: gs.peerId,
+                  })
+                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+                } catch {}
+              }
+            }
+            return
+          }
+          
+          // Resume file transfer from guest
+          if (payload.type === 'collab-resume-file') {
+            const fileId = payload.fileId as string
+            const transfer = gs.activeTransfers.get(fileId)
+            if (transfer) {
+              transfer.paused = false
+              if (transfer.pauseResolver) {
+                transfer.pauseResolver()
+                transfer.pauseResolver = undefined
+              }
+            }
+            // Otherwise relay to file owner
+            const sharedFile = files.sharedFiles.find(f => f.id === fileId)
+            if (sharedFile && sharedFile.owner !== room.myPeerId) {
+              const ownerGs = Array.from(connectionsRef.current.values()).find(g => g.peerId === sharedFile.owner)
+              if (ownerGs?.encryptKey) {
+                try {
+                  const encrypted = await encryptJSON(ownerGs.encryptKey, {
+                    type: 'collab-resume-file',
+                    fileId,
+                    requesterPeerId: gs.peerId,
+                  })
+                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+                } catch {}
+              }
+            }
+            return
+          }
+          
+          // Cancel file transfer from guest
+          if (payload.type === 'collab-cancel-file') {
+            const fileId = payload.fileId as string
+            const transfer = gs.activeTransfers.get(fileId)
+            if (transfer) {
+              transfer.aborted = true
+              transfer.paused = false
+              if (transfer.pauseResolver) {
+                transfer.pauseResolver()
+                transfer.pauseResolver = undefined
+              }
+            }
+            // Relay to file owner
+            const sharedFile = files.sharedFiles.find(f => f.id === fileId)
+            if (sharedFile && sharedFile.owner !== room.myPeerId) {
+              const ownerGs = Array.from(connectionsRef.current.values()).find(g => g.peerId === sharedFile.owner)
+              if (ownerGs?.encryptKey) {
+                try {
+                  const encrypted = await encryptJSON(ownerGs.encryptKey, {
+                    type: 'collab-cancel-file',
+                    fileId,
+                    requesterPeerId: gs.peerId,
+                  })
+                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+                } catch {}
+              }
+            }
+            return
+          }
+          
+          // Cancel all transfers
+          if (payload.type === 'collab-cancel-all') {
+            // Cancel all active transfers to this guest
+            for (const transfer of gs.activeTransfers.values()) {
+              transfer.aborted = true
+              transfer.paused = false
+              if (transfer.pauseResolver) {
+                transfer.pauseResolver()
+                transfer.pauseResolver = undefined
+              }
             }
             return
           }
