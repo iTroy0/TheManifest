@@ -30,6 +30,7 @@ import {
   DoorOpen,
   ChevronDown,
   Info,
+  Pencil,
 } from 'lucide-react'
 
 // ── Host View ────────────────────────────────────────────────────────────
@@ -175,61 +176,6 @@ function CollabHostView() {
           </div>
         )}
 
-        {/* Nickname Bar */}
-        {isConnected && (
-          <div className="glow-card px-4 py-3 animate-fade-in-up">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <Users className="w-4 h-4 text-accent shrink-0" />
-                {editingName ? (
-                  <input
-                    type="text"
-                    value={nameInput}
-                    onChange={e => setNameInput(e.target.value)}
-                    onBlur={() => {
-                      if (nameInput.trim() && nameInput.trim() !== host.myName) {
-                        host.changeNickname(nameInput.trim())
-                      }
-                      setEditingName(false)
-                    }}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        if (nameInput.trim() && nameInput.trim() !== host.myName) {
-                          host.changeNickname(nameInput.trim())
-                        }
-                        setEditingName(false)
-                      } else if (e.key === 'Escape') {
-                        setNameInput(host.myName)
-                        setEditingName(false)
-                      }
-                    }}
-                    className="flex-1 min-w-0 bg-bg border border-accent/30 rounded-lg px-2 py-1 font-mono text-sm text-text focus:outline-none focus:border-accent"
-                    autoFocus
-                  />
-                ) : (
-                  <button
-                    onClick={() => { setNameInput(host.myName); setEditingName(true) }}
-                    className="flex items-center gap-1.5 font-mono text-sm text-text hover:text-accent transition-colors truncate"
-                  >
-                    <span className="truncate">{host.myName}</span>
-                    <span className="text-[10px] text-muted">(click to edit)</span>
-                  </button>
-                )}
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
-                  <Crown className="w-3 h-3 text-accent" />
-                  <span className="font-mono text-[10px] text-accent">Host</span>
-                </div>
-                <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
-                  <Users className="w-3 h-3 text-accent" />
-                  <span className="font-mono text-[10px] text-accent">{host.onlineCount + 1}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Room Active - Collapsible Card */}
         {isConnected && (
           <div className="glow-card overflow-hidden animate-fade-in-up">
@@ -306,16 +252,56 @@ function CollabHostView() {
                   <div className="space-y-2">
                     {/* Host (You) */}
                     <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-accent/5 border border-accent/20">
-                      <div className="flex items-center gap-2">
-                        <div className="w-6 h-6 rounded-full bg-accent/20 flex items-center justify-center">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <div className="w-6 h-6 rounded-full bg-accent/20 flex items-center justify-center shrink-0">
                           <Crown className="w-3 h-3 text-accent" />
                         </div>
-                        <span className="font-mono text-sm text-text">{host.myName}</span>
-                        <span className="font-mono text-[10px] text-muted">(You)</span>
+                        {editingName ? (
+                          <input
+                            type="text"
+                            value={nameInput}
+                            onChange={e => setNameInput(e.target.value)}
+                            onBlur={() => {
+                              if (nameInput.trim() && nameInput.trim() !== host.myName) {
+                                host.changeNickname(nameInput.trim())
+                              }
+                              setEditingName(false)
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') {
+                                if (nameInput.trim() && nameInput.trim() !== host.myName) {
+                                  host.changeNickname(nameInput.trim())
+                                }
+                                setEditingName(false)
+                              } else if (e.key === 'Escape') {
+                                setNameInput(host.myName)
+                                setEditingName(false)
+                              }
+                            }}
+                            className="flex-1 min-w-0 bg-bg border border-accent/30 rounded px-2 py-0.5 font-mono text-sm text-text focus:outline-none focus:border-accent"
+                            autoFocus
+                          />
+                        ) : (
+                          <>
+                            <span className="font-mono text-sm text-text truncate">{host.myName}</span>
+                            <span className="font-mono text-[10px] text-muted shrink-0">(You)</span>
+                          </>
+                        )}
                       </div>
-                      <div className="flex items-center gap-1 text-accent">
-                        <Wifi className="w-3 h-3" />
-                        <span className="font-mono text-[10px]">Host</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {!editingName && (
+                          <button
+                            onClick={() => { setNameInput(host.myName); setEditingName(true) }}
+                            className="p-1 rounded hover:bg-accent/10 text-muted hover:text-accent transition-colors"
+                            title="Edit nickname"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                        )}
+                        <div className="flex items-center gap-1 text-accent">
+                          <Wifi className="w-3 h-3" />
+                          <span className="font-mono text-[10px]">Host</span>
+                        </div>
                       </div>
                     </div>
                     {/* Guests */}
@@ -702,61 +688,6 @@ function CollabGuestView({ roomId }: { roomId: string }) {
           </div>
         )}
 
-        {/* Nickname Bar */}
-        {isConnected && (
-          <div className="glow-card px-4 py-3 animate-fade-in-up">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <Users className="w-4 h-4 text-accent shrink-0" />
-                {editingName ? (
-                  <input
-                    type="text"
-                    value={nameInput}
-                    onChange={e => setNameInput(e.target.value)}
-                    onBlur={() => {
-                      if (nameInput.trim() && nameInput.trim() !== guest.myName) {
-                        guest.changeNickname(nameInput.trim())
-                      }
-                      setEditingName(false)
-                    }}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        if (nameInput.trim() && nameInput.trim() !== guest.myName) {
-                          guest.changeNickname(nameInput.trim())
-                        }
-                        setEditingName(false)
-                      } else if (e.key === 'Escape') {
-                        setNameInput(guest.myName)
-                        setEditingName(false)
-                      }
-                    }}
-                    className="flex-1 min-w-0 bg-bg border border-accent/30 rounded-lg px-2 py-1 font-mono text-sm text-text focus:outline-none focus:border-accent"
-                    autoFocus
-                  />
-                ) : (
-                  <button
-                    onClick={() => { setNameInput(guest.myName); setEditingName(true) }}
-                    className="flex items-center gap-1.5 font-mono text-sm text-text hover:text-accent transition-colors truncate"
-                  >
-                    <span className="truncate">{guest.myName}</span>
-                    <span className="text-[10px] text-muted">(click to edit)</span>
-                  </button>
-                )}
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
-                  <Wifi className="w-3 h-3 text-accent" />
-                  <span className="font-mono text-[10px] text-accent">P2P</span>
-                </div>
-                <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
-                  <Users className="w-3 h-3 text-accent" />
-                  <span className="font-mono text-[10px] text-accent">{guest.onlineCount}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Connected - Room Info */}
         {isConnected && (
           <div className="glow-card overflow-hidden animate-fade-in-up">
@@ -788,13 +719,51 @@ function CollabGuestView({ roomId }: { roomId: string }) {
                   <div className="space-y-2">
                     {/* Show yourself */}
                     <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-accent/5 border border-accent/20">
-                      <div className="flex items-center gap-2">
-                        <div className="w-6 h-6 rounded-full bg-accent/20 flex items-center justify-center">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <div className="w-6 h-6 rounded-full bg-accent/20 flex items-center justify-center shrink-0">
                           <Users className="w-3 h-3 text-accent" />
                         </div>
-                        <span className="font-mono text-sm text-text">{guest.myName}</span>
-                        <span className="font-mono text-[10px] text-muted">(You)</span>
+                        {editingName ? (
+                          <input
+                            type="text"
+                            value={nameInput}
+                            onChange={e => setNameInput(e.target.value)}
+                            onBlur={() => {
+                              if (nameInput.trim() && nameInput.trim() !== guest.myName) {
+                                guest.changeNickname(nameInput.trim())
+                              }
+                              setEditingName(false)
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') {
+                                if (nameInput.trim() && nameInput.trim() !== guest.myName) {
+                                  guest.changeNickname(nameInput.trim())
+                                }
+                                setEditingName(false)
+                              } else if (e.key === 'Escape') {
+                                setNameInput(guest.myName)
+                                setEditingName(false)
+                              }
+                            }}
+                            className="flex-1 min-w-0 bg-bg border border-accent/30 rounded px-2 py-0.5 font-mono text-sm text-text focus:outline-none focus:border-accent"
+                            autoFocus
+                          />
+                        ) : (
+                          <>
+                            <span className="font-mono text-sm text-text truncate">{guest.myName}</span>
+                            <span className="font-mono text-[10px] text-muted shrink-0">(You)</span>
+                          </>
+                        )}
                       </div>
+                      {!editingName && (
+                        <button
+                          onClick={() => { setNameInput(guest.myName); setEditingName(true) }}
+                          className="p-1 rounded hover:bg-accent/10 text-muted hover:text-accent transition-colors shrink-0"
+                          title="Edit nickname"
+                        >
+                          <Pencil className="w-3 h-3" />
+                        </button>
+                      )}
                     </div>
                     {/* Other participants */}
                     {guest.participants
