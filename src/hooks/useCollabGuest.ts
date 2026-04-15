@@ -135,11 +135,11 @@ export function useCollabGuest(roomId: string) {
       } catch {}
     }
     
-    // Fall back to host relay
-    try {
-      const encrypted = await encryptJSON(decryptKeyRef.current, { type: 'collab-request-file', fileId })
-      sendToHost({ type: 'collab-msg-enc', data: encrypted })
-    } catch {}
+  // Fall back to host relay - include owner so host can relay to correct peer
+  try {
+  const encrypted = await encryptJSON(decryptKeyRef.current, { type: 'collab-request-file', fileId, owner: ownerId })
+  sendToHost({ type: 'collab-msg-enc', data: encrypted })
+  } catch {}
   }, [sendToHost])
 
   // Share a file
@@ -358,9 +358,9 @@ export function useCollabGuest(roomId: string) {
             return
           }
 
-          if (msg.type === 'kicked') {
-            setMessages(prev => [...prev, { text: 'You were removed from the room', from: 'system', time: Date.now(), self: false }])
-            dispatchRoom({ type: 'SET_STATUS', payload: 'closed' })
+  if (msg.type === 'kicked') {
+  setMessages(prev => [...prev, { text: 'You were removed from the room', from: 'system', time: Date.now(), self: false }])
+  dispatchRoom({ type: 'SET_STATUS', payload: 'kicked' })
             conn.close()
             return
           }

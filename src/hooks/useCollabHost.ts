@@ -586,8 +586,31 @@ export function useCollabHost() {
           // Handle collab-specific messages
           if (payload.type === 'collab-request-file') {
             const fileId = payload.fileId as string
-            dispatchTransfer({ type: 'START_UPLOAD', fileId, fileName: myFilesRef.current.get(fileId)?.name || fileId })
-            await sendFileToRequester(gs, fileId)
+            const ownerId = payload.owner as string | undefined
+            
+            // Check if host owns this file
+            if (myFilesRef.current.has(fileId)) {
+              dispatchTransfer({ type: 'START_UPLOAD', fileId, fileName: myFilesRef.current.get(fileId)?.name || fileId })
+              await sendFileToRequester(gs, fileId)
+              return
+            }
+            
+            // Otherwise relay the request to the file owner (another guest)
+            const sharedFile = files.sharedFiles.find(f => f.id === fileId)
+            const ownerPeerId = ownerId || sharedFile?.owner
+            if (ownerPeerId) {
+              const ownerGs = Array.from(connectionsRef.current.values()).find(g => g.peerId === ownerPeerId)
+              if (ownerGs?.encryptKey) {
+                try {
+                  const encrypted = await encryptJSON(ownerGs.encryptKey, {
+                    type: 'collab-request-file',
+                    fileId,
+                    requesterPeerId: gs.peerId,
+                  })
+                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+                } catch {}
+              }
+            }
             return
           }
           

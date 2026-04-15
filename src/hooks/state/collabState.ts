@@ -15,6 +15,7 @@ export type CollabStatus =
   | 'reconnecting'
   | 'error'
   | 'closed'
+  | 'kicked'
 
 export interface CollabParticipant {
   peerId: string
