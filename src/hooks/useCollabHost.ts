@@ -222,6 +222,56 @@ export function useCollabHost() {
     } catch {}
   }, [])
 
+  // Pause file download
+  const pauseFile = useCallback(async (fileId: string): Promise<void> => {
+    // Find the owner of the file
+    const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
+    if (!file) return
+    
+    const ownerGs = Array.from(connectionsRef.current.values()).find(g => g.peerId === file.owner)
+    if (!ownerGs?.encryptKey) return
+    
+    try {
+      const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-pause-file', fileId })
+      ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+      dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'paused' } })
+    } catch {}
+  }, [])
+
+  // Resume file download
+  const resumeFile = useCallback(async (fileId: string): Promise<void> => {
+    const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
+    if (!file) return
+    
+    const ownerGs = Array.from(connectionsRef.current.values()).find(g => g.peerId === file.owner)
+    if (!ownerGs?.encryptKey) return
+    
+    try {
+      const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-resume-file', fileId })
+      ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+      dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'downloading' } })
+    } catch {}
+  }, [])
+
+  // Cancel file download
+  const cancelFile = useCallback(async (fileId: string): Promise<void> => {
+    const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
+    if (!file) return
+    
+    const ownerGs = Array.from(connectionsRef.current.values()).find(g => g.peerId === file.owner)
+    if (ownerGs?.encryptKey) {
+      try {
+        const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-cancel-file', fileId })
+        ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+      } catch {}
+    }
+    
+    // Clear download state
+    if (inProgressFileRef.current?.fileId === fileId) {
+      inProgressFileRef.current = null
+    }
+  }, [])
+
   // Close the room
   const closeRoom = useCallback((): void => {
     broadcast({ type: 'room-closed' })
@@ -1258,6 +1308,9 @@ export function useCollabHost() {
     shareFile,
     removeFile,
     requestFile,
+    pauseFile,
+    resumeFile,
+    cancelFile,
     kickUser,
     closeRoom,
     sendMessage,

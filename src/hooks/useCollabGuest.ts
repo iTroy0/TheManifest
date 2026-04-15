@@ -102,6 +102,10 @@ export function useCollabGuest(roomId: string) {
   // Active file transfers (when sending files to other peers)
   const activeTransfersRef = useRef<Map<string, { fileId: string; aborted: boolean; paused: boolean; pauseResolver?: () => void }>>(new Map())
   
+  // Keep fresh reference to files state
+  const filesRef = useRef(files)
+  filesRef.current = files
+  
   // P2P connections to other guests (mesh)
   const peerConnectionsRef = useRef<Map<string, PeerConnection>>(new Map())
   
@@ -974,39 +978,31 @@ export function useCollabGuest(roomId: string) {
   dispatchRoom({ type: 'SET_STATUS', payload: 'closed' })
   }, [])
 
-  // Pause/Resume/Cancel functions for FileList compatibility
-  const pauseFile = useCallback((index: number): void => {
+  // Pause/Resume/Cancel functions
+  const pauseFile = useCallback((fileId: string): void => {
     const conn = hostConnRef.current
     if (!conn) return
-    const file = files.sharedFiles[index]
-    if (file) {
-      sendToHost({ type: 'collab-pause-file', fileId: file.id })
-      dispatchFiles({ type: 'PAUSE_FILE', index })
-    }
-  }, [files.sharedFiles, sendToHost])
-
-  const resumeFile = useCallback((index: number): void => {
+    conn.send({ type: 'collab-pause-file', fileId })
+    dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'paused' } })
+  }, [])
+  
+  const resumeFile = useCallback((fileId: string): void => {
     const conn = hostConnRef.current
     if (!conn) return
-    const file = files.sharedFiles[index]
-    if (file) {
-      sendToHost({ type: 'collab-resume-file', fileId: file.id })
-      dispatchFiles({ type: 'RESUME_FILE', index })
+    conn.send({ type: 'collab-resume-file', fileId })
+    dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'downloading' } })
+  }, [])
+  
+  const cancelFile = useCallback((fileId: string): void => {
+    sendToHost({ type: 'collab-cancel-file', fileId })
+    // Clear the download state
+    const newDownloads = { ...filesRef.current.downloads }
+    delete newDownloads[fileId]
+    // Reset in-progress file if it matches
+    if (inProgressFileRef.current?.fileId === fileId) {
+      inProgressFileRef.current = null
     }
-  }, [files.sharedFiles, sendToHost])
-
-  const cancelFile = useCallback((index: number): void => {
-    const file = files.sharedFiles[index]
-    if (file) {
-      sendToHost({ type: 'collab-cancel-file', fileId: file.id })
-      // Abort any in-progress stream
-      if (inProgressFileRef.current?.fileId === file.id && inProgressFileRef.current.stream) {
-        try { inProgressFileRef.current.stream.abort() } catch {}
-        inProgressFileRef.current = null
-      }
-      dispatchFiles({ type: 'CANCEL_FILE', index, name: file.name })
-    }
-  }, [files.sharedFiles, sendToHost])
+  }, [sendToHost])
 
   const cancelAll = useCallback((): void => {
     sendToHost({ type: 'collab-cancel-all' })

@@ -6,13 +6,12 @@ import { useCall } from '../hooks/useCall'
 import { formatBytes, formatSpeed, formatTime } from '../utils/formatBytes'
 import { useElapsedTime, formatElapsed } from '../hooks/useElapsedTime'
 import StatusIndicator from '../components/StatusIndicator'
-import FileList from '../components/FileList'
+import CollabFileList from '../components/CollabFileList'
 import ProgressBar from '../components/ProgressBar'
 import ChatPanel from '../components/ChatPanel'
 import CallPanel from '../components/CallPanel'
 import { ComponentErrorBoundary } from '../components/ErrorBoundary'
 import { useState, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent } from 'react'
-import { FileEntry } from '../types'
 import {
   ArrowLeft,
   AlertCircle,
@@ -101,15 +100,14 @@ function CollabHostView() {
     setIsDragging(false)
   }, [])
 
-  // Convert SharedFiles to FileEntry format for FileList component
-  const fileEntries: FileEntry[] = useMemo(() => 
-    host.sharedFiles.map(f => ({
-      name: f.name,
-      size: f.size,
-      type: f.type,
-      thumbnail: f.thumbnail,
-    })),
-  [host.sharedFiles])
+  // Create a Set of own file IDs for quick lookup
+  const mySharedFiles = useMemo(() => {
+    const set = new Set<string>()
+    for (const f of host.sharedFiles) {
+      if (f.owner === host.myPeerId) set.add(f.id)
+    }
+    return set
+  }, [host.sharedFiles, host.myPeerId])
 
   // Check if any download is in progress
   const hasPending = Object.keys(host.pendingFiles).length > 0
@@ -363,31 +361,21 @@ function CollabHostView() {
                   </button>
                 </div>
 
-                {/* File List - using the same FileList component */}
-                {fileEntries.length > 0 && (
+                {/* File List */}
+                {host.sharedFiles.length > 0 && (
                   <div className="px-4 pb-4 border-t border-border pt-4">
                     <ComponentErrorBoundary name="Files">
-                      <FileList
-                        files={fileEntries}
-                        progress={host.progress}
-                        pendingFiles={host.pendingFiles}
-                        pausedFiles={host.pausedFiles}
-                        currentFileIndex={host.currentFileIndex}
-                        canRemove={host.sharedFiles.map(f => f.owner === host.myPeerId)}
-                        onRemove={(index) => {
-                          const file = host.sharedFiles[index]
-                          if (file) host.removeFile(file.id)
-                        }}
-                        onRequest={(index) => {
-                          // Don't allow requesting own files
-                          const file = host.sharedFiles[index]
-                          if (file && file.owner !== host.myPeerId) {
-                            host.requestFile(file.id, file.owner)
-                          }
-                        }}
-                        onCancel={null}
-                        onPause={null}
-                        onResume={null}
+                      <CollabFileList
+                        files={host.sharedFiles}
+                        downloads={host.downloads}
+                        myPeerId={host.myPeerId}
+                        mySharedFiles={mySharedFiles}
+                        myName={host.myName}
+                        onDownload={(fileId, ownerId) => host.requestFile(fileId, ownerId)}
+                        onRemove={(fileId) => host.removeFile(fileId)}
+                        onPause={(fileId) => host.pauseFile?.(fileId)}
+                        onResume={(fileId) => host.resumeFile?.(fileId)}
+                        onCancel={(fileId) => host.cancelFile?.(fileId)}
                       />
                     </ComponentErrorBoundary>
                   </div>
@@ -469,18 +457,8 @@ function CollabGuestView({ roomId }: { roomId: string }) {
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Convert SharedFiles to FileEntry format for FileList component
-  const fileEntries: FileEntry[] = useMemo(() => 
-    guest.sharedFiles.map(f => ({
-      name: f.name,
-      size: f.size,
-      type: f.type,
-      thumbnail: f.thumbnail,
-    })),
-  [guest.sharedFiles])
-
   // Check if any download is in progress
-  const hasPending = Object.keys(guest.pendingFiles).length > 0
+  const hasPending = Object.values(guest.downloads).some(d => d.status === 'downloading' || d.status === 'requesting')
   const elapsed = useElapsedTime(hasPending)
 
   // For download button - filter out my files and completed files
@@ -801,41 +779,23 @@ function CollabGuestView({ roomId }: { roomId: string }) {
                   </div>
                 )}
 
-                {/* File List - using the same FileList component */}
-                {fileEntries.length > 0 && (
-                  <div className="px-4 pb-4 border-t border-border pt-4">
-                    <ComponentErrorBoundary name="Files">
-                      <FileList
-                        files={fileEntries}
-                        progress={guest.progress}
-                        pendingFiles={guest.pendingFiles}
-                        pausedFiles={guest.pausedFiles}
-                        currentFileIndex={guest.currentFileIndex}
-                        canRemove={guest.sharedFiles.map(f => guest.mySharedFiles.has(f.id))}
-                        onRemove={(index) => {
-                          const file = guest.sharedFiles[index]
-                          if (file) guest.removeFile(file.id)
-                        }}
-                        onRequest={isDead || hasPending ? null : (index) => {
-                          // Don't allow requesting own files
-                          const file = guest.sharedFiles[index]
-                          if (file && !guest.mySharedFiles.has(file.id)) {
-                            guest.requestFile(file.id, file.owner)
-                          }
-                        }}
-                        onCancel={guest.cancelFile}
-                        onPause={guest.pauseFile}
-                        onResume={guest.resumeFile}
-                      />
-                    </ComponentErrorBoundary>
-                  </div>
-                )}
-
-                {fileEntries.length === 0 && (
-                  <div className="py-8 text-center border-t border-border">
-                    <p className="font-mono text-xs text-muted">No files shared yet</p>
-                  </div>
-                )}
+                {/* File List */}
+                <div className="px-4 pb-4 border-t border-border pt-4">
+                  <ComponentErrorBoundary name="Files">
+                    <CollabFileList
+                      files={guest.sharedFiles}
+                      downloads={guest.downloads}
+                      myPeerId={guest.myPeerId}
+                      mySharedFiles={guest.mySharedFiles}
+                      myName={guest.myName}
+                      onDownload={(fileId, ownerId) => guest.requestFile(fileId, ownerId)}
+                      onRemove={(fileId) => guest.removeFile(fileId)}
+                      onPause={(fileId) => guest.pauseFile?.(fileId)}
+                      onResume={(fileId) => guest.resumeFile?.(fileId)}
+                      onCancel={(fileId) => guest.cancelFile?.(fileId)}
+                    />
+                  </ComponentErrorBoundary>
+                </div>
               </div>
             </div>
           </div>
