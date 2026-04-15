@@ -46,7 +46,8 @@ interface InProgressFile {
   totalChunks: number
   chunks: Uint8Array[]
   receivedBytes: number
-  stream?: ReturnType<typeof createFileStream>
+  stream: ReturnType<typeof createFileStream> | null
+  startTime: number
 }
 
 interface InProgressImage {
@@ -498,43 +499,61 @@ export function useCollabGuest(roomId: string) {
               return
             }
 
-            // File transfer start
+            // File transfer start - use StreamWriter pattern from useReceiver
             if (payload.type === 'collab-file-start') {
               const fileId = payload.fileId as string
+              const fileName = payload.name as string
+              const fileSize = payload.size as number
+              
+              // Try to create a stream for direct-to-disk download (like useReceiver)
+              const stream = createFileStream(fileName, fileSize)
+              
               inProgressFileRef.current = {
                 fileId,
-                name: payload.name as string,
-                size: payload.size as number,
+                name: fileName,
+                size: fileSize,
                 totalChunks: payload.totalChunks as number,
-                chunks: [],
+                chunks: [], // Fallback buffer if stream not supported
                 receivedBytes: 0,
+                stream,
+                startTime: Date.now(),
               }
               dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download: { status: 'downloading', progress: 0, speed: 0 } })
               return
             }
 
-            // File transfer end
+            // File transfer end - use StreamWriter pattern from useReceiver
             if (payload.type === 'collab-file-end') {
               await chunkQueueRef.current
               const inFlight = inProgressFileRef.current
               inProgressFileRef.current = null
               if (!inFlight) return
 
-              const totalLen = inFlight.chunks.reduce((s, c) => s + c.byteLength, 0)
-              const fullBytes = new Uint8Array(totalLen)
-              let off = 0
-              for (const c of inFlight.chunks) { fullBytes.set(c, off); off += c.byteLength }
+              // If we used streaming, just close it (file already saved)
+              if (inFlight.stream) {
+                try {
+                  await inFlight.stream.close()
+                } catch {}
+              } else {
+                // Fallback: assemble from memory chunks
+                const totalLen = inFlight.chunks.reduce((s, c) => s + c.byteLength, 0)
+                const fullBytes = new Uint8Array(totalLen)
+                let off = 0
+                for (const c of inFlight.chunks) { fullBytes.set(c, off); off += c.byteLength }
 
-              const blob = new Blob([fullBytes], { type: files.sharedFiles.find(f => f.id === inFlight.fileId)?.type || 'application/octet-stream' })
-              const url = URL.createObjectURL(blob)
-              
-              // Trigger download
-              const a = document.createElement('a')
-              a.href = url
-              a.download = inFlight.name
-              document.body.appendChild(a)
-              a.click()
-              document.body.removeChild(a)
+                const mimeType = files.sharedFiles.find(f => f.id === inFlight.fileId)?.type || 'application/octet-stream'
+                const blob = new Blob([fullBytes], { type: mimeType })
+                const url = URL.createObjectURL(blob)
+                
+                // Trigger download
+                const a = document.createElement('a')
+                a.href = url
+                a.download = inFlight.name
+                document.body.appendChild(a)
+                a.click()
+                document.body.removeChild(a)
+                URL.revokeObjectURL(url)
+              }
               
               dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: inFlight.fileId, payload: { status: 'complete', progress: 100 } })
               return
@@ -678,17 +697,37 @@ export function useCollabGuest(roomId: string) {
       return
     }
 
-    // Collab file chunk
+    // Collab file chunk - use StreamWriter pattern like useReceiver
     if (parsed.fileIndex === 0xFFFE) {
-      if (!inProgressFileRef.current) return
+      const inFlight = inProgressFileRef.current
+      if (!inFlight) return
       try {
         const decrypted = await decryptChunk(decryptKeyRef.current, new Uint8Array(parsed.data))
-        inProgressFileRef.current.chunks.push(new Uint8Array(decrypted))
-        inProgressFileRef.current.receivedBytes += decrypted.byteLength
+        const bytes = new Uint8Array(decrypted)
         
-        const progress = Math.round((inProgressFileRef.current.receivedBytes / inProgressFileRef.current.size) * 100)
-        dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: inProgressFileRef.current.fileId, payload: { progress } })
-      } catch {}
+        // Write to stream if available, otherwise buffer in memory
+        if (inFlight.stream) {
+          await inFlight.stream.write(bytes)
+        } else {
+          inFlight.chunks.push(bytes)
+        }
+        
+        inFlight.receivedBytes += bytes.byteLength
+        
+        // Calculate progress and speed (throttled like useReceiver)
+        const progress = Math.min(100, Math.round((inFlight.receivedBytes / inFlight.size) * 100))
+        const elapsed = (Date.now() - inFlight.startTime) / 1000
+        const speed = elapsed > 0.5 ? inFlight.receivedBytes / elapsed : 0
+        
+        dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: inFlight.fileId, payload: { progress, speed } })
+      } catch (e) {
+        // Chunk decryption or write failed - abort stream and cancel
+        if (inFlight.stream) {
+          try { await inFlight.stream.abort() } catch {}
+        }
+        inProgressFileRef.current = null
+        dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: inFlight.fileId, payload: { status: 'error', progress: 0 } })
+      }
       return
     }
   }
@@ -707,6 +746,11 @@ export function useCollabGuest(roomId: string) {
       if (keyExchangeTimeoutRef.current) clearTimeout(keyExchangeTimeoutRef.current)
       Object.values(typingTimeouts.current).forEach(clearTimeout)
       typingTimeouts.current = {}
+      // Abort any in-progress file stream
+      if (inProgressFileRef.current?.stream) {
+        try { inProgressFileRef.current.stream.abort() } catch {}
+      }
+      inProgressFileRef.current = null
       if (hostConnRef.current) {
         try { hostConnRef.current.removeAllListeners() } catch {}
         try { hostConnRef.current.close() } catch {}
