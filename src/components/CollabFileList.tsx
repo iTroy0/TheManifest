@@ -3,6 +3,12 @@ import { FileText, Image, FileCode, Film, Music, Archive, File, X, Download, Pau
 import { formatBytes } from '../utils/formatBytes'
 import type { SharedFile, FileDownload } from '../hooks/state/collabState'
 
+// Progress-ring stroke-dasharray divisor. For a circle of radius 15 the
+// circumference is 2*pi*15 ≈ 94.25, so each percentage point corresponds
+// to ~0.94 length units along the dasharray. Using 0.94 keeps the ring
+// visually accurate without hardcoding the math inline.
+const PROGRESS_RING_CIRCUMFERENCE_PER_PERCENT = 0.94
+
 type LucideIcon = React.ComponentType<React.SVGProps<SVGSVGElement> & { strokeWidth?: number | string }>
 
 const iconMap: Record<string, LucideIcon> = {
@@ -64,7 +70,6 @@ interface CollabFileItemProps {
   file: SharedFile
   download: FileDownload | undefined
   isOwn: boolean
-  myName: string
   onDownload: () => void
   onRemove: () => void
   onPause: () => void
@@ -72,10 +77,12 @@ interface CollabFileItemProps {
   onCancel: () => void
 }
 
-function CollabFileItem({ file, download, isOwn, myName, onDownload, onRemove, onPause, onResume, onCancel }: CollabFileItemProps) {
+function CollabFileItem({ file, download, isOwn, onDownload, onRemove, onPause, onResume, onCancel }: CollabFileItemProps) {
   const Icon = getIcon(file.type)
   const status = download?.status
-  const progress = download?.progress ?? 0
+  // Clamp to [0, 100] everywhere it's used, and guard against NaN% on zero-byte files.
+  const rawProgress = download?.progress ?? 0
+  const progress = Number.isFinite(rawProgress) ? Math.min(100, Math.max(0, Math.round(rawProgress))) : 0
   const speed = download?.speed ?? 0
   
   const isDone = status === 'complete'
@@ -91,7 +98,7 @@ function CollabFileItem({ file, download, isOwn, myName, onDownload, onRemove, o
       <circle
         cx="18" cy="18" r="15" fill="none" stroke="currentColor" strokeWidth="2"
         className="text-info transition-all duration-300"
-        strokeDasharray={`${progress * 0.94} 100`}
+        strokeDasharray={`${progress * PROGRESS_RING_CIRCUMFERENCE_PER_PERCENT} 100`}
         strokeLinecap="round"
       />
     </svg>
@@ -266,7 +273,6 @@ interface CollabFileListProps {
   downloads: Record<string, FileDownload>
   myPeerId: string | null
   mySharedFiles: Set<string>
-  myName: string
   onDownload: (fileId: string, ownerId: string) => void
   onRemove: (fileId: string) => void
   onPause: (fileId: string) => void
@@ -279,7 +285,6 @@ export default function CollabFileList({
   downloads,
   myPeerId,
   mySharedFiles,
-  myName,
   onDownload,
   onRemove,
   onPause,
@@ -318,7 +323,6 @@ export default function CollabFileList({
               file={file}
               download={downloads[file.id]}
               isOwn={isOwn}
-              myName={myName}
               onDownload={() => onDownload(file.id, file.owner)}
               onRemove={() => onRemove(file.id)}
               onPause={() => onPause(file.id)}

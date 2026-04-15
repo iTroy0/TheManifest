@@ -1,13 +1,11 @@
-import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import { useCollabHost } from '../hooks/useCollabHost'
 import { useCollabGuest } from '../hooks/useCollabGuest'
 import { useLocalMedia } from '../hooks/useLocalMedia'
 import { useCall } from '../hooks/useCall'
-import { formatBytes, formatSpeed, formatTime } from '../utils/formatBytes'
-import { useElapsedTime, formatElapsed } from '../hooks/useElapsedTime'
+import { formatBytes } from '../utils/formatBytes'
 import StatusIndicator from '../components/StatusIndicator'
 import CollabFileList from '../components/CollabFileList'
-import ProgressBar from '../components/ProgressBar'
 import ChatPanel from '../components/ChatPanel'
 import CallPanel from '../components/CallPanel'
 import { ComponentErrorBoundary } from '../components/ErrorBoundary'
@@ -20,7 +18,6 @@ import {
   Lock,
   Loader2,
   Users,
-  Share2,
   Copy,
   Check,
   Upload,
@@ -31,7 +28,110 @@ import {
   ChevronDown,
   Info,
   Pencil,
+  Radio,
 } from 'lucide-react'
+
+// ── Format fingerprint: first 8 hex chars as "XXXX XXXX" ─────────────────
+
+function formatFingerprint(fp: string | null | undefined): string {
+  if (!fp) return '—'
+  // Accept either raw hex or colon-separated. Strip non-hex, take first 8.
+  const clean = fp.replace(/[^0-9a-fA-F]/g, '').toLowerCase()
+  if (clean.length < 8) return clean
+  return `${clean.slice(0, 4)} ${clean.slice(4, 8)}`
+}
+
+// ── Verify connections panel: list peer fingerprints for MITM check ─────
+
+interface FingerprintEntry { peerId: string; name: string; fingerprint?: string }
+
+function VerifyConnectionsPanel({ entries }: { entries: FingerprintEntry[] }) {
+  const [open, setOpen] = useState(false)
+  if (entries.length === 0) return null
+  return (
+    <div className="border-t border-border">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-5 py-3 text-left hover:bg-surface-2/30 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <Shield className="w-3.5 h-3.5 text-accent" />
+          <span className="font-mono text-xs text-muted uppercase tracking-wide">Verify connections</span>
+        </div>
+        <ChevronDown className={`w-3.5 h-3.5 text-muted transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="px-5 pb-4 space-y-1.5">
+          <p className="font-mono text-[10px] text-muted leading-relaxed">
+            Compare fingerprints out-of-band (voice/SMS) to detect a man-in-the-middle.
+          </p>
+          {entries.map(e => (
+            <div key={e.peerId} className="flex items-center justify-between py-1.5 px-2 rounded bg-surface-2/40 border border-border/50">
+              <span className="font-mono text-[11px] text-text truncate max-w-[40%]">{e.name}</span>
+              {e.fingerprint ? (
+                <code className="font-mono text-[11px] text-accent tabular-nums tracking-widest">{formatFingerprint(e.fingerprint)}</code>
+              ) : (
+                <code className="font-mono text-[11px] text-muted tabular-nums tracking-widest">pending…</code>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── RTT chip — re-used in both views ────────────────────────────────────
+
+function ConnectionChips({ rtt, fingerprint, useRelay }: { rtt: number | null; fingerprint: string | null; useRelay?: boolean }) {
+  return (
+    <>
+      <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${useRelay ? 'bg-warning/5 border-warning/20' : 'bg-accent/5 border-accent/20'}`} title={useRelay ? 'Files pass through an encrypted relay server' : 'Files transfer directly between browsers'}>
+        <Wifi className={`w-3 h-3 ${useRelay ? 'text-warning' : 'text-accent'}`} />
+        <span className={`font-mono text-[10px] ${useRelay ? 'text-warning' : 'text-accent'}`}>{useRelay ? 'Relay' : 'P2P'}</span>
+      </div>
+      {rtt !== null && (
+        <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`} title={`Round-trip latency: ${rtt}ms`}>
+          <span className={`font-mono text-[10px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
+        </div>
+      )}
+      <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5 cursor-default" title={fingerprint ? `Verify fingerprint: ${fingerprint}` : 'E2E encrypted'}>
+        <Shield className="w-3 h-3 text-accent" />
+        <span className="font-mono text-[10px] text-accent">E2E</span>
+      </div>
+    </>
+  )
+}
+
+// ── Uploads summary — render count when > 0 ──────────────────────────────
+
+function UploadsSummary({ uploads }: { uploads: Record<string, { progress: number; speed: number; fileName: string }> }) {
+  const keys = Object.keys(uploads)
+  if (keys.length === 0) return null
+  if (keys.length === 1) {
+    const u = uploads[keys[0]]
+    return (
+      <div className="px-4 py-2 border-t border-border">
+        <div className="flex items-center gap-2 bg-info/5 border border-info/15 rounded-lg px-3 py-2">
+          <Upload className="w-3.5 h-3.5 text-info shrink-0" />
+          <span className="flex-1 font-mono text-[11px] text-info truncate">
+            Uploading {u.fileName} ({Math.min(100, u.progress)}%)
+          </span>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="px-4 py-2 border-t border-border">
+      <div className="flex items-center gap-2 bg-info/5 border border-info/15 rounded-lg px-3 py-2">
+        <Upload className="w-3.5 h-3.5 text-info shrink-0" />
+        <span className="flex-1 font-mono text-[11px] text-info">
+          Uploading {keys.length} files
+        </span>
+      </div>
+    </div>
+  )
+}
 
 // ── Host View ────────────────────────────────────────────────────────────
 
@@ -112,11 +212,12 @@ function CollabHostView() {
     return set
   }, [host.sharedFiles, host.myPeerId])
 
-  // Check if any download is in progress
-  const hasPending = Object.keys(host.pendingFiles).length > 0
-  const elapsed = useElapsedTime(hasPending)
+  // C1 — fingerprint entries for verify panel (host sees every guest).
+  const fingerprintEntries = useMemo<FingerprintEntry[]>(
+    () => host.participants.map(p => ({ peerId: p.peerId, name: p.name, fingerprint: p.fingerprint })),
+    [host.participants]
+  )
 
-  const isWaiting = host.status === 'waiting'
   const isConnected = host.status === 'connected' || host.status === 'waiting'
   const isDead = host.status === 'closed' || host.status === 'error'
   const connectionStatus = host.status === 'waiting' ? 'connected' : host.status
@@ -189,10 +290,7 @@ function CollabHostView() {
                 <div className="w-2 h-2 rounded-full bg-accent animate-pulse" />
                 <span className="font-mono text-sm text-accent font-medium">Room Active</span>
                 <div className="flex items-center gap-2">
-                  <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
-                    <Shield className="w-3 h-3 text-accent" />
-                    <span className="font-mono text-[10px] text-accent">E2E</span>
-                  </div>
+                  <ConnectionChips rtt={host.rtt} fingerprint={host.fingerprint} />
                 </div>
               </div>
               <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${roomExpanded ? 'rotate-180' : ''}`} />
@@ -336,6 +434,9 @@ function CollabHostView() {
                   </div>
                 </div>
 
+                {/* C1 — Verify connections fingerprint panel */}
+                <VerifyConnectionsPanel entries={fingerprintEntries} />
+
                 {/* Close Room */}
                 <div className="px-5 py-3 border-t border-border">
                   <button
@@ -396,6 +497,9 @@ function CollabHostView() {
                   </button>
                 </div>
 
+                {/* H1 — in-flight uploads summary */}
+                <UploadsSummary uploads={host.uploads} />
+
                 {/* File List */}
                 {host.sharedFiles.length > 0 && (
                   <div className="px-4 pb-4 border-t border-border pt-4">
@@ -405,7 +509,6 @@ function CollabHostView() {
                         downloads={host.downloads}
                         myPeerId={host.myPeerId}
                         mySharedFiles={mySharedFiles}
-                        myName={host.myName}
                         onDownload={(fileId, ownerId) => host.requestFile(fileId, ownerId)}
                         onRemove={(fileId) => host.removeFile(fileId)}
                         onPause={(fileId) => host.pauseFile?.(fileId)}
@@ -470,7 +573,6 @@ function CollabHostView() {
 // ── Guest View ───────────────────────────────────────────────────────────
 
 function CollabGuestView({ roomId }: { roomId: string }) {
-  const navigate = useNavigate()
   const guest = useCollabGuest(roomId)
   const localMedia = useLocalMedia()
   const call = useCall({
@@ -496,15 +598,6 @@ function CollabGuestView({ roomId }: { roomId: string }) {
 
   // Check if any download is in progress
   const hasPending = Object.values(guest.downloads).some(d => d.status === 'downloading' || d.status === 'requesting')
-  const elapsed = useElapsedTime(hasPending)
-
-  // For download button - filter out my files and completed files
-  const downloadableIndices = useMemo(() => 
-    guest.sharedFiles
-      .map((f, i) => ({ f, i }))
-      .filter(({ f, i }) => !guest.mySharedFiles.has(f.id) && !guest.completedFiles[i])
-      .map(({ i }) => i),
-  [guest.sharedFiles, guest.mySharedFiles, guest.completedFiles])
 
   const handleFileSelect = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
@@ -539,9 +632,27 @@ function CollabGuestView({ roomId }: { roomId: string }) {
     guest.submitPassword(passwordInput)
   }, [passwordInput, guest])
 
+  // C1 — fingerprint entries for the guest verify panel. Include host
+  // (our own `fingerprint` state) and every non-host mesh peer we've
+  // successfully handshaked with (fingerprint comes from UPDATE_PARTICIPANT).
+  const fingerprintEntries = useMemo<FingerprintEntry[]>(() => {
+    const out: FingerprintEntry[] = []
+    const hostPart = guest.participants.find(p => p.isHost)
+    if (hostPart) {
+      out.push({ peerId: hostPart.peerId, name: `${hostPart.name} (Host)`, fingerprint: guest.fingerprint ?? undefined })
+    }
+    for (const p of guest.participants) {
+      if (p.isHost) continue
+      if (p.peerId === guest.myPeerId) continue
+      out.push({ peerId: p.peerId, name: p.name, fingerprint: p.fingerprint })
+    }
+    return out
+  }, [guest.participants, guest.fingerprint, guest.myPeerId])
+
   const isPasswordRequired = guest.status === 'password-required'
   const isConnecting = guest.status === 'joining' || guest.status === 'reconnecting'
   const isConnected = guest.status === 'connected'
+  const isDirectFailed = guest.status === 'direct-failed'
   const isDead = guest.status === 'closed' || guest.status === 'error' || guest.status === 'kicked'
 
   // Reset password loading on error or when password is accepted
@@ -597,6 +708,35 @@ function CollabGuestView({ roomId }: { roomId: string }) {
           </div>
         )}
 
+        {/* P1 — Direct failed banner */}
+        {isDirectFailed && (
+          <div className="text-center py-12 animate-fade-in-up">
+            <div className="max-w-sm mx-auto space-y-6">
+              <div className="w-18 h-18 rounded-2xl bg-warning/10 flex items-center justify-center mx-auto ring-4 ring-warning/5">
+                <Radio className="w-9 h-9 text-warning" strokeWidth={1.5} />
+              </div>
+              <div>
+                <p className="font-mono text-lg text-text font-medium mb-2">Direct connection failed</p>
+                <p className="text-sm text-muted leading-relaxed">Your network doesn&apos;t allow a direct connection. You can use an encrypted relay instead.</p>
+              </div>
+              <div className="bg-surface-2/50 border border-border rounded-xl p-4 text-left space-y-3">
+                <p className="font-mono text-xs text-accent font-medium">What does this mean?</p>
+                <ul className="space-y-2 text-sm text-muted leading-relaxed">
+                  <li className="flex gap-2"><span className="text-accent shrink-0">1.</span>Files pass through a relay server</li>
+                  <li className="flex gap-2"><span className="text-accent shrink-0">2.</span>All data is still end-to-end encrypted</li>
+                  <li className="flex gap-2"><span className="text-accent shrink-0">3.</span>Speed may be slightly slower</li>
+                </ul>
+              </div>
+              <button
+                onClick={guest.enableRelay}
+                className="inline-flex items-center gap-2.5 px-6 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all"
+              >
+                <Radio className="w-4 h-4" /> Enable Relay (uses TURN)
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Password required */}
         {isPasswordRequired && (
           <div className="text-center py-12 animate-fade-in-up">
@@ -643,7 +783,7 @@ function CollabGuestView({ roomId }: { roomId: string }) {
               <AlertCircle className="w-9 h-9 text-danger" strokeWidth={1.5} />
             </div>
             <p className="font-mono text-lg text-text font-medium mb-2">Connection Failed</p>
-            <p className="text-sm text-muted mb-6">Could not connect to the room. It may no longer exist.</p>
+            <p className="text-sm text-muted mb-6">{guest.errorMessage || 'Could not connect to the room. It may no longer exist.'}</p>
             <Link
               to="/"
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
@@ -699,10 +839,7 @@ function CollabGuestView({ roomId }: { roomId: string }) {
             >
               <div className="flex items-center gap-3">
                 <StatusIndicator status="connected" embedded>
-                  <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
-                    <Shield className="w-3 h-3 text-accent" />
-                    <span className="font-mono text-[10px] text-accent">E2E</span>
-                  </div>
+                  <ConnectionChips rtt={guest.rtt} fingerprint={guest.fingerprint} />
                 </StatusIndicator>
               </div>
               <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${roomExpanded ? 'rotate-180' : ''}`} />
@@ -781,6 +918,9 @@ function CollabGuestView({ roomId }: { roomId: string }) {
                       ))}
                   </div>
                 </div>
+
+                {/* C1 — Verify connections fingerprint panel */}
+                <VerifyConnectionsPanel entries={fingerprintEntries} />
               </div>
             </div>
           </div>
@@ -799,7 +939,6 @@ function CollabGuestView({ roomId }: { roomId: string }) {
                 <span className="font-mono text-sm text-text-bright font-bold">{guest.sharedFiles.length}</span>
                 <span className="text-xs text-muted">
                   file{guest.sharedFiles.length !== 1 ? 's' : ''} &middot; {formatBytes(guest.sharedFiles.reduce((s, f) => s + f.size, 0))}
-                  {Object.keys(guest.completedFiles).length > 0 && <> &middot; {Object.keys(guest.completedFiles).length} saved</>}
                 </span>
               </div>
               <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesExpanded ? 'rotate-180' : ''}`} />
@@ -832,6 +971,9 @@ function CollabGuestView({ roomId }: { roomId: string }) {
                   </button>
                 </div>
 
+                {/* H1 — in-flight uploads summary */}
+                <UploadsSummary uploads={guest.uploads} />
+
                 {/* Download info banner */}
                 {hasPending && (
                   <div className="px-4 py-3 border-t border-border">
@@ -858,7 +1000,6 @@ function CollabGuestView({ roomId }: { roomId: string }) {
                       downloads={guest.downloads}
                       myPeerId={guest.myPeerId}
                       mySharedFiles={guest.mySharedFiles}
-                      myName={guest.myName}
                       onDownload={(fileId, ownerId) => guest.requestFile(fileId, ownerId)}
                       onRemove={(fileId) => guest.removeFile(fileId)}
                       onPause={(fileId) => guest.pauseFile?.(fileId)}

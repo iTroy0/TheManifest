@@ -13,6 +13,7 @@ export type CollabStatus =
   | 'connected'
   | 'password-required'
   | 'reconnecting'
+  | 'direct-failed'
   | 'error'
   | 'closed'
   | 'kicked'
@@ -23,6 +24,7 @@ export interface CollabParticipant {
   isHost: boolean
   connectionStatus: 'connecting' | 'connected' | 'disconnected'
   directConnection: boolean // true if P2P established, false if relay through host
+  fingerprint?: string      // Short fingerprint for MITM verification (per-connection)
 }
 
 export interface SharedFile {
@@ -58,6 +60,37 @@ export interface CollabFileEntry {
   addedAt: number
 }
 
+// ── SharedFile validator (C2 — security hardening) ───────────────────────
+
+// Maximum allowed values for incoming file metadata.
+const MAX_FILE_ID = 64
+const MAX_FILE_NAME = 255
+const MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024 // 5 GB
+const MAX_FILE_TYPE = 128
+const MAX_OWNER_ID = 64
+const MAX_OWNER_NAME = 32
+const MAX_THUMB_LEN = 200_000 // ~150KB decoded
+const MAX_TEXT_PREVIEW = 2000
+
+/**
+ * Validate a SharedFile payload received from a peer/host. Used to drop
+ * malformed or oversized entries instead of trusting the wire format.
+ */
+export function isValidSharedFile(obj: unknown): obj is SharedFile {
+  if (!obj || typeof obj !== 'object') return false
+  const f = obj as Record<string, unknown>
+  if (typeof f.id !== 'string' || f.id.length === 0 || f.id.length > MAX_FILE_ID) return false
+  if (typeof f.name !== 'string' || f.name.length === 0 || f.name.length > MAX_FILE_NAME) return false
+  if (typeof f.size !== 'number' || !Number.isFinite(f.size) || !Number.isInteger(f.size) || f.size < 0 || f.size > MAX_FILE_SIZE) return false
+  if (typeof f.type !== 'string' || f.type.length > MAX_FILE_TYPE) return false
+  if (typeof f.owner !== 'string' || f.owner.length === 0 || f.owner.length > MAX_OWNER_ID) return false
+  if (typeof f.ownerName !== 'string' || f.ownerName.length === 0 || f.ownerName.length > MAX_OWNER_NAME) return false
+  if (f.thumbnail !== undefined && (typeof f.thumbnail !== 'string' || f.thumbnail.length > MAX_THUMB_LEN)) return false
+  if (f.textPreview !== undefined && (typeof f.textPreview !== 'string' || f.textPreview.length > MAX_TEXT_PREVIEW)) return false
+  if (typeof f.addedAt !== 'number' || !Number.isFinite(f.addedAt)) return false
+  return true
+}
+
 // ── Room State ───────────────────────────────────────────────────────────
 
 export interface CollabRoomState {
@@ -70,6 +103,7 @@ export interface CollabRoomState {
   passwordRequired: boolean
   passwordError: boolean
   fingerprint: string | null
+  errorMessage: string | null
 }
 
 export type RoomAction =
@@ -87,6 +121,7 @@ export const initialRoomState: CollabRoomState = {
   passwordRequired: false,
   passwordError: false,
   fingerprint: null,
+  errorMessage: null,
 }
 
 export function roomReducer(state: CollabRoomState, action: RoomAction): CollabRoomState {
@@ -157,11 +192,6 @@ export function participantsReducer(state: CollabParticipantsState, action: Part
 export interface CollabFilesState {
   sharedFiles: SharedFile[]
   downloads: Record<string, FileDownload>
-  progress: Record<string, number>      // progress by filename for FileList
-  pendingFiles: Record<number, boolean> // pending by index for FileList
-  pausedFiles: Record<number, boolean>  // paused by index for FileList
-  completedFiles: Record<number, boolean> // completed by index
-  currentFileIndex: number | null       // active download index
   mySharedFiles: Set<string> // fileIds I've shared
 }
 
@@ -172,24 +202,15 @@ export type FilesAction =
   | { type: 'ADD_MY_SHARED_FILE'; fileId: string }
   | { type: 'SET_DOWNLOAD'; fileId: string; download: FileDownload }
   | { type: 'UPDATE_DOWNLOAD'; fileId: string; payload: Partial<FileDownload> }
-  | { type: 'FILE_PROGRESS'; name: string; value: number }
-  | { type: 'ADD_PENDING'; index: number }
-  | { type: 'REMOVE_PENDING'; index: number }
-  | { type: 'PAUSE_FILE'; index: number }
-  | { type: 'RESUME_FILE'; index: number }
-  | { type: 'COMPLETE_FILE'; index: number; name: string }
-  | { type: 'CANCEL_FILE'; index: number; name?: string }
-  | { type: 'SET_CURRENT_FILE'; index: number | null }
+  | { type: 'REMOVE_DOWNLOAD'; fileId: string }
+  | { type: 'CANCEL_ALL_DOWNLOADS' }
+  | { type: 'REMOVE_FILES_BY_OWNER'; ownerId: string }
+  | { type: 'UPDATE_SHARED_FILE_OWNER_NAME'; ownerId: string; newName: string }
   | { type: 'RESET' }
 
 export const initialFilesState: CollabFilesState = {
   sharedFiles: [],
   downloads: {},
-  progress: {},
-  pendingFiles: {},
-  pausedFiles: {},
-  completedFiles: {},
-  currentFileIndex: null,
   mySharedFiles: new Set(),
 }
 
@@ -223,46 +244,29 @@ export function filesReducer(state: CollabFilesState, action: FilesAction): Coll
       if (!existing) return state
       return { ...state, downloads: { ...state.downloads, [action.fileId]: { ...existing, ...action.payload } } }
     }
-    case 'FILE_PROGRESS':
-      return { ...state, progress: { ...state.progress, [action.name]: action.value } }
-    case 'ADD_PENDING':
-      return { ...state, pendingFiles: { ...state.pendingFiles, [action.index]: true } }
-    case 'REMOVE_PENDING': {
-      const p = { ...state.pendingFiles }; delete p[action.index]
-      return { ...state, pendingFiles: p }
+    case 'REMOVE_DOWNLOAD': {
+      const newDownloads = { ...state.downloads }
+      delete newDownloads[action.fileId]
+      return { ...state, downloads: newDownloads }
     }
-    case 'PAUSE_FILE':
-      return { ...state, pausedFiles: { ...state.pausedFiles, [action.index]: true } }
-    case 'RESUME_FILE': {
-      const p = { ...state.pausedFiles }; delete p[action.index]
-      return { ...state, pausedFiles: p }
-    }
-    case 'COMPLETE_FILE': {
-      const pending = { ...state.pendingFiles }; delete pending[action.index]
-      const paused = { ...state.pausedFiles }; delete paused[action.index]
-      return {
-        ...state,
-        progress: { ...state.progress, [action.name]: 100 },
-        completedFiles: { ...state.completedFiles, [action.index]: true },
-        pendingFiles: pending,
-        pausedFiles: paused,
-        currentFileIndex: null,
+    case 'CANCEL_ALL_DOWNLOADS':
+      // Clear every download entry without touching sharedFiles/mySharedFiles.
+      return { ...state, downloads: {} }
+    case 'REMOVE_FILES_BY_OWNER': {
+      const remainingFiles = state.sharedFiles.filter(f => f.owner !== action.ownerId)
+      const removedIds = new Set(state.sharedFiles.filter(f => f.owner === action.ownerId).map(f => f.id))
+      const newDownloads: Record<string, FileDownload> = {}
+      for (const [id, d] of Object.entries(state.downloads)) {
+        if (!removedIds.has(id)) newDownloads[id] = d
       }
+      return { ...state, sharedFiles: remainingFiles, downloads: newDownloads }
     }
-    case 'CANCEL_FILE': {
-      const pending = { ...state.pendingFiles }; delete pending[action.index]
-      const paused = { ...state.pausedFiles }; delete paused[action.index]
-      const progress = { ...state.progress }; if (action.name) delete progress[action.name]
-      return {
-        ...state,
-        pendingFiles: pending,
-        pausedFiles: paused,
-        progress,
-        currentFileIndex: state.currentFileIndex === action.index ? null : state.currentFileIndex,
-      }
+    case 'UPDATE_SHARED_FILE_OWNER_NAME': {
+      const newFiles = state.sharedFiles.map(f =>
+        f.owner === action.ownerId ? { ...f, ownerName: action.newName } : f
+      )
+      return { ...state, sharedFiles: newFiles }
     }
-    case 'SET_CURRENT_FILE':
-      return { ...state, currentFileIndex: action.index }
     case 'RESET':
       return { ...initialFilesState, mySharedFiles: new Set() }
     default:
@@ -270,38 +274,54 @@ export function filesReducer(state: CollabFilesState, action: FilesAction): Coll
   }
 }
 
-// ── Transfer State ───────────────────────────────────────────────────────
+// ── Transfer State (H1 — per-fileId upload tracking) ─────────────────────
+
+export interface UploadEntry {
+  progress: number
+  speed: number
+  fileName: string
+}
 
 export interface CollabTransferState {
-  uploading: boolean
-  uploadProgress: number
-  uploadSpeed: number
-  uploadFileId: string | null
-  uploadFileName: string | null
+  uploads: Record<string, UploadEntry>
 }
 
 export type TransferAction =
   | { type: 'START_UPLOAD'; fileId: string; fileName: string }
-  | { type: 'UPDATE_UPLOAD'; progress: number; speed: number }
-  | { type: 'END_UPLOAD' }
+  | { type: 'UPDATE_UPLOAD'; fileId: string; progress: number; speed: number }
+  | { type: 'END_UPLOAD'; fileId: string }
   | { type: 'RESET' }
 
 export const initialTransferState: CollabTransferState = {
-  uploading: false,
-  uploadProgress: 0,
-  uploadSpeed: 0,
-  uploadFileId: null,
-  uploadFileName: null,
+  uploads: {},
 }
 
 export function transferReducer(state: CollabTransferState, action: TransferAction): CollabTransferState {
   switch (action.type) {
     case 'START_UPLOAD':
-      return { ...state, uploading: true, uploadProgress: 0, uploadSpeed: 0, uploadFileId: action.fileId, uploadFileName: action.fileName }
-    case 'UPDATE_UPLOAD':
-      return { ...state, uploadProgress: action.progress, uploadSpeed: action.speed }
-    case 'END_UPLOAD':
-      return { ...state, uploading: false, uploadProgress: 0, uploadSpeed: 0, uploadFileId: null, uploadFileName: null }
+      return {
+        ...state,
+        uploads: {
+          ...state.uploads,
+          [action.fileId]: { progress: 0, speed: 0, fileName: action.fileName },
+        },
+      }
+    case 'UPDATE_UPLOAD': {
+      const existing = state.uploads[action.fileId]
+      if (!existing) return state
+      return {
+        ...state,
+        uploads: {
+          ...state.uploads,
+          [action.fileId]: { ...existing, progress: action.progress, speed: action.speed },
+        },
+      }
+    }
+    case 'END_UPLOAD': {
+      const newUploads = { ...state.uploads }
+      delete newUploads[action.fileId]
+      return { ...state, uploads: newUploads }
+    }
     case 'RESET':
       return initialTransferState
     default:
