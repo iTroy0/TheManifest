@@ -3,12 +3,16 @@ import { useCollabHost } from '../hooks/useCollabHost'
 import { useCollabGuest } from '../hooks/useCollabGuest'
 import { useLocalMedia } from '../hooks/useLocalMedia'
 import { useCall } from '../hooks/useCall'
-import { formatBytes, formatSpeed } from '../utils/formatBytes'
+import { formatBytes, formatSpeed, formatTime } from '../utils/formatBytes'
+import { useElapsedTime, formatElapsed } from '../hooks/useElapsedTime'
 import StatusIndicator from '../components/StatusIndicator'
+import FileList from '../components/FileList'
+import ProgressBar from '../components/ProgressBar'
 import ChatPanel from '../components/ChatPanel'
 import CallPanel from '../components/CallPanel'
 import { ComponentErrorBoundary } from '../components/ErrorBoundary'
-import { useState, useRef, useCallback, type ChangeEvent, type DragEvent } from 'react'
+import { useState, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent } from 'react'
+import { FileEntry } from '../types'
 import {
   ArrowLeft,
   AlertCircle,
@@ -22,87 +26,12 @@ import {
   Check,
   Upload,
   Download,
-  FileIcon,
   Crown,
   UserMinus,
   DoorOpen,
-  Plus,
   ChevronDown,
-  Image as ImageIcon,
-  FileText,
-  Archive,
-  Film,
-  Music,
+  Info,
 } from 'lucide-react'
-
-// ── Shared File Item Component ───────────────────────────────────────────
-
-function SharedFileItem({
-  file,
-  isOwner,
-  download,
-  onDownload,
-}: {
-  file: { id: string; name: string; size: number; type: string; ownerName: string }
-  isOwner: boolean
-  download?: { status: string; progress: number; speed: number }
-  onDownload: () => void
-}) {
-  const getFileIcon = () => {
-    if (file.type.startsWith('image/')) return <ImageIcon className="w-4 h-4" />
-    if (file.type.startsWith('video/')) return <Film className="w-4 h-4" />
-    if (file.type.startsWith('audio/')) return <Music className="w-4 h-4" />
-    if (file.type.includes('zip') || file.type.includes('tar') || file.type.includes('rar')) return <Archive className="w-4 h-4" />
-    if (file.type.includes('pdf') || file.type.includes('doc') || file.type.includes('text')) return <FileText className="w-4 h-4" />
-    return <FileIcon className="w-4 h-4" />
-  }
-
-  const isDownloading = download?.status === 'downloading' || download?.status === 'requesting'
-  const isComplete = download?.status === 'complete'
-
-  return (
-    <div className="flex items-center gap-3 px-5 py-3 hover:bg-surface-2/30 transition-colors">
-      <div className="w-8 h-8 rounded-lg bg-surface-2 border border-border flex items-center justify-center text-muted">
-        {getFileIcon()}
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="font-mono text-sm text-text truncate">{file.name}</p>
-        <p className="font-mono text-[10px] text-muted">
-          {formatBytes(file.size)} {isOwner ? '(You)' : `by ${file.ownerName}`}
-        </p>
-        {isDownloading && download && (
-          <div className="mt-1">
-            <div className="h-1 bg-border rounded-full overflow-hidden">
-              <div className="h-full bg-accent transition-all duration-300" style={{ width: `${download.progress}%` }} />
-            </div>
-            {download.speed > 0 && (
-              <p className="font-mono text-[9px] text-muted mt-0.5">{formatSpeed(download.speed)}</p>
-            )}
-          </div>
-        )}
-      </div>
-      {!isOwner && !isComplete && (
-        <button
-          onClick={onDownload}
-          disabled={isDownloading}
-          className="p-2 rounded-lg hover:bg-accent/10 text-muted hover:text-accent transition-colors disabled:opacity-40"
-          title="Download"
-        >
-          {isDownloading ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Download className="w-4 h-4" />
-          )}
-        </button>
-      )}
-      {isComplete && (
-        <div className="p-2 text-accent">
-          <Check className="w-4 h-4" />
-        </div>
-      )}
-    </div>
-  )
-}
 
 // ── Host View ────────────────────────────────────────────────────────────
 
@@ -171,6 +100,20 @@ function CollabHostView() {
     e.preventDefault()
     setIsDragging(false)
   }, [])
+
+  // Convert SharedFiles to FileEntry format for FileList component
+  const fileEntries: FileEntry[] = useMemo(() => 
+    host.sharedFiles.map(f => ({
+      name: f.name,
+      size: f.size,
+      type: f.type,
+      thumbnail: f.thumbnail,
+    })),
+  [host.sharedFiles])
+
+  // Check if any download is in progress
+  const hasPending = Object.keys(host.pendingFiles).length > 0
+  const elapsed = useElapsedTime(hasPending)
 
   const isWaiting = host.status === 'waiting'
   const isConnected = host.status === 'connected' || host.status === 'waiting'
@@ -384,9 +327,11 @@ function CollabHostView() {
               className="w-full flex items-center justify-between px-5 py-4 text-left group"
             >
               <div className="flex items-center gap-2">
-                <Share2 className="w-4 h-4 text-accent" />
-                <span className="font-mono text-sm text-text font-medium">Shared Files</span>
-                <span className="font-mono text-xs text-muted">{host.sharedFiles.length} files</span>
+                <Download className="w-4 h-4 text-accent" />
+                <span className="font-mono text-sm text-text-bright font-bold">{host.sharedFiles.length}</span>
+                <span className="text-xs text-muted">
+                  file{host.sharedFiles.length !== 1 ? 's' : ''} &middot; {formatBytes(host.sharedFiles.reduce((s, f) => s + f.size, 0))}
+                </span>
               </div>
               <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesExpanded ? 'rotate-180' : ''}`} />
             </button>
@@ -398,7 +343,7 @@ function CollabHostView() {
                   onDrop={handleDrop}
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
-                  className={`px-5 py-6 border-t border-border transition-colors ${isDragging ? 'bg-accent/5 border-accent/30' : ''}`}
+                  className={`px-5 py-4 border-t border-border transition-colors ${isDragging ? 'bg-accent/5 border-accent/30' : ''}`}
                 >
                   <input
                     ref={fileInputRef}
@@ -409,55 +354,31 @@ function CollabHostView() {
                   />
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    className="w-full py-8 border-2 border-dashed border-border rounded-xl hover:border-accent/40 transition-colors group"
+                    className="w-full py-6 border-2 border-dashed border-border rounded-xl hover:border-accent/40 transition-colors group"
                   >
-                    <Upload className="w-8 h-8 text-muted group-hover:text-accent mx-auto mb-2 transition-colors" />
-                    <p className="font-mono text-sm text-muted group-hover:text-text transition-colors">
+                    <Upload className="w-6 h-6 text-muted group-hover:text-accent mx-auto mb-2 transition-colors" />
+                    <p className="font-mono text-xs text-muted group-hover:text-text transition-colors">
                       Drop files here or click to upload
-                    </p>
-                    <p className="font-mono text-[10px] text-muted/60 mt-1">
-                      Files will be shared with all participants
                     </p>
                   </button>
                 </div>
 
-                {/* File List */}
-                <div className="max-h-[300px] overflow-y-auto scrollbar-thin border-t border-border">
-                  {host.sharedFiles.length === 0 ? (
-                    <div className="py-8 text-center">
-                      <p className="font-mono text-xs text-muted">No files shared yet</p>
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-border">
-                      {host.sharedFiles.map(file => (
-                        <SharedFileItem
-                          key={file.id}
-                          file={file}
-                          isOwner={host.mySharedFiles.has(file.id)}
-                          download={host.downloads[file.id]}
-                          onDownload={() => {}}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Upload Progress */}
-                {host.uploading && (
-                  <div className="px-5 py-3 border-t border-border bg-surface-2/50">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="font-mono text-xs text-text">Uploading...</span>
-                      <span className="font-mono text-xs text-accent">{host.uploadProgress}%</span>
-                    </div>
-                    <div className="h-1 bg-border rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-accent transition-all duration-300"
-                        style={{ width: `${host.uploadProgress}%` }}
+                {/* File List - using the same FileList component */}
+                {fileEntries.length > 0 && (
+                  <div className="px-4 pb-4 border-t border-border pt-4">
+                    <ComponentErrorBoundary name="Files">
+                      <FileList
+                        files={fileEntries}
+                        progress={host.progress}
+                        pendingFiles={host.pendingFiles}
+                        pausedFiles={host.pausedFiles}
+                        currentFileIndex={host.currentFileIndex}
+                        onRequest={null}
+                        onCancel={null}
+                        onPause={null}
+                        onResume={null}
                       />
-                    </div>
-                    {host.uploadSpeed > 0 && (
-                      <p className="font-mono text-[10px] text-muted mt-1">{formatSpeed(host.uploadSpeed)}</p>
-                    )}
+                    </ComponentErrorBoundary>
                   </div>
                 )}
               </div>
@@ -465,45 +386,47 @@ function CollabHostView() {
           </div>
         )}
 
-        {/* Call Panel - same pattern as Portal.tsx */}
-        {isConnected && !isDead && (
-          <ComponentErrorBoundary name="Call">
-            <CallPanel
-              call={call}
-              myName={host.myName}
-              myPeerId={host.myPeerId}
-              disabled={isDead}
-              connectionStatus={connectionStatus}
-            />
-          </ComponentErrorBoundary>
-        )}
-
-        {/* Chat Panel - same pattern as Portal.tsx */}
+        {/* Chat & Call Panels */}
         {isConnected && (
-          <ComponentErrorBoundary name="Chat">
-            <ChatPanel
-              messages={host.messages}
-              onSend={host.sendMessage}
-              onClearMessages={host.clearMessages}
-              disabled={isDead}
-              nickname={host.myName}
-              onNicknameChange={host.setMyName}
-              onlineCount={host.onlineCount + 1}
-              typingUsers={host.typingUsers}
-              onTyping={host.sendTyping}
-              onReaction={host.sendReaction}
-            />
-          </ComponentErrorBoundary>
+          <>
+            <ComponentErrorBoundary name="Call">
+              <CallPanel
+                call={call}
+                myName={host.myName}
+                myPeerId={host.myPeerId}
+                disabled={isDead}
+                connectionStatus={connectionStatus}
+              />
+            </ComponentErrorBoundary>
+
+            <ComponentErrorBoundary name="Chat">
+              <ChatPanel
+                messages={host.messages}
+                onSend={host.sendMessage}
+                onClearMessages={host.clearMessages}
+                disabled={isDead}
+                nickname={host.myName}
+                onNicknameChange={host.changeNickname}
+                onlineCount={host.onlineCount + 1}
+                typingUsers={host.typingUsers}
+                onTyping={host.sendTyping}
+                onReaction={host.sendReaction}
+              />
+            </ComponentErrorBoundary>
+          </>
         )}
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-border/40 mt-auto">
-        <div className="max-w-[720px] mx-auto px-6 py-5 flex items-center justify-between flex-wrap gap-2">
-          <p className="font-mono text-xs text-muted">No servers. No storage. No tracking.</p>
-          <p className="font-mono text-xs text-muted">
-            <Link to="/faq" className="text-muted-light hover:text-accent transition-colors">FAQ</Link> &middot; <Link to="/privacy" className="text-muted-light hover:text-accent transition-colors">Privacy</Link> &middot; by <a href="https://github.com/iTroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">iTroy0</a>
+      <footer className="border-t border-border/40 py-6 mt-auto">
+        <div className="max-w-[720px] mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left">
+          <p className="font-mono text-[10px] text-muted">
+            E2E encrypted &middot; No server storage &middot; Direct P2P
           </p>
+          <div className="flex items-center gap-4 font-mono text-[10px]">
+            <Link to="/faq" className="text-muted hover:text-accent transition-colors">FAQ</Link>
+            <Link to="/privacy" className="text-muted hover:text-accent transition-colors">Privacy</Link>
+          </div>
         </div>
       </footer>
     </div>
@@ -522,7 +445,7 @@ function CollabGuestView({ roomId }: { roomId: string }) {
     myName: guest.myName,
     isHost: false,
     hostPeerId: guest.hostPeerId,
-    participants: guest.participants.map(p => ({ peerId: p.peerId, name: p.name })),
+    participants: guest.participantsList,
     sendToHost: guest.sendCallMessage,
     setMessageHandler: guest.setCallMessageHandler,
     localMedia,
@@ -530,23 +453,32 @@ function CollabGuestView({ roomId }: { roomId: string }) {
 
   const [passwordInput, setPasswordInput] = useState('')
   const [passwordLoading, setPasswordLoading] = useState(false)
-  const [isDragging, setIsDragging] = useState(false)
   const [roomExpanded, setRoomExpanded] = useState(true)
   const [filesExpanded, setFilesExpanded] = useState(true)
+  const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const handlePasswordSubmit = useCallback((e: React.FormEvent) => {
-    e.preventDefault()
-    setPasswordLoading(true)
-    guest.submitPassword(passwordInput)
-  }, [passwordInput, guest])
+  // Convert SharedFiles to FileEntry format for FileList component
+  const fileEntries: FileEntry[] = useMemo(() => 
+    guest.sharedFiles.map(f => ({
+      name: f.name,
+      size: f.size,
+      type: f.type,
+      thumbnail: f.thumbnail,
+    })),
+  [guest.sharedFiles])
 
-  // Reset loading state when password result comes back
-  const prevPasswordError = useRef(guest.passwordError)
-  if (guest.passwordError !== prevPasswordError.current) {
-    prevPasswordError.current = guest.passwordError
-    if (guest.passwordError) setPasswordLoading(false)
-  }
+  // Check if any download is in progress
+  const hasPending = Object.keys(guest.pendingFiles).length > 0
+  const elapsed = useElapsedTime(hasPending)
+
+  // For download button - filter out my files and completed files
+  const downloadableIndices = useMemo(() => 
+    guest.sharedFiles
+      .map((f, i) => ({ f, i }))
+      .filter(({ f, i }) => !guest.mySharedFiles.has(f.id) && !guest.completedFiles[i])
+      .map(({ i }) => i),
+  [guest.sharedFiles, guest.mySharedFiles, guest.completedFiles])
 
   const handleFileSelect = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
@@ -575,10 +507,17 @@ function CollabGuestView({ roomId }: { roomId: string }) {
     setIsDragging(false)
   }, [])
 
+  const handlePasswordSubmit = useCallback((e: React.FormEvent) => {
+    e.preventDefault()
+    setPasswordLoading(true)
+    guest.submitPassword(passwordInput)
+  }, [passwordInput, guest])
+
+  // Reset password loading on error
+  const isPasswordRequired = guest.status === 'password-required'
   const isConnecting = guest.status === 'joining' || guest.status === 'reconnecting'
   const isConnected = guest.status === 'connected'
   const isDead = guest.status === 'closed' || guest.status === 'error' || guest.status === 'kicked'
-  const connectionStatus = guest.status
 
   return (
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
@@ -587,7 +526,7 @@ function CollabGuestView({ roomId }: { roomId: string }) {
         <div className="max-w-[720px] mx-auto px-6 py-5">
           <Link to="/" className="flex items-center gap-2 text-muted hover:text-accent transition-colors mb-3 w-fit group">
             <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
-            <span className="font-mono text-[11px]">Back to home</span>
+            <span className="font-mono text-[11px]">Create your own portal</span>
           </Link>
           <div className="flex items-center justify-between">
             <Link to="/" className="group">
@@ -620,14 +559,16 @@ function CollabGuestView({ roomId }: { roomId: string }) {
               </div>
             </div>
             <p className="font-mono text-base text-text font-medium mb-2">
-              {guest.status === 'reconnecting' ? 'Reconnecting...' : 'Joining room'}
+              {guest.status === 'reconnecting' ? 'Reconnecting...' : 'Joining room...'}
             </p>
-            <p className="text-sm text-muted">Establishing secure connection...</p>
+            <p className="text-sm text-muted max-w-sm mx-auto leading-relaxed">
+              Establishing a secure peer-to-peer connection.
+            </p>
           </div>
         )}
 
-        {/* Password Required */}
-        {guest.status === 'password-required' && (
+        {/* Password required */}
+        {isPasswordRequired && (
           <div className="text-center py-12 animate-fade-in-up">
             <div className="max-w-sm mx-auto space-y-6">
               <div className="w-18 h-18 rounded-2xl bg-accent/10 flex items-center justify-center mx-auto ring-4 ring-accent/5">
@@ -656,7 +597,7 @@ function CollabGuestView({ roomId }: { roomId: string }) {
                 <button
                   type="submit"
                   disabled={passwordLoading || !passwordInput}
-                  className="w-full px-5 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all disabled:opacity-40"
+                  className="w-full px-5 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {passwordLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1.5" />Verifying...</> : 'Join Room'}
                 </button>
@@ -665,25 +606,17 @@ function CollabGuestView({ roomId }: { roomId: string }) {
           </div>
         )}
 
-        {/* Error / Closed / Kicked */}
-        {isDead && (
+        {/* Error States */}
+        {guest.status === 'error' && (
           <div className="text-center py-16 animate-fade-in-up">
             <div className="w-18 h-18 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto mb-6 ring-4 ring-danger/5">
               <AlertCircle className="w-9 h-9 text-danger" strokeWidth={1.5} />
             </div>
-            <p className="font-mono text-lg text-text font-medium mb-2">
-              {guest.status === 'closed' ? 'Room Closed' : guest.status === 'kicked' ? 'Removed from Room' : 'Connection Error'}
-            </p>
-            <p className="text-sm text-muted mb-6">
-              {guest.status === 'closed'
-                ? 'The host closed the room or the connection was lost.'
-                : guest.status === 'kicked'
-                ? 'You were removed from the room by the host.'
-                : 'Could not connect to the room. Check the link and try again.'}
-            </p>
+            <p className="font-mono text-lg text-text font-medium mb-2">Connection Failed</p>
+            <p className="text-sm text-muted mb-6">Could not connect to the room. It may no longer exist.</p>
             <Link
               to="/"
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-muted-light hover:border-accent/40 hover:text-accent transition-colors"
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
               Go Home
@@ -691,27 +624,55 @@ function CollabGuestView({ roomId }: { roomId: string }) {
           </div>
         )}
 
-        {/* Connected - Collapsible Room Card */}
+        {guest.status === 'closed' && (
+          <div className="text-center py-16 animate-fade-in-up">
+            <div className="w-18 h-18 rounded-2xl bg-warning/10 flex items-center justify-center mx-auto mb-6 ring-4 ring-warning/5">
+              <DoorOpen className="w-9 h-9 text-warning" strokeWidth={1.5} />
+            </div>
+            <p className="font-mono text-lg text-text font-medium mb-2">Room Closed</p>
+            <p className="text-sm text-muted mb-6">The host has closed this room.</p>
+            <Link
+              to="/"
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              Go Home
+            </Link>
+          </div>
+        )}
+
+        {guest.status === 'kicked' && (
+          <div className="text-center py-16 animate-fade-in-up">
+            <div className="w-18 h-18 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto mb-6 ring-4 ring-danger/5">
+              <UserMinus className="w-9 h-9 text-danger" strokeWidth={1.5} />
+            </div>
+            <p className="font-mono text-lg text-text font-medium mb-2">Removed from Room</p>
+            <p className="text-sm text-muted mb-6">The host removed you from this room.</p>
+            <Link
+              to="/"
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              Go Home
+            </Link>
+          </div>
+        )}
+
+        {/* Connected - Room Info */}
         {isConnected && (
           <div className="glow-card overflow-hidden animate-fade-in-up">
+            {/* Header */}
             <button
               onClick={() => setRoomExpanded(o => !o)}
               aria-expanded={roomExpanded}
               className="w-full flex items-center justify-between px-5 py-4 text-left group"
             >
               <div className="flex items-center gap-3">
-                <div className="w-2 h-2 rounded-full bg-accent animate-pulse" />
-                <span className="font-mono text-sm text-accent font-medium">Connected</span>
-                <div className="flex items-center gap-2">
+                <StatusIndicator status="connected" embedded>
                   <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
                     <Wifi className="w-3 h-3 text-accent" />
                     <span className="font-mono text-[10px] text-accent">P2P</span>
                   </div>
-                  {guest.rtt !== null && (
-                    <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border ${guest.rtt < 100 ? 'bg-accent/5 border-accent/20' : guest.rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`}>
-                      <span className={`font-mono text-[10px] ${guest.rtt < 100 ? 'text-accent' : guest.rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{guest.rtt}ms</span>
-                    </div>
-                  )}
                   <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5">
                     <Shield className="w-3 h-3 text-accent" />
                     <span className="font-mono text-[10px] text-accent">E2E</span>
@@ -720,21 +681,21 @@ function CollabGuestView({ roomId }: { roomId: string }) {
                     <Users className="w-3 h-3 text-accent" />
                     <span className="font-mono text-[10px] text-accent">{guest.onlineCount}</span>
                   </div>
-                </div>
+                </StatusIndicator>
               </div>
               <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${roomExpanded ? 'rotate-180' : ''}`} />
             </button>
 
+            {/* Body */}
             <div className={`grid transition-all duration-400 ease-in-out ${roomExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
               <div className="overflow-hidden">
-                {/* Participants */}
                 <div className="px-5 py-4 border-t border-border">
                   <div className="flex items-center justify-between mb-3">
                     <span className="font-mono text-xs text-muted uppercase tracking-wide">Participants</span>
                     <span className="font-mono text-xs text-accent">{guest.onlineCount}</span>
                   </div>
                   <div className="space-y-2">
-                    {/* You */}
+                    {/* Show yourself */}
                     <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-accent/5 border border-accent/20">
                       <div className="flex items-center gap-2">
                         <div className="w-6 h-6 rounded-full bg-accent/20 flex items-center justify-center">
@@ -744,41 +705,28 @@ function CollabGuestView({ roomId }: { roomId: string }) {
                         <span className="font-mono text-[10px] text-muted">(You)</span>
                       </div>
                     </div>
-                    {/* Others */}
-                    {guest.participants.map(p => (
-                      <div key={p.peerId} className="flex items-center justify-between py-2 px-3 rounded-lg bg-surface-2/50 border border-border">
-                        <div className="flex items-center gap-2">
-                          <div className="w-6 h-6 rounded-full bg-surface flex items-center justify-center">
-                            {p.isHost ? <Crown className="w-3 h-3 text-accent" /> : <Users className="w-3 h-3 text-muted" />}
+                    {/* Other participants */}
+                    {guest.participants
+                      .filter(p => p.peerId !== guest.myPeerId)
+                      .map(p => (
+                        <div key={p.peerId} className="flex items-center justify-between py-2 px-3 rounded-lg bg-surface-2/50 border border-border">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-full bg-surface flex items-center justify-center">
+                              {p.isHost ? <Crown className="w-3 h-3 text-accent" /> : <Users className="w-3 h-3 text-muted" />}
+                            </div>
+                            <span className="font-mono text-sm text-text">{p.name}</span>
+                            {p.isHost && <span className="font-mono text-[10px] text-accent">(Host)</span>}
                           </div>
-                          <span className="font-mono text-sm text-text">{p.name}</span>
-                          {p.isHost && <span className="font-mono text-[10px] text-accent">(Host)</span>}
                         </div>
-                        <div className="flex items-center gap-1 text-accent">
-                          <Wifi className="w-3 h-3" />
-                          <span className="font-mono text-[10px]">{p.directConnection ? 'P2P' : 'Relay'}</span>
-                        </div>
-                      </div>
-                    ))}
+                      ))}
                   </div>
-                </div>
-
-                {/* Leave Room */}
-                <div className="px-5 py-3 border-t border-border">
-                  <button
-                    onClick={() => { guest.leave(); navigate('/') }}
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg font-mono text-xs text-danger hover:bg-danger/10 transition-colors"
-                  >
-                    <DoorOpen className="w-3.5 h-3.5" />
-                    Leave Room
-                  </button>
                 </div>
               </div>
             </div>
           </div>
         )}
 
-        {/* Shared Files - Collapsible */}
+        {/* Shared Files */}
         {isConnected && (
           <div className="glow-card overflow-hidden animate-fade-in-up">
             <button
@@ -787,21 +735,24 @@ function CollabGuestView({ roomId }: { roomId: string }) {
               className="w-full flex items-center justify-between px-5 py-4 text-left group"
             >
               <div className="flex items-center gap-2">
-                <Share2 className="w-4 h-4 text-accent" />
-                <span className="font-mono text-sm text-text font-medium">Shared Files</span>
-                <span className="font-mono text-xs text-muted">{guest.sharedFiles.length} files</span>
+                <Download className="w-4 h-4 text-accent" />
+                <span className="font-mono text-sm text-text-bright font-bold">{guest.sharedFiles.length}</span>
+                <span className="text-xs text-muted">
+                  file{guest.sharedFiles.length !== 1 ? 's' : ''} &middot; {formatBytes(guest.sharedFiles.reduce((s, f) => s + f.size, 0))}
+                  {Object.keys(guest.completedFiles).length > 0 && <> &middot; {Object.keys(guest.completedFiles).length} saved</>}
+                </span>
               </div>
               <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesExpanded ? 'rotate-180' : ''}`} />
             </button>
 
             <div className={`grid transition-all duration-400 ease-in-out ${filesExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
               <div className="overflow-hidden">
-                {/* Drop Zone */}
+                {/* Upload zone for guests too */}
                 <div
                   onDrop={handleDrop}
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
-                  className={`px-5 py-6 border-t border-border transition-colors ${isDragging ? 'bg-accent/5' : ''}`}
+                  className={`px-5 py-4 border-t border-border transition-colors ${isDragging ? 'bg-accent/5 border-accent/30' : ''}`}
                 >
                   <input
                     ref={fileInputRef}
@@ -814,44 +765,59 @@ function CollabGuestView({ roomId }: { roomId: string }) {
                     onClick={() => fileInputRef.current?.click()}
                     className="w-full py-6 border-2 border-dashed border-border rounded-xl hover:border-accent/40 transition-colors group"
                   >
-                    <Plus className="w-6 h-6 text-muted group-hover:text-accent mx-auto mb-1 transition-colors" />
+                    <Upload className="w-6 h-6 text-muted group-hover:text-accent mx-auto mb-2 transition-colors" />
                     <p className="font-mono text-xs text-muted group-hover:text-text transition-colors">
                       Share files with the room
                     </p>
                   </button>
                 </div>
 
-                {/* File List */}
-                <div className="max-h-[300px] overflow-y-auto scrollbar-thin border-t border-border">
-                  {guest.sharedFiles.length === 0 ? (
-                    <div className="py-8 text-center">
-                      <p className="font-mono text-xs text-muted">No files shared yet</p>
+                {/* Download info banner */}
+                {hasPending && (
+                  <div className="px-4 py-3 border-t border-border">
+                    <div className="flex items-center gap-2 bg-info/5 border border-info/15 rounded-lg px-3 py-2">
+                      <Info className="w-3.5 h-3.5 text-info shrink-0" />
+                      <p className="flex-1 font-mono text-[10px] text-info/80 leading-relaxed">
+                        Downloading files directly from peers
+                      </p>
+                      <button
+                        onClick={guest.cancelAll}
+                        className="shrink-0 px-2 py-1 rounded-lg font-mono text-[10px] bg-danger/10 text-danger hover:bg-danger/20 transition-colors"
+                      >
+                        Cancel
+                      </button>
                     </div>
-                  ) : (
-                    <div className="divide-y divide-border">
-                      {guest.sharedFiles.map(file => (
-                        <SharedFileItem
-                          key={file.id}
-                          file={file}
-                          isOwner={guest.mySharedFiles.has(file.id)}
-                          download={guest.downloads[file.id]}
-                          onDownload={() => guest.requestFile(file.id, file.owner)}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
+                  </div>
+                )}
 
-                {/* Upload Progress */}
-                {guest.uploading && (
-                  <div className="px-5 py-3 border-t border-border bg-surface-2/50">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="font-mono text-xs text-text">Uploading...</span>
-                      <span className="font-mono text-xs text-accent">{guest.uploadProgress}%</span>
-                    </div>
-                    <div className="h-1 bg-border rounded-full overflow-hidden">
-                      <div className="h-full bg-accent transition-all duration-300" style={{ width: `${guest.uploadProgress}%` }} />
-                    </div>
+                {/* File List - using the same FileList component */}
+                {fileEntries.length > 0 && (
+                  <div className="px-4 pb-4 border-t border-border pt-4">
+                    <ComponentErrorBoundary name="Files">
+                      <FileList
+                        files={fileEntries}
+                        progress={guest.progress}
+                        pendingFiles={guest.pendingFiles}
+                        pausedFiles={guest.pausedFiles}
+                        currentFileIndex={guest.currentFileIndex}
+                        onRequest={isDead || hasPending ? null : (index) => {
+                          // Don't allow requesting own files
+                          const file = guest.sharedFiles[index]
+                          if (file && !guest.mySharedFiles.has(file.id)) {
+                            guest.requestFile(file.id, file.owner)
+                          }
+                        }}
+                        onCancel={guest.cancelFile}
+                        onPause={guest.pauseFile}
+                        onResume={guest.resumeFile}
+                      />
+                    </ComponentErrorBoundary>
+                  </div>
+                )}
+
+                {fileEntries.length === 0 && (
+                  <div className="py-8 text-center border-t border-border">
+                    <p className="font-mono text-xs text-muted">No files shared yet</p>
                   </div>
                 )}
               </div>
@@ -859,45 +825,47 @@ function CollabGuestView({ roomId }: { roomId: string }) {
           </div>
         )}
 
-        {/* Call Panel - same pattern as Portal.tsx */}
-        {isConnected && !isDead && (
-          <ComponentErrorBoundary name="Call">
-            <CallPanel
-              call={call}
-              myName={guest.myName}
-              myPeerId={guest.myPeerId}
-              disabled={isDead}
-              connectionStatus={connectionStatus}
-            />
-          </ComponentErrorBoundary>
-        )}
-
-        {/* Chat Panel - same pattern as Portal.tsx */}
+        {/* Chat & Call Panels */}
         {isConnected && (
-          <ComponentErrorBoundary name="Chat">
-            <ChatPanel
-              messages={guest.messages}
-              onSend={guest.sendMessage}
-              onClearMessages={guest.clearMessages}
-              disabled={isDead}
-              nickname={guest.myName}
-              onNicknameChange={guest.setMyName}
-              onlineCount={guest.onlineCount}
-              typingUsers={guest.typingUsers}
-              onTyping={guest.sendTyping}
-              onReaction={guest.sendReaction}
-            />
-          </ComponentErrorBoundary>
+          <>
+            <ComponentErrorBoundary name="Call">
+              <CallPanel
+                call={call}
+                myName={guest.myName}
+                myPeerId={guest.myPeerId}
+                disabled={isDead}
+                connectionStatus={guest.status}
+              />
+            </ComponentErrorBoundary>
+
+            <ComponentErrorBoundary name="Chat">
+              <ChatPanel
+                messages={guest.messages}
+                onSend={guest.sendMessage}
+                onClearMessages={guest.clearMessages}
+                disabled={isDead}
+                nickname={guest.myName}
+                onNicknameChange={guest.changeNickname}
+                onlineCount={guest.onlineCount}
+                typingUsers={guest.typingUsers}
+                onTyping={guest.sendTyping}
+                onReaction={guest.sendReaction}
+              />
+            </ComponentErrorBoundary>
+          </>
         )}
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-border/40 mt-auto">
-        <div className="max-w-[720px] mx-auto px-6 py-5 flex items-center justify-between flex-wrap gap-2">
-          <p className="font-mono text-xs text-muted">No servers. No storage. No tracking.</p>
-          <p className="font-mono text-xs text-muted">
-            <Link to="/faq" className="text-muted-light hover:text-accent transition-colors">FAQ</Link> &middot; <Link to="/privacy" className="text-muted-light hover:text-accent transition-colors">Privacy</Link> &middot; by <a href="https://github.com/iTroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">iTroy0</a>
+      <footer className="border-t border-border/40 py-6 mt-auto">
+        <div className="max-w-[720px] mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left">
+          <p className="font-mono text-[10px] text-muted">
+            E2E encrypted &middot; No server storage &middot; Direct P2P
           </p>
+          <div className="flex items-center gap-4 font-mono text-[10px]">
+            <Link to="/faq" className="text-muted hover:text-accent transition-colors">FAQ</Link>
+            <Link to="/privacy" className="text-muted hover:text-accent transition-colors">Privacy</Link>
+          </div>
         </div>
       </footer>
     </div>
@@ -909,11 +877,11 @@ function CollabGuestView({ roomId }: { roomId: string }) {
 export default function CollabPortal() {
   const { roomId } = useParams<{ roomId: string }>()
 
-  // If no roomId, we're creating a new room (host)
+  // If no roomId, create a new room as host
   if (!roomId) {
     return <CollabHostView />
   }
 
-  // Otherwise, we're joining an existing room (guest)
+  // Otherwise join as guest
   return <CollabGuestView roomId={roomId} />
 }

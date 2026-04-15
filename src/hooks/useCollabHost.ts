@@ -927,6 +927,13 @@ export function useCollabHost() {
     downloads: files.downloads,
     mySharedFiles: files.mySharedFiles,
     
+    // FileList-compatible state
+    progress: files.progress,
+    pendingFiles: files.pendingFiles,
+    pausedFiles: files.pausedFiles,
+    completedFiles: files.completedFiles,
+    currentFileIndex: files.currentFileIndex,
+    
     // Transfer
     uploading: transfer.uploading,
     uploadProgress: transfer.uploadProgress,

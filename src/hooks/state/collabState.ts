@@ -37,10 +37,24 @@ export interface SharedFile {
 }
 
 export interface FileDownload {
-  status: 'pending' | 'requesting' | 'downloading' | 'complete' | 'error'
+  status: 'pending' | 'requesting' | 'downloading' | 'paused' | 'complete' | 'error'
   progress: number
   speed: number
   error?: string
+}
+
+// For FileList compatibility - matches FileEntry interface
+export interface CollabFileEntry {
+  name: string
+  size: number
+  type: string
+  thumbnail?: string
+  textPreview?: string
+  // Collab-specific extensions
+  id: string
+  owner: string
+  ownerName: string
+  addedAt: number
 }
 
 // ── Room State ───────────────────────────────────────────────────────────
@@ -142,6 +156,11 @@ export function participantsReducer(state: CollabParticipantsState, action: Part
 export interface CollabFilesState {
   sharedFiles: SharedFile[]
   downloads: Record<string, FileDownload>
+  progress: Record<string, number>      // progress by filename for FileList
+  pendingFiles: Record<number, boolean> // pending by index for FileList
+  pausedFiles: Record<number, boolean>  // paused by index for FileList
+  completedFiles: Record<number, boolean> // completed by index
+  currentFileIndex: number | null       // active download index
   mySharedFiles: Set<string> // fileIds I've shared
 }
 
@@ -152,11 +171,24 @@ export type FilesAction =
   | { type: 'ADD_MY_SHARED_FILE'; fileId: string }
   | { type: 'SET_DOWNLOAD'; fileId: string; download: FileDownload }
   | { type: 'UPDATE_DOWNLOAD'; fileId: string; payload: Partial<FileDownload> }
+  | { type: 'FILE_PROGRESS'; name: string; value: number }
+  | { type: 'ADD_PENDING'; index: number }
+  | { type: 'REMOVE_PENDING'; index: number }
+  | { type: 'PAUSE_FILE'; index: number }
+  | { type: 'RESUME_FILE'; index: number }
+  | { type: 'COMPLETE_FILE'; index: number; name: string }
+  | { type: 'CANCEL_FILE'; index: number; name?: string }
+  | { type: 'SET_CURRENT_FILE'; index: number | null }
   | { type: 'RESET' }
 
 export const initialFilesState: CollabFilesState = {
   sharedFiles: [],
   downloads: {},
+  progress: {},
+  pendingFiles: {},
+  pausedFiles: {},
+  completedFiles: {},
+  currentFileIndex: null,
   mySharedFiles: new Set(),
 }
 
@@ -190,6 +222,46 @@ export function filesReducer(state: CollabFilesState, action: FilesAction): Coll
       if (!existing) return state
       return { ...state, downloads: { ...state.downloads, [action.fileId]: { ...existing, ...action.payload } } }
     }
+    case 'FILE_PROGRESS':
+      return { ...state, progress: { ...state.progress, [action.name]: action.value } }
+    case 'ADD_PENDING':
+      return { ...state, pendingFiles: { ...state.pendingFiles, [action.index]: true } }
+    case 'REMOVE_PENDING': {
+      const p = { ...state.pendingFiles }; delete p[action.index]
+      return { ...state, pendingFiles: p }
+    }
+    case 'PAUSE_FILE':
+      return { ...state, pausedFiles: { ...state.pausedFiles, [action.index]: true } }
+    case 'RESUME_FILE': {
+      const p = { ...state.pausedFiles }; delete p[action.index]
+      return { ...state, pausedFiles: p }
+    }
+    case 'COMPLETE_FILE': {
+      const pending = { ...state.pendingFiles }; delete pending[action.index]
+      const paused = { ...state.pausedFiles }; delete paused[action.index]
+      return {
+        ...state,
+        progress: { ...state.progress, [action.name]: 100 },
+        completedFiles: { ...state.completedFiles, [action.index]: true },
+        pendingFiles: pending,
+        pausedFiles: paused,
+        currentFileIndex: null,
+      }
+    }
+    case 'CANCEL_FILE': {
+      const pending = { ...state.pendingFiles }; delete pending[action.index]
+      const paused = { ...state.pausedFiles }; delete paused[action.index]
+      const progress = { ...state.progress }; if (action.name) delete progress[action.name]
+      return {
+        ...state,
+        pendingFiles: pending,
+        pausedFiles: paused,
+        progress,
+        currentFileIndex: state.currentFileIndex === action.index ? null : state.currentFileIndex,
+      }
+    }
+    case 'SET_CURRENT_FILE':
+      return { ...state, currentFileIndex: action.index }
     case 'RESET':
       return { ...initialFilesState, mySharedFiles: new Set() }
     default:

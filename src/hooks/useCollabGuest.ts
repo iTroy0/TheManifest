@@ -846,13 +846,58 @@ export function useCollabGuest(roomId: string) {
   }, [startConnection])
 
   const leave = useCallback((): void => {
-    destroyedRef.current = true
-    if (hostConnRef.current) {
-      try { hostConnRef.current.close() } catch {}
-    }
-    if (peerRef.current) peerRef.current.destroy()
-    dispatchRoom({ type: 'SET_STATUS', payload: 'closed' })
+  destroyedRef.current = true
+  if (hostConnRef.current) {
+  try { hostConnRef.current.close() } catch {}
+  }
+  if (peerRef.current) peerRef.current.destroy()
+  dispatchRoom({ type: 'SET_STATUS', payload: 'closed' })
   }, [])
+
+  // Pause/Resume/Cancel functions for FileList compatibility
+  const pauseFile = useCallback((index: number): void => {
+    const conn = hostConnRef.current
+    if (!conn) return
+    const file = files.sharedFiles[index]
+    if (file) {
+      sendToHost({ type: 'collab-pause-file', fileId: file.id })
+      dispatchFiles({ type: 'PAUSE_FILE', index })
+    }
+  }, [files.sharedFiles, sendToHost])
+
+  const resumeFile = useCallback((index: number): void => {
+    const conn = hostConnRef.current
+    if (!conn) return
+    const file = files.sharedFiles[index]
+    if (file) {
+      sendToHost({ type: 'collab-resume-file', fileId: file.id })
+      dispatchFiles({ type: 'RESUME_FILE', index })
+    }
+  }, [files.sharedFiles, sendToHost])
+
+  const cancelFile = useCallback((index: number): void => {
+    const file = files.sharedFiles[index]
+    if (file) {
+      sendToHost({ type: 'collab-cancel-file', fileId: file.id })
+      // Abort any in-progress stream
+      if (inProgressFileRef.current?.fileId === file.id && inProgressFileRef.current.stream) {
+        try { inProgressFileRef.current.stream.abort() } catch {}
+        inProgressFileRef.current = null
+      }
+      dispatchFiles({ type: 'CANCEL_FILE', index, name: file.name })
+    }
+  }, [files.sharedFiles, sendToHost])
+
+  const cancelAll = useCallback((): void => {
+    sendToHost({ type: 'collab-cancel-all' })
+    // Abort in-progress stream
+    if (inProgressFileRef.current?.stream) {
+      try { inProgressFileRef.current.stream.abort() } catch {}
+      inProgressFileRef.current = null
+    }
+    // Reset all pending/paused
+    dispatchFiles({ type: 'RESET' })
+  }, [sendToHost])
 
   return {
     // Room state
@@ -902,6 +947,19 @@ export function useCollabGuest(roomId: string) {
     clearMessages,
     retryWithRelay,
     leave,
+
+    // FileList-compatible state
+    progress: files.progress,
+    pendingFiles: files.pendingFiles,
+    pausedFiles: files.pausedFiles,
+    completedFiles: files.completedFiles,
+    currentFileIndex: files.currentFileIndex,
+
+    // FileList-compatible actions
+    pauseFile,
+    resumeFile,
+    cancelFile,
+    cancelAll,
   }
 }
 
