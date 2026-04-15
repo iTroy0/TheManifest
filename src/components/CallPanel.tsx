@@ -495,10 +495,21 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
   const renderHeader = (): React.ReactElement => (
     <div
       className={`flex items-center justify-between px-3 py-2 border-b border-border bg-surface-2/40 relative ${
-        isPopout && !isMobile ? 'cursor-move select-none' : ''
+        isPopout && !isMobile ? 'cursor-move select-none' : 'cursor-pointer select-none'
       }`}
       onMouseDown={isPopout && !isMobile ? popout.onDragStart : undefined}
       onTouchStart={isPopout && !isMobile ? popout.onDragStart : undefined}
+      onClick={!isPopout ? () => setOpen(o => !o) : undefined}
+      role={!isPopout ? 'button' : undefined}
+      tabIndex={!isPopout ? 0 : undefined}
+      aria-expanded={!isPopout ? open : undefined}
+      onKeyDown={!isPopout ? e => {
+        if (e.target !== e.currentTarget) return
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          setOpen(o => !o)
+        }
+      } : undefined}
     >
       {isPopout && !isMobile && (
         <div
@@ -537,7 +548,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         {!isPopout && !isMobile && (
           <button
             type="button"
-            onClick={popOut}
+            onClick={e => { e.stopPropagation(); popOut() }}
             className="p-1.5 rounded-md text-muted-light hover:text-accent hover:bg-accent/10 transition-colors"
             title="Pop out"
             aria-label="Pop out call"
@@ -548,7 +559,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         {isPopout && (
           <button
             type="button"
-            onClick={dockBack}
+            onClick={e => { e.stopPropagation(); dockBack() }}
             className="p-1.5 rounded-md text-muted-light hover:text-accent hover:bg-accent/10 transition-colors"
             title="Dock"
             aria-label="Dock call panel"
@@ -557,15 +568,15 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
           </button>
         )}
         {!isPopout && (
-          <button
-            type="button"
-            onClick={() => setOpen(o => !o)}
-            className="p-1.5 rounded-md text-muted-light hover:text-accent hover:bg-accent/10 transition-colors"
-            title={open ? 'Collapse' : 'Expand'}
-            aria-label={open ? 'Collapse call panel' : 'Expand call panel'}
+          // Chevron is purely visual affordance now — the whole bar toggles.
+          // We still render it as a focusable button for keyboard users, but
+          // it bubbles up to the bar's onClick instead of double-toggling.
+          <div
+            className="p-1.5 rounded-md text-muted-light pointer-events-none"
+            aria-hidden="true"
           >
             <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
-          </button>
+          </div>
         )}
       </div>
     </div>

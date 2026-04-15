@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { ArrowLeft, ChevronDown, Shield, Zap, Globe, HelpCircle, type LucideIcon } from 'lucide-react'
+import { ArrowLeft, ChevronDown, Shield, Zap, Globe, HelpCircle, Users, type LucideIcon } from 'lucide-react'
 import { useState } from 'react'
 import { usePageTitle } from '../hooks/usePageTitle'
 
@@ -106,6 +106,44 @@ const faqs: FAQCategoryData[] = [
       {
         q: 'Can I control the volume of other people in a call?',
         a: 'Yes. Tap the settings (gear) icon in the call controls to reveal a master volume slider that applies to everyone you\'re listening to. For a faster silence, the controls row also has a dedicated mute-speakers button. On mobile, tap targets are sized for thumbs and the video grid stacks vertically in portrait.'
+      }
+    ]
+  },
+  {
+    category: 'Collaborative Rooms',
+    icon: Users,
+    items: [
+      {
+        q: 'What is a collaborative room?',
+        a: 'A collaborative room is a multi-party workspace where every participant can share files, chat, react, and join voice/video calls in one place. Unlike the 1:N portal mode where one sender hands files to N receivers, a collab room lets every guest be both sender and receiver at the same time. Open one at /collab or from the "Collaborative room" button on the home page.'
+      },
+      {
+        q: 'How does the encryption work with multiple people?',
+        a: 'Every pair-wise connection runs its own ECDH P-256 key exchange and derives its own AES-256-GCM key. Host↔guest and guest↔guest links each get an independent shared secret, so no single key covers the whole room. Files and chat are encrypted before they leave your browser, and each connection exposes its own fingerprint in the UI so you can verify it out-of-band.'
+      },
+      {
+        q: 'Does the host see what guests share with each other?',
+        a: 'No. Guests form direct peer-to-peer connections with each other via a "mesh" and transfer files over those mesh links using a key the host does not have. The host only acts as a signaling broker and a fallback relay. If a direct guest-to-guest connection cannot be formed (strict NAT), the host forwards already-encrypted bytes — the host\'s browser cannot decrypt them, and neither can we.'
+      },
+      {
+        q: 'What do the fingerprints in the "Verify connections" panel mean?',
+        a: 'Each fingerprint is a short hash of the public keys used on that specific connection. If you and the other person see the same 4+4 hex string, no one is in the middle. If they differ, the connection has been tampered with. Compare them over a separate channel (voice, SMS, in person) to be sure.'
+      },
+      {
+        q: 'Can the host add or remove a password while people are in the room?',
+        a: 'No. Password changes are blocked once at least one guest is connected, because flipping the requirement mid-session would either lock out admitted guests or give a false sense of security to people who joined before the lock. Set the password before sharing the link, or remove everyone, change the password, and re-invite.'
+      },
+      {
+        q: 'What happens if a guest leaves mid-transfer?',
+        a: 'Only transfers that were going to or from that specific guest are aborted. Other mesh transfers and host-relay transfers keep running untouched. Files owned by a guest who leaves are removed from the shared list so no one can click "Download" on a ghost entry.'
+      },
+      {
+        q: 'How many people can be in a collab room?',
+        a: 'Up to 20 participants — the same cap as voice calls and the 1:N portal. Beyond that, WebRTC mesh fan-out starts to stress typical home connections.'
+      },
+      {
+        q: 'Can I download many files at once?',
+        a: 'Yes. When a room has multiple files, the file list header shows a "Download all (N)" button that fetches every file you have not already downloaded. Individual files also support pause, resume, cancel, and retry on error.'
       }
     ]
   },
