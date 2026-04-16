@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { ArrowLeft, Shield, EyeOff, Server, Globe, Mail, Database, type LucideIcon } from 'lucide-react'
 import { usePageTitle } from '../hooks/usePageTitle'
+import AppFooter from '../components/AppFooter'
 
 interface SectionData {
   icon: LucideIcon
@@ -234,16 +235,7 @@ export default function Privacy() {
 
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-border/40 py-6 mt-auto">
-        <div className="max-w-[720px] mx-auto px-6 flex items-center justify-center gap-4 text-xs text-muted">
-          <Link to="/" className="hover:text-accent transition-colors">Home</Link>
-          <span className="text-border">|</span>
-          <Link to="/faq" className="hover:text-accent transition-colors">FAQ</Link>
-          <span className="text-border">|</span>
-          <a href="https://github.com/iTroy0/TheManifest" target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors">GitHub</a>
-        </div>
-      </footer>
+      <AppFooter />
 
     </div>
   )

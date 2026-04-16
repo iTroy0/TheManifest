@@ -15,6 +15,8 @@ import {
   Info,
   Pencil,
   Radio,
+  Eye,
+  EyeOff,
 } from 'lucide-react'
 import { useCollabGuest } from '../../hooks/useCollabGuest'
 import { useLocalMedia } from '../../hooks/useLocalMedia'
@@ -24,6 +26,7 @@ import StatusIndicator from '../../components/StatusIndicator'
 import CollabFileList from '../../components/CollabFileList'
 import ChatPanel from '../../components/ChatPanel'
 import CallPanel from '../../components/CallPanel'
+import AppFooter from '../../components/AppFooter'
 import { ComponentErrorBoundary } from '../../components/ErrorBoundary'
 import { ConnectionChips, UploadsSummary, VerifyConnectionsPanel, type FingerprintEntry } from './CollabShared'
 
@@ -44,6 +47,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
 
   const [passwordInput, setPasswordInput] = useState('')
   const [passwordLoading, setPasswordLoading] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
   const [roomExpanded, setRoomExpanded] = useState(true)
   const [filesExpanded, setFilesExpanded] = useState(true)
   const [isDragging, setIsDragging] = useState(false)
@@ -194,15 +198,26 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
                 <p className="text-sm text-muted">Enter the password to join this room.</p>
               </div>
               <form onSubmit={handlePasswordSubmit} className="space-y-4">
-                <input
-                  type="password"
-                  value={passwordInput}
-                  onChange={e => { setPasswordInput(e.target.value); setPasswordLoading(false) }}
-                  placeholder="Enter password"
-                  disabled={passwordLoading}
-                  className="w-full bg-bg border border-border rounded-xl px-4 py-3.5 font-mono text-sm text-text text-center placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all disabled:opacity-40"
-                  autoFocus
-                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    aria-label="Room password"
+                    value={passwordInput}
+                    onChange={e => { setPasswordInput(e.target.value); setPasswordLoading(false) }}
+                    placeholder="Enter password"
+                    disabled={passwordLoading}
+                    className="w-full bg-bg border border-border rounded-xl px-4 py-3.5 pr-11 font-mono text-sm text-text text-center placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all disabled:opacity-40"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(v => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-accent transition-colors"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
                 {guest.passwordError && !passwordLoading && (
                   <div className="flex items-center justify-center gap-2 text-danger">
                     <AlertCircle className="w-4 h-4" />
@@ -393,6 +408,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
                     ref={fileInputRef}
                     type="file"
                     multiple
+                    aria-label="Share files with the room"
                     onChange={handleFileSelect}
                     className="hidden"
                   />
@@ -477,17 +493,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
         )}
       </main>
 
-      <footer className="border-t border-border/40 py-6 mt-auto">
-        <div className="max-w-[720px] mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left">
-          <p className="font-mono text-[10px] text-muted">
-            E2E encrypted &middot; No server storage &middot; Direct P2P
-          </p>
-          <div className="flex items-center gap-4 font-mono text-[10px]">
-            <Link to="/faq" className="text-muted hover:text-accent transition-colors">FAQ</Link>
-            <Link to="/privacy" className="text-muted hover:text-accent transition-colors">Privacy</Link>
-          </div>
-        </div>
-      </footer>
+      <AppFooter />
     </div>
   )
 }

@@ -24,6 +24,7 @@ import { formatBytes } from '../../utils/formatBytes'
 import CollabFileList from '../../components/CollabFileList'
 import ChatPanel from '../../components/ChatPanel'
 import CallPanel from '../../components/CallPanel'
+import AppFooter from '../../components/AppFooter'
 import { ComponentErrorBoundary } from '../../components/ErrorBoundary'
 import { ConnectionChips, UploadsSummary, VerifyConnectionsPanel, type FingerprintEntry } from './CollabShared'
 
@@ -221,19 +222,21 @@ export default function CollabHostView() {
                           <div className="mt-3 flex items-center gap-2">
                             <input
                               type="password"
+                              aria-label="Set room password"
                               placeholder={hasGuests ? 'Password locked — guests connected' : 'Set password (optional)'}
                               value={passwordInput}
                               onChange={e => setPasswordInput(e.target.value)}
                               disabled={hasGuests}
-                              className="flex-1 bg-bg border border-border rounded-lg px-3 py-2 font-mono text-xs text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="flex-1 bg-bg border border-border rounded-xl px-4 py-3 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                             />
                             <button
                               onClick={handlePasswordSet}
                               disabled={!passwordInput.trim() || hasGuests}
                               title={hasGuests ? 'Cannot set a password while guests are in the room' : 'Set password'}
-                              className="px-3 py-2 rounded-lg font-mono text-xs border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              aria-label="Set password"
+                              className="px-4 py-3 rounded-xl font-mono text-sm border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                              <Lock className="w-3.5 h-3.5" />
+                              <Lock className="w-4 h-4" />
                             </button>
                           </div>
                         )}
@@ -356,7 +359,7 @@ export default function CollabHostView() {
                 <div className="px-5 py-3 border-t border-border">
                   <button
                     onClick={host.closeRoom}
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg font-mono text-xs text-danger hover:bg-danger/10 transition-colors"
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs bg-danger/10 border border-danger/20 text-danger hover:bg-danger/20 hover:border-danger/30 transition-colors"
                   >
                     <DoorOpen className="w-3.5 h-3.5" />
                     Close Room
@@ -396,6 +399,7 @@ export default function CollabHostView() {
                     ref={fileInputRef}
                     type="file"
                     multiple
+                    aria-label="Share files with the room"
                     onChange={handleFileSelect}
                     className="hidden"
                   />
@@ -465,17 +469,7 @@ export default function CollabHostView() {
         )}
       </main>
 
-      <footer className="border-t border-border/40 py-6 mt-auto">
-        <div className="max-w-[720px] mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left">
-          <p className="font-mono text-[10px] text-muted">
-            E2E encrypted &middot; No server storage &middot; Direct P2P
-          </p>
-          <div className="flex items-center gap-4 font-mono text-[10px]">
-            <Link to="/faq" className="text-muted hover:text-accent transition-colors">FAQ</Link>
-            <Link to="/privacy" className="text-muted hover:text-accent transition-colors">Privacy</Link>
-          </div>
-        </div>
-      </footer>
+      <AppFooter />
     </div>
   )
 }

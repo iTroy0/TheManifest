@@ -10,6 +10,7 @@
   --color-accent-dim: #00cc6a;
   --color-accent-glow: rgba(0, 255, 136, 0.15);
   --color-warning: #ff6b35;
+  --color-warning-mid: #fbbf24;
   --color-danger: #ff4444;
   --color-info: #4a9eff;
   --color-text: #ffffff;
@@ -21,6 +22,9 @@
 }
 
 /* ── Base ── */
+:root {
+  color-scheme: dark;
+}
 body {
   margin: 0;
   background-color: var(--color-bg);

@@ -10,9 +10,10 @@ import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import ChatPanel from '../components/ChatPanel'
 import CallPanel from '../components/CallPanel'
+import AppFooter from '../components/AppFooter'
 import { ComponentErrorBoundary } from '../components/ErrorBoundary'
 import { useState, useEffect, type ChangeEvent } from 'react'
-import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Wifi, Archive, Lock, ChevronDown, MessagesSquare, Loader2 } from 'lucide-react'
+import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Wifi, Archive, Lock, ChevronDown, MessagesSquare, Loader2, Eye, EyeOff } from 'lucide-react'
 
 export default function Portal() {
   const { peerId } = useParams<{ peerId: string }>()
@@ -39,6 +40,7 @@ export default function Portal() {
   })
   const [passwordInput, setPasswordInput] = useState<string>('')
   const [passwordLoading, setPasswordLoading] = useState<boolean>(false)
+  const [showPassword, setShowPassword] = useState<boolean>(false)
   const [filesOpen, setFilesOpen] = useState<boolean>(true)
   usePageTitle(status, overallProgress)
 
@@ -178,15 +180,23 @@ export default function Portal() {
               >
                 <div className="relative">
                   <input
-                    type="password"
+                    type={showPassword ? 'text' : 'password'}
                     aria-label="Portal password"
                     value={passwordInput}
                     onChange={(e: ChangeEvent<HTMLInputElement>) => { setPasswordInput(e.target.value); setPasswordLoading(false) }}
                     placeholder="Enter password"
                     disabled={passwordLoading}
-                    className="w-full bg-bg border border-border rounded-xl px-4 py-3.5 font-mono text-sm text-text text-center placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all disabled:opacity-40"
+                    className="w-full bg-bg border border-border rounded-xl px-4 py-3.5 pr-11 font-mono text-sm text-text text-center placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all disabled:opacity-40"
                     autoFocus
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(v => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-accent transition-colors"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
                 {passwordError && !passwordLoading && (
                   <div className="flex items-center justify-center gap-2 text-danger">
@@ -254,8 +264,8 @@ export default function Portal() {
                   <span className={`font-mono text-[10px] ${useRelay ? 'text-warning' : 'text-accent'}`}>{useRelay ? 'Relay' : 'P2P'}</span>
                 </div>
                 {rtt !== null && (
-                  <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`} title={`Round-trip latency: ${rtt}ms${rtt < 100 ? ' (excellent)' : rtt < 300 ? ' (good)' : ' (slow)'}`}>
-                    <span className={`font-mono text-[10px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
+                  <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-warning-mid/5 border-warning-mid/20' : 'bg-danger/5 border-danger/20'}`} title={`Round-trip latency: ${rtt}ms${rtt < 100 ? ' (excellent)' : rtt < 300 ? ' (good)' : ' (slow)'}`}>
+                    <span className={`font-mono text-[10px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-warning-mid' : 'text-danger'}`}>{rtt}ms</span>
                   </div>
                 )}
                 <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5 cursor-default" title={fingerprint ? `Verify fingerprint: ${fingerprint}` : 'E2E encrypted'}>
@@ -395,15 +405,7 @@ export default function Portal() {
 
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-border/40 mt-auto">
-        <div className="max-w-[720px] mx-auto px-6 py-5 flex items-center justify-between flex-wrap gap-2">
-          <p className="font-mono text-xs text-muted">No servers. No storage. No tracking.</p>
-          <p className="font-mono text-xs text-muted">
-            <Link to="/faq" className="text-muted-light hover:text-accent transition-colors">FAQ</Link> &middot; <Link to="/privacy" className="text-muted-light hover:text-accent transition-colors">Privacy</Link> &middot; by <a href="https://github.com/iTroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">iTroy0</a> &middot; <a href="https://buymeacoffee.com/itroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">☕ buy me a coffee</a>
-          </p>
-        </div>
-      </footer>
+      <AppFooter />
     </div>
   )
 }

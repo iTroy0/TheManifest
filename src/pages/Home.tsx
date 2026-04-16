@@ -13,6 +13,7 @@ import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import ChatPanel from '../components/ChatPanel'
 import CallPanel from '../components/CallPanel'
+import AppFooter from '../components/AppFooter'
 import { useLocalMedia } from '../hooks/useLocalMedia'
 import { useCall } from '../hooks/useCall'
 import { ComponentErrorBoundary } from '../components/ErrorBoundary'
@@ -35,6 +36,7 @@ export default function Home() {
     localMedia,
   })
   const addInputRef = useRef<HTMLInputElement>(null)
+  const resetModalRef = useRef<HTMLDivElement>(null)
   const [passwordInput, setPasswordInput] = useState<string>('')
   const [filesOpen, setFilesOpen] = useState<boolean>(true)
   const [chatMode, setChatMode] = useState<boolean>(false)
@@ -70,6 +72,32 @@ export default function Home() {
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
   }, [isActive])
+
+  useEffect(() => {
+    if (!showResetConfirm) return
+    const modal = resetModalRef.current
+    if (!modal) return
+    const focusables = modal.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])')
+    const first = focusables[0]
+    const last = focusables[focusables.length - 1]
+    const prevActive = document.activeElement as HTMLElement | null
+    first?.focus()
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Tab' || focusables.length === 0) return
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last?.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first?.focus()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      prevActive?.focus?.()
+    }
+  }, [showResetConfirm])
 
   const handleFiles = useCallback((newFiles: File[]): void => {
     setError(null)
@@ -252,8 +280,8 @@ export default function Home() {
                         <span className="font-mono text-[10px] text-accent">{recipientCount}</span>
                       </div>
                       {rtt !== null && (
-                        <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-yellow-400/5 border-yellow-400/20' : 'bg-danger/5 border-danger/20'}`} title={`Latency: ${rtt}ms`}>
-                          <span className={`font-mono text-[10px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-yellow-400' : 'text-danger'}`}>{rtt}ms</span>
+                        <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 border cursor-default ${rtt < 100 ? 'bg-accent/5 border-accent/20' : rtt < 300 ? 'bg-warning-mid/5 border-warning-mid/20' : 'bg-danger/5 border-danger/20'}`} title={`Latency: ${rtt}ms`}>
+                          <span className={`font-mono text-[10px] ${rtt < 100 ? 'text-accent' : rtt < 300 ? 'text-warning-mid' : 'text-danger'}`}>{rtt}ms</span>
                         </div>
                       )}
                       {fingerprint && (
@@ -454,7 +482,7 @@ export default function Home() {
             aria-label="Confirm new session"
             tabIndex={-1}
           >
-            <div className="bg-surface border border-border rounded-2xl p-6 max-w-sm mx-4 space-y-4 animate-fade-in-up" onClick={(e) => e.stopPropagation()}>
+            <div ref={resetModalRef} className="bg-surface border border-border rounded-2xl p-6 max-w-sm mx-4 space-y-4 animate-fade-in-up" onClick={(e) => e.stopPropagation()}>
               <h3 className="font-mono text-base font-semibold text-text-bright">Start New Session?</h3>
               <p className="text-sm text-muted leading-relaxed">This will end the current session and disconnect all peers.</p>
               <div className="flex gap-3 justify-end">
@@ -471,17 +499,7 @@ export default function Home() {
         )}
       </main>
 
-      {/* ── Footer ── */}
-      <footer className="border-t border-border/40 mt-auto">
-        <div className="max-w-[720px] mx-auto px-6 py-5 flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left">
-          <p className="font-mono text-xs text-muted">
-            No servers. No storage. No tracking.
-          </p>
-          <p className="font-mono text-xs text-muted">
-            <Link to="/faq" className="text-muted-light hover:text-accent transition-colors">FAQ</Link> &middot; <Link to="/privacy" className="text-muted-light hover:text-accent transition-colors">Privacy</Link> &middot; by <a href="https://github.com/iTroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">iTroy0</a> &middot; <a href="https://buymeacoffee.com/itroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">☕ buy me a coffee</a>
-          </p>
-        </div>
-      </footer>
+      <AppFooter />
     </div>
   )
 }
