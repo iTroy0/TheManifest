@@ -1,4 +1,8 @@
 export interface ChatMessage {
+  // Stable per-message id. Used to target reactions so multiple messages with
+  // colliding timestamps (e.g., two guests sending in the same ms) don't mix.
+  // Optional for backward compat with messages received from older clients.
+  id?: string
   text: string
   image?: string
   mime?: string

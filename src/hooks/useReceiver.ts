@@ -287,10 +287,11 @@ export function useReceiver(peerId: string) {
               }
               const pubKeyBytes = await exportPublicKey(keyPairRef.current.publicKey)
               conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
-              const remotePubKey = await importPublicKey(new Uint8Array(msg.key as number[]))
-              decryptKeyRef.current = await deriveSharedKey(keyPairRef.current.privateKey, remotePubKey)
+              const remoteKeyBytes = new Uint8Array(msg.key as number[])
+              const remotePubKey = await importPublicKey(remoteKeyBytes)
+              decryptKeyRef.current = await deriveSharedKey(keyPairRef.current.privateKey, remotePubKey, pubKeyBytes, remoteKeyBytes)
               if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
-              const fp = await getKeyFingerprint(pubKeyBytes, new Uint8Array(msg.key as number[]))
+              const fp = await getKeyFingerprint(pubKeyBytes, remoteKeyBytes)
               dispatchConn({ type: 'SET', payload: { fingerprint: fp } })
 
               // Fingerprint rotation warning — surface any change to the user so

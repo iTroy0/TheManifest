@@ -8,18 +8,12 @@ import TypingDots from './chat/TypingDots'
 import ImagePreviewOverlay from './chat/ImagePreviewOverlay'
 import { useChatPanelState } from '../hooks/useChatPanelState'
 import { useChatInteraction, type ImagePreview, type ReplyTo } from '../hooks/useChatInteraction'
+import { usePopout } from '../hooks/usePopout'
 import { ChatMessage } from '../types'
 
 const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
-
-// ── DragRef shape ────────────────────────────────────────────────────────────
-
-interface DragRef {
-  startX: number
-  startY: number
-  origX: number
-  origY: number
-}
+const POPOUT_DEFAULT = { w: 384, h: 600 }
+const POPOUT_MIN = { w: 280, h: 300 }
 
 // ── ChatPanel props ──────────────────────────────────────────────────────────
 
@@ -38,7 +32,13 @@ interface ChatPanelProps {
 
 export default function ChatPanel({ messages, onSend, onClearMessages, disabled, nickname, onNicknameChange, onlineCount, onTyping, typingUsers, onReaction }: ChatPanelProps) {
   const [panel, dispatchPanel] = useChatPanelState()
-  const { open, unread, isFullscreen, isPopout, showMenu, showClearConfirm, showScrollBtn, isNearBottom, menuPos, popoutPos, popoutSize, viewportHeight, viewportOffset } = panel
+  const { open, unread, isFullscreen, showMenu, showClearConfirm, showScrollBtn, isNearBottom, menuPos, viewportHeight, viewportOffset } = panel
+  const popout = usePopout({
+    defaultSize: POPOUT_DEFAULT,
+    minSize: POPOUT_MIN,
+    onToggle: (isPopout) => dispatchPanel({ type: 'SET', payload: { open: isPopout } }),
+  })
+  const { isPopout, pos: popoutPos, size: popoutSize, popOut, dockBack, onDragStart: onPopoutDragStart, onResizeStart: onPopoutResizeStart, elementRef: popoutRef } = popout
   const [interact, dispatchInteract] = useChatInteraction()
   const { replyTo, reactingIdx, activeMsg, imagePreview, viewImage, isDragOver, dropError } = interact
   const [text, setText] = useState('')
@@ -54,6 +54,12 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recordingChunksRef = useRef<Blob[]>([])
   const chatBlobUrlsRef = useRef<string[]>([])
+  // Mirrors so the long-lived MediaRecorder callbacks read current values
+  // rather than the closure snapshot captured at startRecording time.
+  const onSendRef = useRef(onSend)
+  const soundEnabledRef = useRef(soundEnabled)
+  useEffect(() => { onSendRef.current = onSend }, [onSend])
+  useEffect(() => { soundEnabledRef.current = soundEnabled }, [soundEnabled])
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const prevLen = useRef(messages.length)
@@ -61,8 +67,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const textInputRef = useRef<HTMLTextAreaElement | null>(null)
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const dragRef = useRef<DragRef | null>(null)
-  const popoutRef = useRef<HTMLDivElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const clearConfirmRef = useRef<HTMLDivElement | null>(null)
@@ -121,9 +125,13 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         dispatchPanel({ type: 'INCREMENT_UNREAD', count: messages.length - prevLen.current })
       }
       const newMsgs = messages.slice(prevLen.current)
+      // Only alert when the user is unlikely to already see the message:
+      // panel closed or tab backgrounded. Playing dings while actively
+      // reading is noise.
+      const shouldAlert = !open || (typeof document !== 'undefined' && document.hidden)
       for (const msg of newMsgs) {
         if (!msg.self && msg.from !== 'system') {
-          if (soundEnabled) sounds.messageReceived()
+          if (soundEnabled && shouldAlert) sounds.messageReceived()
           if (notifyEnabled) alertNewMessage(msg.from, msg.text || 'Image', false)
         }
       }
@@ -148,11 +156,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   useEffect(() => {
     if (isPopout) dispatchPanel({ type: 'SET', payload: { open: true } })
   }, [isPopout])
-
-  function clearResizeStyles() {
-    const el = popoutRef.current
-    if (el) { el.style.width = ''; el.style.height = '' }
-  }
 
   useEffect(() => {
     if (!isFullscreen) return
@@ -204,7 +207,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     el.style.height = Math.min(el.scrollHeight, 120) + 'px'
     if (onTyping) {
       if (!typingTimer.current) onTyping()
-      clearTimeout(typingTimer.current!)
+      if (typingTimer.current) clearTimeout(typingTimer.current)
       typingTimer.current = setTimeout(() => { typingTimer.current = null }, 2000)
     }
   }
@@ -271,8 +274,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         }
         const bytes = new Uint8Array(await blob.arrayBuffer())
         const url = createTrackedBlobUrl(blob)
-        if (soundEnabled) sounds.messageSent()
-        onSend('', { url, bytes, mime: mime.split(';')[0], duration: recordingTimeRef.current }, undefined)
+        if (soundEnabledRef.current) sounds.messageSent()
+        onSendRef.current('', { url, bytes, mime: mime.split(';')[0], duration: recordingTimeRef.current }, undefined)
         setIsRecording(false)
         setRecordingTime(0)
         recordingTimeRef.current = 0
@@ -401,70 +404,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   }
 
   function handleTouchEnd() {
-    clearTimeout(longPressTimer.current!)
-  }
-
-  function handleDragStart(e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) {
-    if (!isPopout || isFullscreen) return
-    const el = popoutRef.current
-    if (!el) return
-    const touch = (e as React.TouchEvent).touches
-    const clientX = touch ? touch[0].clientX : (e as React.MouseEvent).clientX
-    const clientY = touch ? touch[0].clientY : (e as React.MouseEvent).clientY
-    const rect = el.getBoundingClientRect()
-    dragRef.current = { startX: clientX, startY: clientY, origX: rect.left, origY: rect.top }
-
-    const onMove = (ev: MouseEvent | TouchEvent) => {
-      const t = (ev as TouchEvent).touches
-      const cx = t ? t[0].clientX : (ev as MouseEvent).clientX
-      const cy = t ? t[0].clientY : (ev as MouseEvent).clientY
-      const dx = cx - dragRef.current!.startX
-      const dy = cy - dragRef.current!.startY
-      const nx = Math.max(0, Math.min(window.innerWidth - 100, dragRef.current!.origX + dx))
-      const ny = Math.max(0, Math.min(window.innerHeight - 50, dragRef.current!.origY + dy))
-      dispatchPanel({ type: 'SET', payload: { popoutPos: { x: nx, y: ny } } })
-    }
-    const onEnd = () => {
-      dragRef.current = null
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onEnd)
-      window.removeEventListener('touchmove', onMove)
-      window.removeEventListener('touchend', onEnd)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onEnd)
-    window.addEventListener('touchmove', onMove, { passive: false })
-    window.addEventListener('touchend', onEnd)
-  }
-
-  function handleResizeStart(e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) {
-    e.preventDefault()
-    e.stopPropagation()
-    const el = popoutRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    const startRight = rect.right
-    const startBottom = rect.bottom
-
-    const onMove = (ev: MouseEvent | TouchEvent) => {
-      ev.preventDefault()
-      const t = (ev as TouchEvent).touches
-      const cx = t ? t[0].clientX : (ev as MouseEvent).clientX
-      const cy = t ? t[0].clientY : (ev as MouseEvent).clientY
-      const newW = Math.max(280, Math.min(window.innerWidth - 16, startRight - cx))
-      const newH = Math.max(300, Math.min(window.innerHeight - 32, startBottom - cy))
-      dispatchPanel({ type: 'SET', payload: { popoutSize: { w: newW, h: newH }, popoutPos: { x: startRight - newW, y: startBottom - newH } } })
-    }
-    const onEnd = () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onEnd)
-      window.removeEventListener('touchmove', onMove)
-      window.removeEventListener('touchend', onEnd)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onEnd)
-    window.addEventListener('touchmove', onMove, { passive: false })
-    window.addEventListener('touchend', onEnd)
+    if (longPressTimer.current) clearTimeout(longPressTimer.current)
   }
 
   useEffect(() => {
@@ -568,14 +508,14 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       {isPopout && !isFullscreen && (
         <div
           className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0 bg-surface/80 backdrop-blur-sm cursor-move select-none relative"
-          onMouseDown={handleDragStart}
-          onTouchStart={handleDragStart}
+          onMouseDown={onPopoutDragStart}
+          onTouchStart={onPopoutDragStart}
         >
           {/* Top-left resize handle */}
           <div
             className="absolute -top-1 -left-1 w-5 h-5 cursor-nw-resize z-10 flex items-center justify-center opacity-40 hover:opacity-100 transition-opacity"
-            onMouseDown={handleResizeStart}
-            onTouchStart={handleResizeStart}
+            onMouseDown={onPopoutResizeStart}
+            onTouchStart={onPopoutResizeStart}
             title="Resize"
           >
             <svg width="10" height="10" viewBox="0 0 10 10" className="text-muted">
@@ -609,14 +549,14 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               </button>
             )}
             <button
-              onClick={() => { clearResizeStyles(); dispatchPanel({ type: 'SET', payload: { isFullscreen: true } }) }}
+              onClick={() => { dispatchPanel({ type: 'SET', payload: { isFullscreen: true } }) }}
               className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
               title="Fullscreen"
             >
               <Maximize2 className="w-4 h-4" />
             </button>
             <button
-              onClick={() => { clearResizeStyles(); dispatchPanel({ type: 'RESET_POPOUT' }) }}
+              onClick={() => { dockBack() }}
               className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
               title="Minimize"
             >
@@ -634,7 +574,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         >
           {/* Left: Back/Minimize button */}
           <button
-            onClick={() => { clearResizeStyles(); dispatchPanel({ type: 'SET', payload: { isFullscreen: false, ...(!isPopout && { open: true }) } }) }}
+            onClick={() => { dispatchPanel({ type: 'SET', payload: { isFullscreen: false, ...(!isPopout && { open: true }) } }) }}
             className="flex items-center gap-0.5 px-2 py-2 rounded-xl text-accent active:bg-accent/10 transition-colors"
           >
             {isPopout ? <Minimize2 className="w-5 h-5" /> : <ChevronDown className="w-5 h-5 rotate-90" />}
@@ -807,7 +747,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             <button
               onClick={(e: React.MouseEvent) => {
                 e.stopPropagation()
-                dispatchPanel({ type: 'SET', payload: { popoutPos: { x: Math.round((window.innerWidth - 384) / 2), y: Math.round((window.innerHeight - 600) / 2) }, isPopout: true, open: true } })
+                popOut()
               }}
               className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors hidden sm:flex"
               title="Pop out chat"
@@ -816,7 +756,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             </button>
             {/* Fullscreen toggle */}
             <button
-              onClick={(e: React.MouseEvent) => { e.stopPropagation(); clearResizeStyles(); dispatchPanel({ type: 'SET', payload: { isFullscreen: true } }) }}
+              onClick={(e: React.MouseEvent) => { e.stopPropagation(); dispatchPanel({ type: 'SET', payload: { isFullscreen: true } }) }}
               className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
               title="Fullscreen chat"
             >
@@ -942,7 +882,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
 
                       {group.messages.map((msg, msgIdx) => {
                         const i = msg.index
-                        const msgId = `${msg.time}`
+                        const msgId = msg.id ?? `${msg.time}`
                         const showActions = activeMsg === i
                         const isFirst = msgIdx === 0
                         const isLast = msgIdx === group.messages.length - 1

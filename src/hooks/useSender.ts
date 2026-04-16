@@ -285,7 +285,7 @@ export function useSender() {
         if (connState.pendingRemoteKey) {
           try {
             const remotePubKey = await importPublicKey(connState.pendingRemoteKey)
-            connState.encryptKey = await deriveSharedKey(connState.keyPair.privateKey, remotePubKey)
+            connState.encryptKey = await deriveSharedKey(connState.keyPair.privateKey, remotePubKey, pubKeyBytes, connState.pendingRemoteKey)
             if (connState.keyExchangeTimeout) { clearTimeout(connState.keyExchangeTimeout); connState.keyExchangeTimeout = undefined }
             const fp = await getKeyFingerprint(pubKeyBytes, connState.pendingRemoteKey)
             connState.fingerprint = fp
@@ -337,9 +337,9 @@ export function useSender() {
           }
           try {
             const remotePubKey = await importPublicKey(remoteKeyRaw)
-            connState.encryptKey = await deriveSharedKey(connState.keyPair.privateKey, remotePubKey)
-            if (connState.keyExchangeTimeout) { clearTimeout(connState.keyExchangeTimeout); connState.keyExchangeTimeout = undefined }
             const localPubBytes = await exportPublicKey(connState.keyPair.publicKey)
+            connState.encryptKey = await deriveSharedKey(connState.keyPair.privateKey, remotePubKey, localPubBytes, remoteKeyRaw)
+            if (connState.keyExchangeTimeout) { clearTimeout(connState.keyExchangeTimeout); connState.keyExchangeTimeout = undefined }
             const fp = await getKeyFingerprint(localPubBytes, remoteKeyRaw)
             connState.fingerprint = fp
             dispatchConn({ type: 'SET', payload: { fingerprint: fp } })

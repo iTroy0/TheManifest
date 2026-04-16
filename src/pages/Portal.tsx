@@ -382,7 +382,7 @@ export default function Portal() {
         {/* Call — only while live (no point showing after disconnect) */}
         {showManifest && !isDead && (
           <ComponentErrorBoundary name="Call">
-            <CallPanel call={call} myName={nickname} myPeerId={receiverPeer?.id ?? null} disabled={isDead} connectionStatus={status} />
+            <CallPanel call={call} myName={nickname} disabled={isDead} connectionStatus={status} />
           </ComponentErrorBoundary>
         )}
 

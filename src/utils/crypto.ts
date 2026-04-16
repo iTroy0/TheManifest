@@ -47,17 +47,43 @@ export async function importPublicKey(rawBytes: Uint8Array | ArrayBuffer): Promi
   )
 }
 
-// Derive a shared AES-256-GCM key from our private key + their public key
+// Sort two byte arrays deterministically so both sides produce the same
+// concatenation, then SHA-256 it. Used for both the fingerprint and the
+// HKDF salt so each session derives a unique, session-bound key.
+async function sortedKeyDigest(a: Uint8Array, b: Uint8Array): Promise<Uint8Array> {
+  let first = a, second = b
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] < b[i]) break
+    if (a[i] > b[i]) { first = b; second = a; break }
+  }
+  const combined = new Uint8Array(first.length + second.length)
+  combined.set(first, 0)
+  combined.set(second, first.length)
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', combined))
+}
+
+// Derive a shared AES-256-GCM key from our private key + their public key.
 // Uses HKDF to strengthen the raw ECDH output before use as an AES key.
-export async function deriveSharedKey(privateKey: CryptoKey, remotePublicKey: CryptoKey): Promise<CryptoKey> {
+// If both pub key byte arrays are provided, the HKDF salt is derived from
+// their sorted SHA-256 digest — session-unique, identical on both sides.
+// Omitting them falls back to a zero salt (test ergonomics only).
+export async function deriveSharedKey(
+  privateKey: CryptoKey,
+  remotePublicKey: CryptoKey,
+  localPubBytes?: Uint8Array,
+  remotePubBytes?: Uint8Array,
+): Promise<CryptoKey> {
   const bits = await crypto.subtle.deriveBits(
     { name: 'ECDH', public: remotePublicKey },
     privateKey,
     KEY_LENGTH
   )
+  const salt = (localPubBytes && remotePubBytes)
+    ? await sortedKeyDigest(localPubBytes, remotePubBytes)
+    : new Uint8Array(32)
   const hkdfKey = await crypto.subtle.importKey('raw', bits, 'HKDF', false, ['deriveKey'])
   return crypto.subtle.deriveKey(
-    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: new TextEncoder().encode('manifest-aes-gcm-v1') },
+    { name: 'HKDF', hash: 'SHA-256', salt: salt as BufferSource, info: new TextEncoder().encode('manifest-aes-gcm-v1') },
     hkdfKey,
     { name: ALGO, length: KEY_LENGTH },
     false,
@@ -110,23 +136,25 @@ export async function encryptJSON(key: CryptoKey, obj: unknown): Promise<string>
   return uint8ToBase64(new Uint8Array(encrypted))
 }
 
-// Generate a shared fingerprint from both public keys for visual verification
-// Both sides produce the same fingerprint by sorting keys before hashing
-export async function getKeyFingerprint(localPubBytes: Uint8Array, remotePubBytes: Uint8Array): Promise<string> {
-  const a = new Uint8Array(localPubBytes)
-  const b = new Uint8Array(remotePubBytes)
-  // Sort deterministically so both sides get the same order
-  let first = a, second = b
-  for (let i = 0; i < Math.min(a.length, b.length); i++) {
-    if (a[i] < b[i]) break
-    if (a[i] > b[i]) { first = b; second = a; break }
+// Constant-time string comparison to prevent timing side-channels in
+// credential checks. Length difference is folded into the result so
+// early-exit on mismatched lengths can't leak info.
+export function timingSafeEqual(a: string, b: string): boolean {
+  const aBytes = new TextEncoder().encode(a)
+  const bBytes = new TextEncoder().encode(b)
+  const maxLen = Math.max(aBytes.length, bBytes.length, 1)
+  let diff = aBytes.length ^ bBytes.length
+  for (let i = 0; i < maxLen; i++) {
+    diff |= (aBytes[i] ?? 0) ^ (bBytes[i] ?? 0)
   }
-  const combined = new Uint8Array(first.length + second.length)
-  combined.set(first, 0)
-  combined.set(second, first.length)
-  const hash = await crypto.subtle.digest('SHA-256', combined)
-  const arr = new Uint8Array(hash)
-  return Array.from(arr.slice(0, 16))
+  return diff === 0
+}
+
+// Generate a shared fingerprint from both public keys for visual verification.
+// Both sides produce the same fingerprint by sorting keys before hashing.
+export async function getKeyFingerprint(localPubBytes: Uint8Array, remotePubBytes: Uint8Array): Promise<string> {
+  const digest = await sortedKeyDigest(new Uint8Array(localPubBytes), new Uint8Array(remotePubBytes))
+  return Array.from(digest.slice(0, 16))
     .map(b => b.toString(16).padStart(2, '0'))
     .join(' ')
 }

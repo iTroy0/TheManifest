@@ -72,6 +72,7 @@ interface InProgressFile {
 }
 
 interface InProgressImage {
+  id?: string
   mime: string
   size: number
   text: string
@@ -492,7 +493,7 @@ export function useCollabGuest(roomId: string) {
         if (entry.pendingRemoteKey) {
           try {
             const remotePubKey = await importPublicKey(entry.pendingRemoteKey)
-            entry.encryptKey = await deriveSharedKey(entry.keyPair.privateKey, remotePubKey)
+            entry.encryptKey = await deriveSharedKey(entry.keyPair.privateKey, remotePubKey, pubKeyBytes, entry.pendingRemoteKey)
             if (entry.keyExchangeTimeout) { clearTimeout(entry.keyExchangeTimeout); entry.keyExchangeTimeout = undefined }
             const fp = await getKeyFingerprint(pubKeyBytes, entry.pendingRemoteKey)
             entry.fingerprint = fp
@@ -545,9 +546,9 @@ export function useCollabGuest(roomId: string) {
         if (current.encryptKey) return
         try {
           const remotePubKey = await importPublicKey(remoteKeyRaw)
-          current.encryptKey = await deriveSharedKey(current.keyPair.privateKey, remotePubKey)
-          if (current.keyExchangeTimeout) { clearTimeout(current.keyExchangeTimeout); current.keyExchangeTimeout = undefined }
           const localPubBytes = await exportPublicKey(current.keyPair.publicKey)
+          current.encryptKey = await deriveSharedKey(current.keyPair.privateKey, remotePubKey, localPubBytes, remoteKeyRaw)
+          if (current.keyExchangeTimeout) { clearTimeout(current.keyExchangeTimeout); current.keyExchangeTimeout = undefined }
           const fp = await getKeyFingerprint(localPubBytes, remoteKeyRaw)
           current.fingerprint = fp
           current.directConnection = true
@@ -966,10 +967,11 @@ export function useCollabGuest(roomId: string) {
               }
               const pubKeyBytes = await exportPublicKey(keyPairRef.current.publicKey)
               conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
-              const remotePubKey = await importPublicKey(new Uint8Array(msg.key as number[]))
-              decryptKeyRef.current = await deriveSharedKey(keyPairRef.current.privateKey, remotePubKey)
+              const remoteKeyBytes = new Uint8Array(msg.key as number[])
+              const remotePubKey = await importPublicKey(remoteKeyBytes)
+              decryptKeyRef.current = await deriveSharedKey(keyPairRef.current.privateKey, remotePubKey, pubKeyBytes, remoteKeyBytes)
               if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
-              const fp = await getKeyFingerprint(pubKeyBytes, new Uint8Array(msg.key as number[]))
+              const fp = await getKeyFingerprint(pubKeyBytes, remoteKeyBytes)
               dispatchRoom({ type: 'SET', payload: { fingerprint: fp } })
             } catch {
               dispatchRoom({ type: 'SET_STATUS', payload: 'error' })
@@ -1008,7 +1010,7 @@ export function useCollabGuest(roomId: string) {
           // Reactions
           if (msg.type === 'reaction') {
             setMessages(prev => prev.map(m => {
-              if (`${m.time}` === msg.msgId) {
+              if ((m.id ?? `${m.time}`) === msg.msgId) {
                 const reactions = { ...(m.reactions || {}) }
                 if (!reactions[msg.emoji as string]) reactions[msg.emoji as string] = []
                 if (!reactions[msg.emoji as string].includes(msg.nickname as string)) {
@@ -1034,6 +1036,7 @@ export function useCollabGuest(roomId: string) {
             try { payload = await decryptJSON(decryptKeyRef.current, msg.data as string) }
             catch { return }
             setMessages(prev => [...prev, {
+              id: payload.id as string | undefined,
               text: payload.text as string || '',
               image: payload.image as string | undefined,
               mime: payload.mime as string | undefined,
@@ -1309,6 +1312,7 @@ export function useCollabGuest(roomId: string) {
             try { meta = await decryptJSON(decryptKeyRef.current, msg.data as string) }
             catch { return }
             inProgressImageRef.current = {
+              id: meta.id as string | undefined,
               mime: meta.mime as string || 'application/octet-stream',
               size: meta.size as number || 0,
               text: meta.text as string || '',
@@ -1331,6 +1335,7 @@ export function useCollabGuest(roomId: string) {
             const url = URL.createObjectURL(blob)
             imageBlobUrlsRef.current.push(url)
             setMessages(prev => [...prev, {
+              id: inFlight.id,
               text: inFlight.text,
               image: url,
               mime: inFlight.mime,
@@ -1535,20 +1540,27 @@ export function useCollabGuest(roomId: string) {
       const bytes = imgObj.bytes instanceof Uint8Array ? imgObj.bytes : new Uint8Array(imgObj.bytes)
       const mime = imgObj.mime || 'application/octet-stream'
       const duration = imgObj.duration
+      const id = crypto.randomUUID()
       const localBlob = new Blob([bytes as unknown as BlobPart], { type: mime })
       const localUrl = URL.createObjectURL(localBlob)
       imageBlobUrlsRef.current.push(localUrl)
-      setMessages(prev => [...prev, { text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }].slice(-500))
+      setMessages(prev => [...prev, { id, text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }].slice(-500))
 
       imageSendQueueRef.current = imageSendQueueRef.current
-        .then(() => streamImageToHost(hostConnRef.current!, decryptKeyRef.current!, bytes, mime, text || '', replyTo ?? null, nickname, time, duration))
+        .then(() => {
+          const conn = hostConnRef.current
+          const key = decryptKeyRef.current
+          if (!conn || !key) return
+          return streamImageToHost(conn, key, bytes, mime, text || '', replyTo ?? null, nickname, time, duration, id)
+        })
         .catch(err => { console.warn('image send failed:', err) })
       return
     }
 
     const imgStr = image as string | undefined
-    setMessages(prev => [...prev, { text, image: imgStr, replyTo, from: 'You', time, self: true }].slice(-500))
-    const payload = JSON.stringify({ text, image: imgStr, replyTo })
+    const id = crypto.randomUUID()
+    setMessages(prev => [...prev, { id, text, image: imgStr, replyTo, from: 'You', time, self: true }].slice(-500))
+    const payload = JSON.stringify({ id, text, image: imgStr, replyTo })
     try {
       const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(payload))
       sendToHost({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), nickname, time })
@@ -1561,7 +1573,7 @@ export function useCollabGuest(roomId: string) {
 
   const sendReaction = useCallback((msgId: string, emoji: string): void => {
     setMessages(prev => prev.map(m => {
-      if (`${m.time}` === msgId) {
+      if ((m.id ?? `${m.time}`) === msgId) {
         const reactions = { ...(m.reactions || {}) }
         if (!reactions[emoji]) reactions[emoji] = []
         if (reactions[emoji].includes('You')) {
@@ -1739,9 +1751,10 @@ async function streamImageToHost(
   replyTo: { text: string; from: string; time: number } | null,
   from: string,
   time: number,
-  duration?: number
+  duration?: number,
+  id?: string,
 ): Promise<void> {
-  const meta = { mime, size: bytes.byteLength, text, replyTo, time, duration }
+  const meta = { id, mime, size: bytes.byteLength, text, replyTo, time, duration }
   const encMeta = await encryptJSON(key, meta)
   conn.send({ type: 'chat-image-start-enc', data: encMeta, from })
 

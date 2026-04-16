@@ -8,7 +8,9 @@ import { ensureAudioContextRunning } from '../utils/audioContext'
 import VideoTile from './VideoTile'
 import AudioTile from './AudioTile'
 
-// Loose union — receiver/sender status strings can grow without rippling.
+// Loose union — three different parent hooks (sender / receiver / collab)
+// supply their own status unions, so we accept `string` as an escape hatch
+// while keeping the known values discoverable in IntelliSense.
 export type CallPanelConnectionStatus =
   | 'connecting'
   | 'retrying'
@@ -22,16 +24,13 @@ export type CallPanelConnectionStatus =
   | 'rejected'
   | 'error'
   | 'direct-failed'
-  | string
+  // eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
+  | (string & {})
 
 interface CallPanelProps {
   call: UseCallReturn
   myName: string
-  myPeerId: string | null
   disabled?: boolean
-  // Connection state from the host receiver/sender hook. Drives the
-  // reconnect banner and forces a clean leave when the underlying transport
-  // dies. Optional so existing callers compile during the migration.
   connectionStatus?: CallPanelConnectionStatus
 }
 
@@ -58,13 +57,19 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
       return next
     })
   }, [])
-  // U2: dismissed state for the soft-cap informational banner. Reset
-  // automatically when the count drops back under the cap so subsequent
-  // surges re-surface the warning.
+  // U2: dismissed state for the soft-cap informational banner. Reset when
+  // the count drops under the cap OR when it grows beyond the last seen
+  // count, so both recovery and further surges re-surface the warning.
   const [softCapDismissed, setSoftCapDismissed] = useState<boolean>(false)
+  const lastTileCountRef = useRef<number>(0)
   useEffect(() => {
-    if (!call.overSoftVideoCap) setSoftCapDismissed(false)
-  }, [call.overSoftVideoCap])
+    if (!call.overSoftVideoCap) {
+      setSoftCapDismissed(false)
+    } else if (call.videoTileCount > lastTileCountRef.current) {
+      setSoftCapDismissed(false)
+    }
+    lastTileCountRef.current = call.videoTileCount
+  }, [call.overSoftVideoCap, call.videoTileCount])
 
   const handleVolumeChange = useCallback((v: number): void => {
     const clamped = Math.max(0, Math.min(1, v))
@@ -102,7 +107,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
     if (isConnectionDead && call.joined) {
       call.leave('connection-lost')
     }
-  }, [isConnectionDead, call])
+  }, [isConnectionDead, call.joined, call.leave])
 
   // U4: Escape-to-unfocus. Only subscribe while a tile is focused — keeps
   // us out of the keyboard event bus when there's nothing to handle.
@@ -116,6 +121,15 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [manualFocusId])
+
+  // Drop focus when the focused peer leaves, so a rejoin with the same id
+  // doesn't silently restore focus.
+  useEffect(() => {
+    if (!manualFocusId) return
+    const selfFocused = manualFocusId === 'self' && call.joined && call.mode === 'video'
+    const remoteFocused = call.remotePeers.some(p => p.peerId === manualFocusId && p.mode === 'video')
+    if (!selfFocused && !remoteFocused) setManualFocusId(null)
+  }, [manualFocusId, call.remotePeers, call.joined, call.mode])
 
   const remotePeers = call.remotePeers
   const videoRemotes = remotePeers.filter(p => p.mode === 'video')
@@ -257,10 +271,9 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
     })
     // Focus is fully manual. Auto active-speaker focus was removed because
     // the switching jitter hurt the UX more than the convenience helped.
-    const effectiveFocus: string | null = manualFocusId && videoTiles.some(v => v.id === manualFocusId)
-      ? manualFocusId
+    const focusedTile: VideoTileInfo | null = manualFocusId
+      ? videoTiles.find(v => v.id === manualFocusId) ?? null
       : null
-    const focusedTile: VideoTileInfo | null = effectiveFocus ? videoTiles.find(v => v.id === effectiveFocus) || null : null
 
     // P3: precompute the mini-tile index in a single O(n) pass instead of
     // doing an O(n) filter+findIndex inside every map iteration below.

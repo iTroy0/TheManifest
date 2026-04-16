@@ -1,6 +1,6 @@
 import Peer, { DataConnection } from 'peerjs'
 import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
-import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
+import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8, timingSafeEqual } from '../utils/crypto'
 import { STUN_ONLY } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
@@ -76,6 +76,7 @@ interface GuestConnection {
   activeTransfers: Map<string, ActiveTransfer>
   // For chat image receiving
   inProgressImage?: {
+    id?: string
     mime: string
     size: number
     text: string
@@ -660,7 +661,7 @@ export function useCollabHost() {
         if (gs.pendingRemoteKey) {
           try {
             const remotePubKey = await importPublicKey(gs.pendingRemoteKey)
-            gs.encryptKey = await deriveSharedKey(gs.keyPair.privateKey, remotePubKey)
+            gs.encryptKey = await deriveSharedKey(gs.keyPair.privateKey, remotePubKey, pubKeyBytes, gs.pendingRemoteKey)
             if (gs.keyExchangeTimeout) { clearTimeout(gs.keyExchangeTimeout); gs.keyExchangeTimeout = undefined }
             const fp = await getKeyFingerprint(pubKeyBytes, gs.pendingRemoteKey)
             gs.fingerprint = fp
@@ -719,9 +720,9 @@ export function useCollabHost() {
           }
           try {
             const remotePubKey = await importPublicKey(remoteKeyRaw)
-            gs.encryptKey = await deriveSharedKey(gs.keyPair.privateKey, remotePubKey)
-            if (gs.keyExchangeTimeout) { clearTimeout(gs.keyExchangeTimeout); gs.keyExchangeTimeout = undefined }
             const localPubBytes = await exportPublicKey(gs.keyPair.publicKey)
+            gs.encryptKey = await deriveSharedKey(gs.keyPair.privateKey, remotePubKey, localPubBytes, remoteKeyRaw)
+            if (gs.keyExchangeTimeout) { clearTimeout(gs.keyExchangeTimeout); gs.keyExchangeTimeout = undefined }
             const fp = await getKeyFingerprint(localPubBytes, remoteKeyRaw)
             gs.fingerprint = fp
 
@@ -755,7 +756,7 @@ export function useCollabHost() {
             return
           }
 
-          if (password === passwordRef.current) {
+          if (timingSafeEqual(password, passwordRef.current ?? '')) {
             conn.send({ type: 'password-accepted' })
             gs.passwordVerified = true
             gs.passwordAttempts = 0
@@ -791,7 +792,7 @@ export function useCollabHost() {
         // Reaction
         if (msg.type === 'reaction') {
           setMessages(prev => prev.map(m => {
-            if (`${m.time}` === msg.msgId) {
+            if ((m.id ?? `${m.time}`) === msg.msgId) {
               const reactions = { ...(m.reactions || {}) }
               if (!reactions[msg.emoji as string]) reactions[msg.emoji as string] = []
               if (!reactions[msg.emoji as string].includes(msg.nickname as string)) {
@@ -813,6 +814,7 @@ export function useCollabHost() {
           catch { return }
 
           const chatMsg: ChatMessage = {
+            id: payload.id as string | undefined,
             text: payload.text as string || '',
             image: payload.image as string | undefined,
             mime: payload.mime as string | undefined,
@@ -1123,6 +1125,7 @@ export function useCollabHost() {
           try { meta = await decryptJSON(gs.encryptKey, msg.data as string) }
           catch { return }
           gs.inProgressImage = {
+            id: meta.id as string | undefined,
             mime: meta.mime as string || 'application/octet-stream',
             size: meta.size as number || 0,
             text: meta.text as string || '',
@@ -1151,6 +1154,7 @@ export function useCollabHost() {
           const url = URL.createObjectURL(blob)
           imageBlobUrlsRef.current.push(url)
           setMessages(prev => [...prev, {
+            id: inFlight.id,
             text: inFlight.text,
             image: url,
             mime: inFlight.mime,
@@ -1166,7 +1170,7 @@ export function useCollabHost() {
             if (otherId === gs.peerId || !otherGs.encryptKey) continue
             if (!otherGs.passwordVerified && passwordRef.current) continue
             otherGs.imageSendQueue = otherGs.imageSendQueue
-              .then(() => streamImageToConn(otherGs.conn, otherGs.encryptKey!, fullBytes, inFlight.mime, inFlight.text, inFlight.replyTo, gs.name, inFlight.time, inFlight.duration))
+              .then(() => streamImageToConn(otherGs.conn, otherGs.encryptKey!, fullBytes, inFlight.mime, inFlight.text, inFlight.replyTo, gs.name, inFlight.time, inFlight.duration, inFlight.id))
               .catch(err => { console.warn('image relay failed:', err) })
           }
           return
@@ -1350,24 +1354,26 @@ export function useCollabHost() {
       const bytes = imgObj.bytes instanceof Uint8Array ? imgObj.bytes : new Uint8Array(imgObj.bytes)
       const mime = imgObj.mime || 'application/octet-stream'
       const duration = imgObj.duration
+      const id = crypto.randomUUID()
       const localBlob = new Blob([bytes as unknown as BlobPart], { type: mime })
       const localUrl = URL.createObjectURL(localBlob)
       imageBlobUrlsRef.current.push(localUrl)
-      setMessages(prev => [...prev, { text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }].slice(-500))
+      setMessages(prev => [...prev, { id, text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }].slice(-500))
 
       for (const gs of connectionsRef.current.values()) {
         if (!gs.encryptKey) continue
         if (!gs.passwordVerified && passwordRef.current) continue
         gs.imageSendQueue = gs.imageSendQueue
-          .then(() => streamImageToConn(gs.conn, gs.encryptKey!, bytes, mime, text || '', replyTo ?? null, room.myName, time, duration))
+          .then(() => streamImageToConn(gs.conn, gs.encryptKey!, bytes, mime, text || '', replyTo ?? null, room.myName, time, duration, id))
           .catch(err => { console.warn('image send failed:', err) })
       }
       return
     }
 
     const imgStr = image as string | undefined
-    setMessages(prev => [...prev, { text, image: imgStr, replyTo, from: 'You', time, self: true }].slice(-500))
-    const payload = JSON.stringify({ text, image: imgStr, replyTo })
+    const id = crypto.randomUUID()
+    setMessages(prev => [...prev, { id, text, image: imgStr, replyTo, from: 'You', time, self: true }].slice(-500))
+    const payload = JSON.stringify({ id, text, image: imgStr, replyTo })
     for (const gs of connectionsRef.current.values()) {
       if (!gs.encryptKey) continue
       if (!gs.passwordVerified && passwordRef.current) continue
@@ -1384,7 +1390,7 @@ export function useCollabHost() {
 
   const sendReaction = useCallback((msgId: string, emoji: string): void => {
     setMessages(prev => prev.map(m => {
-      if (`${m.time}` === msgId) {
+      if ((m.id ?? `${m.time}`) === msgId) {
         const reactions = { ...(m.reactions || {}) }
         if (!reactions[emoji]) reactions[emoji] = []
         if (reactions[emoji].includes('You')) {
@@ -1514,9 +1520,10 @@ async function streamImageToConn(
   replyTo: { text: string; from: string; time: number } | null,
   from: string,
   time: number,
-  duration?: number
+  duration?: number,
+  id?: string,
 ): Promise<void> {
-  const meta = { mime, size: bytes.byteLength, text, replyTo, time, duration }
+  const meta = { id, mime, size: bytes.byteLength, text, replyTo, time, duration }
   const encMeta = await encryptJSON(key, meta)
   conn.send({ type: 'chat-image-start-enc', data: encMeta, from })
 

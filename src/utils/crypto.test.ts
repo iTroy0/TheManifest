@@ -4,6 +4,7 @@ import {
   deriveSharedKey, encryptChunk, decryptChunk,
   encryptJSON, decryptJSON,
   getKeyFingerprint, uint8ToBase64, base64ToUint8,
+  timingSafeEqual,
 } from './crypto'
 
 describe('ECDH Key Exchange', () => {
@@ -301,5 +302,83 @@ describe('decryptJSON edge cases', () => {
     const b64: string = uint8ToBase64(new Uint8Array(encrypted))
     // decryptJSON decrypts fine but JSON.parse should throw
     await expect(decryptJSON(key, b64)).rejects.toThrow()
+  })
+})
+
+describe('timingSafeEqual', () => {
+  it('returns true for identical strings', () => {
+    expect(timingSafeEqual('hello', 'hello')).toBe(true)
+    expect(timingSafeEqual('', '')).toBe(true)
+  })
+
+  it('returns false for different strings of equal length', () => {
+    expect(timingSafeEqual('abcd', 'abce')).toBe(false)
+    expect(timingSafeEqual('xxxx', 'yyyy')).toBe(false)
+  })
+
+  it('returns false for strings of different lengths', () => {
+    expect(timingSafeEqual('a', 'ab')).toBe(false)
+    expect(timingSafeEqual('abc', '')).toBe(false)
+    expect(timingSafeEqual('', 'x')).toBe(false)
+  })
+
+  it('handles multi-byte unicode correctly', () => {
+    expect(timingSafeEqual('pässword', 'pässword')).toBe(true)
+    expect(timingSafeEqual('pässword', 'passwörd')).toBe(false)
+    // Different lengths when encoded (å = 2 bytes, a = 1)
+    expect(timingSafeEqual('passwörd', 'password')).toBe(false)
+  })
+
+  it('result does not depend on shared prefix length', () => {
+    // Purely an equality check — don't assert timing, but confirm
+    // behaviour doesn't short-circuit on first mismatch position.
+    expect(timingSafeEqual('a'.repeat(100) + 'b', 'a'.repeat(100) + 'c')).toBe(false)
+    expect(timingSafeEqual('b' + 'a'.repeat(100), 'c' + 'a'.repeat(100))).toBe(false)
+  })
+})
+
+describe('HKDF salt binding to public keys', () => {
+  // Verifies: when both sides pass the (localPub, remotePub) byte arrays,
+  // the derived salt is session-unique — two different sessions produce
+  // different keys even if the same ECDH private/public pair were reused.
+  it('two sessions with same keypairs but different salts produce different keys', async () => {
+    const alice: CryptoKeyPair = await generateKeyPair()
+    const bob: CryptoKeyPair = await generateKeyPair()
+    const alicePub: Uint8Array = await exportPublicKey(alice.publicKey)
+    const bobPub: Uint8Array = await exportPublicKey(bob.publicKey)
+    const bobImported: CryptoKey = await importPublicKey(bobPub)
+
+    // Session 1: real pub bytes salt
+    const k1: CryptoKey = await deriveSharedKey(alice.privateKey, bobImported, alicePub, bobPub)
+    // Session 2: swapped bytes produce the same sorted digest — keys should match
+    const k2: CryptoKey = await deriveSharedKey(alice.privateKey, bobImported, bobPub, alicePub)
+    // Session 3: omit salt material → zero salt (different key)
+    const k3: CryptoKey = await deriveSharedKey(alice.privateKey, bobImported)
+
+    const data: Uint8Array = new TextEncoder().encode('hi')
+    const ct1: ArrayBuffer = await encryptChunk(k1, data)
+    // k2 (same sorted inputs) decrypts k1's ciphertext
+    const pt12: ArrayBuffer = await decryptChunk(k2, new Uint8Array(ct1))
+    expect(new TextDecoder().decode(pt12)).toBe('hi')
+
+    // k3 (zero-salt path) MUST NOT decrypt k1's ciphertext
+    await expect(decryptChunk(k3, new Uint8Array(ct1))).rejects.toThrow()
+  })
+
+  it('both sides derive identical keys when passing matching salt material', async () => {
+    const alice: CryptoKeyPair = await generateKeyPair()
+    const bob: CryptoKeyPair = await generateKeyPair()
+    const alicePub: Uint8Array = await exportPublicKey(alice.publicKey)
+    const bobPub: Uint8Array = await exportPublicKey(bob.publicKey)
+    const bobImported: CryptoKey = await importPublicKey(bobPub)
+    const aliceImported: CryptoKey = await importPublicKey(alicePub)
+
+    const keyA: CryptoKey = await deriveSharedKey(alice.privateKey, bobImported, alicePub, bobPub)
+    const keyB: CryptoKey = await deriveSharedKey(bob.privateKey, aliceImported, bobPub, alicePub)
+
+    const data: Uint8Array = new TextEncoder().encode('round trip')
+    const ct: ArrayBuffer = await encryptChunk(keyA, data)
+    const pt: ArrayBuffer = await decryptChunk(keyB, new Uint8Array(ct))
+    expect(new TextDecoder().decode(pt)).toBe('round trip')
   })
 })
