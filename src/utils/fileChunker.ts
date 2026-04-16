@@ -208,7 +208,7 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
         cleanup()
         reject(new Error('Buffer drain timeout — channel may be stalled'))
       }
-    }, 30_000)
+    }, 15_000)
 
     function cleanup(): void {
       if (!dc) return

@@ -598,7 +598,7 @@ export function useReceiver(peerId: string) {
         clearTimeout(timeoutRef.current!)
         if (err.type === 'peer-unavailable') {
           peer.destroy()
-          if (attemptRef.current < MAX_RETRIES) setTimeout(() => { if (!destroyedRef.current) connect() }, 2000)
+          if (attemptRef.current < MAX_RETRIES) setTimeout(() => { if (!destroyedRef.current) connect() }, RECONNECT_DELAY)
           else dispatchConn({ type: 'SET_STATUS', payload: 'closed' })
         } else {
           peer.destroy()
@@ -632,11 +632,25 @@ export function useReceiver(peerId: string) {
 
     const handleOnline = (): void => {
       if (!isMountedRef.current) return
-      if (connRef.current && !connRef.current.open && reconnectCountRef.current < MAX_RECONNECTS) {
+      // Fresh network means a fresh chance — don't let a budget exhausted
+      // during an outage lock us out once the network comes back.
+      reconnectCountRef.current = 0
+      if (connRef.current && !connRef.current.open) {
         startConnection(useTurnRef.current, true)
       }
     }
     window.addEventListener('online', handleOnline)
+
+    const handleVisibility = (): void => {
+      if (!isMountedRef.current) return
+      if (typeof document === 'undefined') return
+      if (document.visibilityState !== 'visible') return
+      if (heartbeatRef.current) heartbeatRef.current.markAlive()
+      if (peerRef.current && peerRef.current.disconnected && !peerRef.current.destroyed) {
+        try { peerRef.current.reconnect() } catch {}
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
 
     startConnection(false)
     return () => {
@@ -646,6 +660,7 @@ export function useReceiver(peerId: string) {
       window.removeEventListener('beforeunload', handleBeforeUnload)
       window.removeEventListener('pagehide', handleBeforeUnload)
       window.removeEventListener('online', handleOnline)
+      document.removeEventListener('visibilitychange', handleVisibility)
       Object.values(typingTimeouts.current).forEach(clearTimeout)
       typingTimeouts.current = {}
       if (keyExchangeTimeoutRef.current) clearTimeout(keyExchangeTimeoutRef.current)

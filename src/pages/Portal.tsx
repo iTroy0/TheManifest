@@ -50,7 +50,7 @@ export default function Portal() {
 
   const hasPending: boolean = Object.keys(pendingFiles).length > 0
   const completedCount: number = Object.keys(completedFiles).length
-  const isDead: boolean = status === 'closed' || status === 'error' || status === 'rejected'
+  const isDead: boolean = status === 'closed' || status === 'error' || status === 'rejected' || status === 'direct-failed'
   const isConnecting: boolean = status === 'connecting' || status === 'retrying' || status === 'reconnecting'
   const showManifest: boolean = status === 'manifest-received' || (manifest !== null && !isDead && status !== 'password-required')
   const isChatOnly: boolean | undefined = manifest?.chatOnly

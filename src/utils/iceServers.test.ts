@@ -40,8 +40,8 @@ describe('iceServers – default config (no env vars set)', () => {
 
   it('STUN_ONLY does not include signalConfig keys when VITE_SIGNAL_HOST is not set', async () => {
     const { STUN_ONLY } = await loadModule()
-    expect((STUN_ONLY as Record<string, unknown>).host).toBeUndefined()
-    expect((STUN_ONLY as Record<string, unknown>).port).toBeUndefined()
+    expect((STUN_ONLY as unknown as Record<string, unknown>).host).toBeUndefined()
+    expect((STUN_ONLY as unknown as Record<string, unknown>).port).toBeUndefined()
   })
 })
 
@@ -55,22 +55,22 @@ describe('iceServers – with VITE_SIGNAL_HOST configured', () => {
 
   it('STUN_ONLY includes host from VITE_SIGNAL_HOST', async () => {
     const { STUN_ONLY } = await loadModule()
-    expect((STUN_ONLY as Record<string, unknown>).host).toBe('signal.example.com')
+    expect((STUN_ONLY as unknown as Record<string, unknown>).host).toBe('signal.example.com')
   })
 
   it('STUN_ONLY includes port 443', async () => {
     const { STUN_ONLY } = await loadModule()
-    expect((STUN_ONLY as Record<string, unknown>).port).toBe(443)
+    expect((STUN_ONLY as unknown as Record<string, unknown>).port).toBe(443)
   })
 
   it('STUN_ONLY includes secure: true', async () => {
     const { STUN_ONLY } = await loadModule()
-    expect((STUN_ONLY as Record<string, unknown>).secure).toBe(true)
+    expect((STUN_ONLY as unknown as Record<string, unknown>).secure).toBe(true)
   })
 
   it('STUN_ONLY includes path from VITE_SIGNAL_PATH', async () => {
     const { STUN_ONLY } = await loadModule()
-    expect((STUN_ONLY as Record<string, unknown>).path).toBe('/peerjs')
+    expect((STUN_ONLY as unknown as Record<string, unknown>).path).toBe('/peerjs')
   })
 
   it('getWithTurn also includes signalConfig when VITE_SIGNAL_HOST is set', async () => {
@@ -85,8 +85,8 @@ describe('iceServers – with VITE_SIGNAL_HOST configured', () => {
     })
     const { getWithTurn } = await loadModule()
     const result = await getWithTurn()
-    expect((result as Record<string, unknown>).host).toBe('signal.example.com')
-    expect((result as Record<string, unknown>).port).toBe(443)
+    expect((result as unknown as Record<string, unknown>).host).toBe('signal.example.com')
+    expect((result as unknown as Record<string, unknown>).port).toBe(443)
   })
 
   it('defaults VITE_SIGNAL_PATH to "/" when not provided', async () => {
@@ -94,7 +94,7 @@ describe('iceServers – with VITE_SIGNAL_HOST configured', () => {
     vi.unstubAllEnvs()
     vi.stubEnv('VITE_SIGNAL_HOST', 'signal.example.com')
     const { STUN_ONLY } = await loadModule()
-    expect((STUN_ONLY as Record<string, unknown>).path).toBe('/')
+    expect((STUN_ONLY as unknown as Record<string, unknown>).path).toBe('/')
   })
 })
 

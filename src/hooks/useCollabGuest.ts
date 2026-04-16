@@ -880,7 +880,9 @@ export function useCollabGuest(roomId: string) {
             if (initial === 'connected' || initial === 'completed') {
               iceConnectedRef.current = true
             }
-            pc.oniceconnectionstatechange = () => {
+            const prevIceHandler = pc.oniceconnectionstatechange
+            pc.oniceconnectionstatechange = (ev) => {
+              if (typeof prevIceHandler === 'function') prevIceHandler.call(pc, ev)
               const s = pc.iceConnectionState
               if (s === 'connected' || s === 'completed') {
                 iceConnectedRef.current = true
@@ -1473,7 +1475,31 @@ export function useCollabGuest(roomId: string) {
     isMountedRef.current = true
     startConnection(false)
 
+    const handleOnline = (): void => {
+      if (!isMountedRef.current) return
+      // Fresh network → fresh reconnect budget.
+      reconnectCountRef.current = 0
+      if (hostConnRef.current && !hostConnRef.current.open && !destroyedRef.current) {
+        startConnection(useTurnRef.current, true)
+      }
+    }
+    window.addEventListener('online', handleOnline)
+
+    const handleVisibility = (): void => {
+      if (!isMountedRef.current || destroyedRef.current) return
+      if (typeof document === 'undefined') return
+      if (document.visibilityState !== 'visible') return
+      if (heartbeatRef.current) heartbeatRef.current.markAlive()
+      const p = peerRef.current
+      if (p && p.disconnected && !p.destroyed) {
+        try { p.reconnect() } catch {}
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+
     return () => {
+      window.removeEventListener('online', handleOnline)
+      document.removeEventListener('visibilitychange', handleVisibility)
       isMountedRef.current = false
       destroyedRef.current = true
       if (timeoutRef.current) clearTimeout(timeoutRef.current)

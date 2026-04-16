@@ -684,12 +684,21 @@ export function useSender() {
         }
       })
 
-      conn.on('error', () => {
+      conn.on('error', (err: unknown) => {
         if (destroyed) return
+        console.warn('sender conn.on("error"):', err)
         connState.abort.aborted = true
+        if (connState.heartbeat) connState.heartbeat.cleanup()
+        if (connState.rttPoller) connState.rttPoller.cleanup()
         connectionsRef.current.delete(connId)
         dispatchConn({ type: 'SET', payload: { recipientCount: connectionsRef.current.size } })
         refreshParticipants()
+        // If this was our only connection, surface a status so the UI doesn't
+        // sit silently in 'waiting' with no indication that a channel died.
+        if (connectionsRef.current.size === 0) {
+          setRtt(null)
+          dispatchConn({ type: 'SET_STATUS', payload: (prev: string) => prev === 'done' ? prev : 'waiting' })
+        }
       })
     })
 
@@ -704,6 +713,11 @@ export function useSender() {
         peer.destroy()
       } else if (err.type === 'disconnected' || err.type === 'network') {
         return
+      } else if (err.type === 'peer-unavailable') {
+        // A recipient tried to connect with a stale sender id, or the signaling
+        // server couldn't find them. Not fatal to the session — just ignore
+        // unless we have no live connections.
+        if (connectionsRef.current.size > 0) return
       }
       if (connectionsRef.current.size === 0) {
         dispatchConn({ type: 'SET_STATUS', payload: 'error' })
@@ -711,9 +725,11 @@ export function useSender() {
     })
 
     function handleVisibility(): void {
-      if (document.visibilityState === 'visible' && !destroyed && peer.disconnected && !peer.destroyed) {
-        peer.reconnect()
-      }
+      if (document.visibilityState !== 'visible' || destroyed) return
+      if (peer.disconnected && !peer.destroyed) peer.reconnect()
+      // Reset heartbeat liveness on every live recipient so the 5s check-
+      // timer that just un-paused can't false-positive on its first tick.
+      connectionsRef.current.forEach(cs => { if (cs.heartbeat) cs.heartbeat.markAlive() })
     }
     document.addEventListener('visibilitychange', handleVisibility)
 

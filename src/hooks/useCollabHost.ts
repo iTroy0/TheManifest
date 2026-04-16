@@ -637,7 +637,9 @@ export function useCollabHost() {
 
         const pc = conn.peerConnection
         if (pc) {
-          pc.oniceconnectionstatechange = () => {
+          const prevIceHandler = pc.oniceconnectionstatechange
+          pc.oniceconnectionstatechange = (ev) => {
+            if (typeof prevIceHandler === 'function') prevIceHandler.call(pc, ev)
             const s = pc.iceConnectionState
             if (s === 'disconnected' || s === 'failed' || s === 'closed') {
               handleDisconnect('left')
@@ -1209,10 +1211,23 @@ export function useCollabHost() {
         }
       })
 
-      conn.on('error', () => {
+      conn.on('error', (err: unknown) => {
         if (destroyed) return
+        console.warn('host conn.on("error"):', err)
+        if (gs.heartbeat) gs.heartbeat.cleanup()
+        if (gs.rttPoller) gs.rttPoller.cleanup()
+        gs.activeTransfers.forEach(t => {
+          t.aborted = true
+          if (t.pauseResolver) { t.pauseResolver(); t.pauseResolver = undefined }
+        })
+        gs.activeTransfers.clear()
         connectionsRef.current.delete(gs.peerId)
+        dispatchFiles({ type: 'REMOVE_FILES_BY_OWNER', ownerId: gs.peerId })
         refreshParticipantsList()
+        if (connectionsRef.current.size === 0) {
+          setRtt(null)
+          dispatchRoom({ type: 'SET_STATUS', payload: 'waiting' })
+        }
       })
     })
 
@@ -1227,6 +1242,9 @@ export function useCollabHost() {
         peer.destroy()
       } else if (err.type === 'disconnected' || err.type === 'network') {
         return
+      } else if (err.type === 'peer-unavailable') {
+        // A transient signaling miss — we only care if we have no live guests.
+        if (connectionsRef.current.size > 0) return
       }
       if (connectionsRef.current.size === 0) {
         dispatchRoom({ type: 'SET_STATUS', payload: 'error' })
@@ -1234,9 +1252,12 @@ export function useCollabHost() {
     })
 
     function handleVisibility(): void {
-      if (document.visibilityState === 'visible' && !destroyed && peer.disconnected && !peer.destroyed) {
-        peer.reconnect()
-      }
+      if (document.visibilityState !== 'visible' || destroyed) return
+      // Kick the signaling channel back up if it slept through background.
+      if (peer.disconnected && !peer.destroyed) peer.reconnect()
+      // Tell every live heartbeat we just woke up — without this, a false-
+      // positive 'dead' can fire 5s after wake because setInterval caught up.
+      connectionsRef.current.forEach(g => { if (g.heartbeat) g.heartbeat.markAlive() })
     }
     document.addEventListener('visibilitychange', handleVisibility)
 

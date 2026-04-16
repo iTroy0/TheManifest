@@ -10,6 +10,19 @@ interface SignalConfig {
   path: string
 }
 
+// Shape of the config object passed to `new Peer(...)`. Includes the optional
+// iceTransportPolicy so callers that force relay (TURN-only) typecheck.
+export interface PeerConfig {
+  host?: string
+  port?: number
+  secure?: boolean
+  path?: string
+  config: {
+    iceServers: RTCIceServer[]
+    iceTransportPolicy?: RTCIceTransportPolicy
+  }
+}
+
 // Self-hosted PeerJS signaling config (falls back to PeerJS cloud if not set)
 const signalConfig: SignalConfig | Record<string, never> = SIGNAL_HOST ? {
   host: SIGNAL_HOST,
@@ -28,7 +41,7 @@ const stunServers: RTCIceServer[] = [
 ]
 
 // Direct P2P only — no relay
-export const STUN_ONLY = {
+export const STUN_ONLY: PeerConfig = {
   ...signalConfig,
   config: {
     iceServers: stunServers,
@@ -48,13 +61,13 @@ async function fetchTurnCredentials(signal: AbortSignal): Promise<{ username: st
   }
 }
 
-export async function getWithTurn(): Promise<typeof STUN_ONLY> {
+export async function getWithTurn(): Promise<PeerConfig> {
   if (!TURN_URL) return STUN_ONLY
 
-  // Try twice with a 5-second timeout each attempt
+  // Try twice with a 3-second timeout each attempt (max 6s total vs 10s)
   for (let attempt = 0; attempt < 2; attempt++) {
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 5000)
+    const timeout = setTimeout(() => controller.abort(), 3000)
     try {
       const creds = await fetchTurnCredentials(controller.signal)
       clearTimeout(timeout)
@@ -62,6 +75,11 @@ export async function getWithTurn(): Promise<typeof STUN_ONLY> {
         return {
           ...signalConfig,
           config: {
+            // Force all ICE candidates through TURN when the user opted into
+            // relay. Without this flag the browser still gathers direct
+            // host/srflx candidates and may leak the user's IP despite the
+            // explicit relay request.
+            iceTransportPolicy: 'relay' as RTCIceTransportPolicy,
             iceServers: [
               ...stunServers,
               ...((creds.urls as string[]) || []).map((url: string) => ({ urls: url, username: creds.username, credential: creds.credential })),

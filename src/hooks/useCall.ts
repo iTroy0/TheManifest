@@ -429,8 +429,12 @@ export function useCall(options: UseCallOptions) {
         mediaConnsRef.current.delete(mc.peer)
         upsertRoster(mc.peer, { stream: null })
       })
-      mc.on('error', () => {
+      mc.on('error', (err: unknown) => {
+        console.warn('incoming mc error for', mc.peer, err)
         mediaConnsRef.current.delete(mc.peer)
+        // Match the outbound handler — clear the stream so the tile shows
+        // the peer as not-streaming instead of a stale "connected" state.
+        upsertRoster(mc.peer, { stream: null })
       })
     }
     peer.on('call', handler)
