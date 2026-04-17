@@ -91,6 +91,16 @@ interface GuestConnection {
   // the "Download all" fan-out that previously corrupted ciphertext
   // framing and produced AES-GCM auth-tag failures on the downloader.
   uploadQueue: Promise<void>
+  // M12 — fileIds this guest has actually requested, used as a
+  // defense-in-depth check before forwarding pause/resume/cancel control
+  // messages to the file owner. The guest-side owner check (P0 fix #3) is
+  // the primary gate; this closes the amplification-DoS angle where a
+  // guest forges pause/cancel for a file it never requested.
+  requestedFileIds: Set<string>
+  // M19 — per-peer rate-limit for collab-file-shared broadcasts. Holds
+  // the timestamps of the last N shares; new shares beyond the cap in
+  // the window are dropped with a log line.
+  recentFileShares: number[]
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────
@@ -564,6 +574,8 @@ export function useCollabHost() {
         chunkQueue: Promise.resolve(),
         imageSendQueue: Promise.resolve(),
         uploadQueue: Promise.resolve(),
+        requestedFileIds: new Set<string>(),
+        recentFileShares: [],
       }
       connectionsRef.current.set(gs.peerId, gs)
 
@@ -907,6 +919,12 @@ export function useCollabHost() {
             const fileId = payload.fileId as string
             const ownerId = payload.owner as string | undefined
 
+            // M12 — record that this guest actually asked for the file,
+            // so later pause/resume/cancel forwards can be checked against
+            // the request set. Populated before the forwarding branch so
+            // both host-served and guest-served downloads are covered.
+            gs.requestedFileIds.add(fileId)
+
             // Check if host owns this file
             if (myFilesRef.current.has(fileId)) {
               await sendFileToRequester(gs, fileId)
@@ -944,6 +962,20 @@ export function useCollabHost() {
             if (sanitized.droppedReasons.length > 0) {
               log.info('useCollabHost.collabFileShared.sanitized', sanitized.droppedReasons.join(','))
             }
+            // M19 — per-guest rate-limit on collab-file-shared broadcasts.
+            // A hostile guest can otherwise pump entries at line-rate, each
+            // of which costs a dispatch + N-1 encrypted relays. Drop shares
+            // beyond 10/s sliding window with a log line instead of turning
+            // one peer's loop into a room-wide DoS.
+            const FILE_SHARE_WINDOW_MS = 1000
+            const FILE_SHARE_MAX = 10
+            const now = Date.now()
+            gs.recentFileShares = gs.recentFileShares.filter(t => now - t < FILE_SHARE_WINDOW_MS)
+            if (gs.recentFileShares.length >= FILE_SHARE_MAX) {
+              log.warn('useCollabHost.collabFileShared.rateLimited', gs.peerId)
+              return
+            }
+            gs.recentFileShares.push(now)
             // C3 — force owner to match the guest that sent it; host cannot forge.
             // TODO: full origin auth requires per-guest signing keys; host can still forge if determined
             const bound: SharedFile = { ...sanitized.file, owner: gs.peerId, ownerName: gs.name }
@@ -995,6 +1027,15 @@ export function useCollabHost() {
             // H5 — filesRef.current
             const sharedFile = filesRef.current.sharedFiles.find(f => f.id === fileId)
             if (sharedFile && sharedFile.owner !== room.myPeerId) {
+              // M12 — defense-in-depth: the guest-side owner check rejects
+              // forged requesterPeerId, but also refuse to forward from the
+              // host if this gs never actually requested the file. Stops a
+              // guest from replaying control messages for arbitrary fileIds
+              // to amplify the DoS surface against the owner.
+              if (!gs.requestedFileIds.has(fileId)) {
+                log.warn('useCollabHost.pauseFile.notRequested', `${gs.peerId}:${fileId}`)
+                return
+              }
               const ownerGs = connectionsRef.current.get(sharedFile.owner)
               if (ownerGs?.encryptKey) {
                 try {
@@ -1024,6 +1065,10 @@ export function useCollabHost() {
             // H5 — filesRef.current
             const sharedFile = filesRef.current.sharedFiles.find(f => f.id === fileId)
             if (sharedFile && sharedFile.owner !== room.myPeerId) {
+              if (!gs.requestedFileIds.has(fileId)) {
+                log.warn('useCollabHost.resumeFile.notRequested', `${gs.peerId}:${fileId}`)
+                return
+              }
               const ownerGs = connectionsRef.current.get(sharedFile.owner)
               if (ownerGs?.encryptKey) {
                 try {
@@ -1051,6 +1096,11 @@ export function useCollabHost() {
                 transfer.pauseResolver = undefined
               }
             }
+            // M12 — clear the request tracker here (whether or not we
+            // actually forward). The guest asked to cancel; future
+            // pause/resume for the same fileId from this guest must come
+            // through a new request-file first.
+            gs.requestedFileIds.delete(fileId)
             // H5 — filesRef.current
             const sharedFile = filesRef.current.sharedFiles.find(f => f.id === fileId)
             if (sharedFile && sharedFile.owner !== room.myPeerId) {
@@ -1080,6 +1130,8 @@ export function useCollabHost() {
                 transfer.pauseResolver = undefined
               }
             }
+            // M12 — every pending request is now cancelled.
+            gs.requestedFileIds.clear()
             return
           }
 
@@ -1112,7 +1164,12 @@ export function useCollabHost() {
 
           // File transfer end (host receiving file from guest) — H2.
           if (payload.type === 'collab-file-end') {
-            await chunkQueueRef.current
+            // Drain this guest's chunk queue so the last few chunks are
+            // written before we close the stream. Using the hook-level
+            // chunkQueueRef here was a dead await (nothing appended to it
+            // after gs.chunkQueue landed) and let end-of-file processing
+            // race against in-flight decrypts from OTHER guests' uploads.
+            await gs.chunkQueue
             const fileId = payload.fileId as string
             const inFlight = inProgressDownloadsRef.current.get(fileId)
             if (!inFlight) return
@@ -1143,6 +1200,8 @@ export function useCollabHost() {
             }
 
             dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: inFlight.fileId, payload: { status: 'complete', progress: 100 } })
+            // M12 — request satisfied; future pause/resume needs a fresh request.
+            gs.requestedFileIds.delete(inFlight.fileId)
             return
           }
 
@@ -1152,6 +1211,9 @@ export function useCollabHost() {
             const reason = (payload.reason as string) || 'unavailable'
             dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'error', error: reason } })
             clearDownloadTimeout(fileId)
+            // M12 — request failed; clear the tracker so the guest has to
+            // ask again (and get re-authorized) before any further control.
+            gs.requestedFileIds.delete(fileId)
             return
           }
 
@@ -1162,6 +1224,13 @@ export function useCollabHost() {
         if (msg.type === 'collab-signal') {
           const target = msg.target as string
           relaySignal(gs.peerId, target, msg.signal)
+          return
+        }
+
+        // Mid-stream abort from guest — clear inProgressImage so the
+        // next start doesn't see leftover bytes from the stalled stream.
+        if (msg.type === 'chat-image-abort') {
+          gs.inProgressImage = undefined
           return
         }
 
@@ -1332,10 +1401,6 @@ export function useCollabHost() {
       peer.destroy()
     }
   }, [sessionKey])
-
-  // Keep a shared chunk-queue ref for serializing chunk handling globally
-  // (used before processing collab-file-end to drain in-flight chunks).
-  const chunkQueueRef = useRef<Promise<void>>(Promise.resolve())
 
   // Handle chunk from guest (for files they're sharing)
   async function handleGuestChunk(gs: GuestConnection, rawData: ArrayBuffer): Promise<void> {
@@ -1595,13 +1660,21 @@ async function streamImageToConn(
   conn.send({ type: 'chat-image-start-enc', data: encMeta, from })
 
   const CHUNK_SIZE = 64 * 1024
-  for (let i = 0; i < bytes.byteLength; i += CHUNK_SIZE) {
-    const chunk = bytes.slice(i, i + CHUNK_SIZE)
-    const encChunk = await encryptChunk(key, chunk)
-    const packet = buildChunkPacket(CHAT_IMAGE_FILE_INDEX, Math.floor(i / CHUNK_SIZE), encChunk)
-    conn.send(packet)
-    await waitForBufferDrain(conn)
+  try {
+    for (let i = 0; i < bytes.byteLength; i += CHUNK_SIZE) {
+      const chunk = bytes.slice(i, i + CHUNK_SIZE)
+      const encChunk = await encryptChunk(key, chunk)
+      const packet = buildChunkPacket(CHAT_IMAGE_FILE_INDEX, Math.floor(i / CHUNK_SIZE), encChunk)
+      conn.send(packet)
+      await waitForBufferDrain(conn)
+    }
+    conn.send({ type: 'chat-image-end-enc' })
+  } catch (e) {
+    // Emit abort so the receiver clears its gs.inProgressImage slot;
+    // without this, a mid-stream drain timeout left accumulated bytes
+    // parked until the next start message.
+    log.warn('useCollabHost.streamImageToConn', e)
+    try { conn.send({ type: 'chat-image-abort' }) } catch (ne) { log.warn('useCollabHost.streamImageToConn.notifyAbort', ne) }
+    throw e
   }
-
-  conn.send({ type: 'chat-image-end-enc' })
 }

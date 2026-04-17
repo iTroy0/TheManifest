@@ -71,46 +71,47 @@ const SOFT_VIDEO_CAP = 4
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+// Single table of known media-error variants. Both the raw DOMException
+// `name` from getUserMedia and the normalized `code` produced by
+// useLocalMedia map to the same CallError shape through this table, so
+// we stop maintaining two nearly-identical switches.
+//
+// The `recoverable` flag controls whether the UI shows a retry button:
+// transient/permission errors are recoverable; hardware-missing isn't.
+const MEDIA_ERROR_TABLE: Record<string, { code: CallError['code']; message?: string; recoverable: boolean }> = {
+  // Raw DOMException names from getUserMedia
+  NotAllowedError:       { code: 'permission-denied', message: 'Microphone access was blocked. Allow it in your browser settings and try again.', recoverable: true },
+  SecurityError:         { code: 'permission-denied', message: 'Microphone access was blocked. Allow it in your browser settings and try again.', recoverable: true },
+  NotFoundError:         { code: 'device-not-found',  message: 'No microphone was found on this device.', recoverable: false },
+  DevicesNotFoundError:  { code: 'device-not-found',  message: 'No microphone was found on this device.', recoverable: false },
+  NotReadableError:      { code: 'device-in-use',     message: 'Your microphone is in use by another app. Close it and try again.', recoverable: true },
+  TrackStartError:       { code: 'device-in-use',     message: 'Your microphone is in use by another app. Close it and try again.', recoverable: true },
+  TimeoutError:          { code: 'media-failed',      recoverable: true }, // use caller's message
+  // Normalized codes emitted by useLocalMedia
+  'permission-denied':   { code: 'permission-denied', recoverable: true },
+  'device-not-found':    { code: 'device-not-found',  recoverable: false },
+  'in-use':              { code: 'device-in-use',     recoverable: true },
+  overconstrained:       { code: 'overconstrained',   recoverable: true },
+  timeout:               { code: 'media-failed',      recoverable: true },
+  unsupported:           { code: 'media-failed',      recoverable: false },
+}
+
 function classifyMediaError(e: unknown): CallError {
   const name = (e as { name?: string })?.name || ''
-  const msg = (e as { message?: string })?.message || 'Failed to start media'
-  switch (name) {
-    case 'NotAllowedError':
-    case 'SecurityError':
-      return { code: 'permission-denied', message: 'Microphone access was blocked. Allow it in your browser settings and try again.', recoverable: true }
-    case 'NotFoundError':
-    case 'DevicesNotFoundError':
-      return { code: 'device-not-found', message: 'No microphone was found on this device.', recoverable: false }
-    case 'NotReadableError':
-    case 'TrackStartError':
-      return { code: 'device-in-use', message: 'Your microphone is in use by another app. Close it and try again.', recoverable: true }
-    case 'TimeoutError':
-      return { code: 'media-failed', message: msg || "Timed out waiting for media access. Check your browser's permission prompt and try again.", recoverable: true }
-    default:
-      return { code: 'media-failed', message: msg, recoverable: true }
-  }
+  const message = (e as { message?: string })?.message || 'Failed to start media'
+  const entry = MEDIA_ERROR_TABLE[name]
+  if (entry) return { code: entry.code, message: entry.message ?? message, recoverable: entry.recoverable }
+  return { code: 'media-failed', message, recoverable: true }
 }
 
 // Lift a useLocalMedia error into the call lane's CallError shape so the
-// panel only watches a single error surface. We translate the code, expand
-// the message, and decide whether the failure is recoverable.
+// panel only watches a single error surface. Shares MEDIA_ERROR_TABLE with
+// classifyMediaError above; the caller-supplied message wins so device-
+// specific detail reaches the UI.
 function liftLocalMediaError(err: { code: string; message: string }): CallError {
-  switch (err.code) {
-    case 'permission-denied':
-      return { code: 'permission-denied', message: err.message, recoverable: true }
-    case 'device-not-found':
-      return { code: 'device-not-found', message: err.message, recoverable: false }
-    case 'in-use':
-      return { code: 'device-in-use', message: err.message, recoverable: true }
-    case 'overconstrained':
-      return { code: 'overconstrained', message: err.message, recoverable: true }
-    case 'timeout':
-      return { code: 'media-failed', message: err.message, recoverable: true }
-    case 'unsupported':
-      return { code: 'media-failed', message: err.message, recoverable: false }
-    default:
-      return { code: 'media-failed', message: err.message, recoverable: true }
-  }
+  const entry = MEDIA_ERROR_TABLE[err.code]
+  if (entry) return { code: entry.code, message: err.message, recoverable: entry.recoverable }
+  return { code: 'media-failed', message: err.message, recoverable: true }
 }
 
 function streamHasLiveVideo(stream: MediaStream | null): boolean {

@@ -1409,6 +1409,13 @@ export function useCollabGuest(roomId: string) {
             return
           }
 
+          // Mid-stream abort — clear the in-progress image slot so a new
+          // start message doesn't see leftover bytes from the stalled one.
+          if (msg.type === 'chat-image-abort') {
+            inProgressImageRef.current = null
+            return
+          }
+
           // Chat image handling
           if (msg.type === 'chat-image-start-enc') {
             if (!decryptKeyRef.current || !msg.data) return
@@ -1966,13 +1973,20 @@ async function streamImageToHost(
   conn.send({ type: 'chat-image-start-enc', data: encMeta, from })
 
   const CHUNK_SIZE = 64 * 1024
-  for (let i = 0; i < bytes.byteLength; i += CHUNK_SIZE) {
-    const chunk = bytes.slice(i, i + CHUNK_SIZE)
-    const encChunk = await encryptChunk(key, chunk)
-    const packet = buildChunkPacket(CHAT_IMAGE_FILE_INDEX, Math.floor(i / CHUNK_SIZE), encChunk)
-    conn.send(packet)
-    await waitForBufferDrain(conn)
+  try {
+    for (let i = 0; i < bytes.byteLength; i += CHUNK_SIZE) {
+      const chunk = bytes.slice(i, i + CHUNK_SIZE)
+      const encChunk = await encryptChunk(key, chunk)
+      const packet = buildChunkPacket(CHAT_IMAGE_FILE_INDEX, Math.floor(i / CHUNK_SIZE), encChunk)
+      conn.send(packet)
+      await waitForBufferDrain(conn)
+    }
+    conn.send({ type: 'chat-image-end-enc' })
+  } catch (e) {
+    // Mid-stream failure — emit abort so the host/peer clears its slot
+    // instead of holding partial bytes until the next start message.
+    log.warn('useCollabGuest.streamImageToHost', e)
+    try { conn.send({ type: 'chat-image-abort' }) } catch (ne) { log.warn('useCollabGuest.streamImageToHost.notifyAbort', ne) }
+    throw e
   }
-
-  conn.send({ type: 'chat-image-end-enc' })
 }

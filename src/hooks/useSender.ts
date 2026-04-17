@@ -483,6 +483,13 @@ export function useSender() {
           return
         }
 
+        // Mid-stream abort from peer — clear the in-progress image slot so
+        // accumulated bytes don't linger until the next start message.
+        if (msg.type === 'chat-image-abort') {
+          connState.inProgressImage = null
+          return
+        }
+
         if (msg.type === 'chat-image-start-enc') {
           if (!connState.encryptKey || !msg.data) return
           let meta: Record<string, unknown>
@@ -1039,6 +1046,13 @@ async function handleHostChunk(connState: ConnState, rawData: ArrayBuffer | Arra
 
 // ── streamImageToConn ────────────────────────────────────────────────────
 
+// Emit a best-effort abort so the receiver can clear its in-progress
+// image slot. Without this, a mid-stream failure left `inProgressImage`
+// holding accumulated bytes until the next chat-image-start cleared it.
+function notifyAbort(conn: DataConnection): void {
+  try { conn.send({ type: 'chat-image-abort' }) } catch (e) { log.warn('streamImageToConn.notifyAbort', e) }
+}
+
 async function streamImageToConn(
   conn: DataConnection,
   key: CryptoKey,
@@ -1066,10 +1080,10 @@ async function streamImageToConn(
     const slice = bytes.subarray(offset, offset + chunkSize)
     const tStart = Date.now()
     let encChunk: ArrayBuffer
-    try { encChunk = await encryptChunk(key, slice) } catch (e) { log.warn('streamImageToConn.encrypt', e); return }
+    try { encChunk = await encryptChunk(key, slice) } catch (e) { log.warn('streamImageToConn.encrypt', e); notifyAbort(conn); return }
     const packet = buildChunkPacket(CHAT_IMAGE_FILE_INDEX, chunkIndex, encChunk)
-    try { conn.send(packet) } catch (e) { log.warn('streamImageToConn.sendPacket', e); return }
-    try { await waitForBufferDrain(conn) } catch (e) { log.warn('streamImageToConn.drain', e); return }
+    try { conn.send(packet) } catch (e) { log.warn('streamImageToConn.sendPacket', e); notifyAbort(conn); return }
+    try { await waitForBufferDrain(conn) } catch (e) { log.warn('streamImageToConn.drain', e); notifyAbort(conn); return }
     chunker.recordTransfer(slice.byteLength, Date.now() - tStart)
     offset += chunkSize
     chunkIndex++

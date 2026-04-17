@@ -396,6 +396,12 @@ export function useReceiver(peerId: string) {
             return
           }
 
+          // Mid-stream abort from sender — clear in-progress image slot.
+          if (msg.type === 'chat-image-abort') {
+            inProgressImageRef.current = null
+            return
+          }
+
           if (msg.type === 'chat-image-start-enc') {
             if (!decryptKeyRef.current || !msg.data) return
             let meta: Record<string, unknown>
