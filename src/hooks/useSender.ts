@@ -207,6 +207,27 @@ export function useSender() {
         }})
       }
 
+      // Hoisted out of `conn.on('data')` so we don't allocate two new
+      // closures on every inbound message. Same lifetime as connState.
+      function startTransfer(transferSize: number): void {
+        connState.abort = { aborted: false }
+        connState.totalSent = 0
+        connState.startTime = Date.now()
+        connState.progress = {}
+        connState.speed = 0
+        connState.transferTotalSize = transferSize
+        connState.transferring = true
+        dispatchConn({ type: 'SET_STATUS', payload: 'transferring' })
+      }
+
+      function endTransfer(): void {
+        connState.transferring = false
+        connState.currentFileIndex = -1
+        aggregateUI()
+        const anyActive = Array.from(connectionsRef.current.values()).some(cs => cs.transferring)
+        if (!anyActive) dispatchConn({ type: 'SET_STATUS', payload: 'connected' })
+      }
+
       async function sendManifest(c: DataConnection, key: CryptoKey): Promise<void> {
         const manifest = await buildManifestData(filesRef.current, chatOnlyRef.current)
         // Encrypt the manifest with the ECDH-derived shared key so a MITM cannot
@@ -594,25 +615,6 @@ export function useSender() {
             connState.pauseResolvers[msg.index as number]()
           }
           return
-        }
-
-        function startTransfer(transferSize: number): void {
-          connState.abort = { aborted: false }
-          connState.totalSent = 0
-          connState.startTime = Date.now()
-          connState.progress = {}
-          connState.speed = 0
-          connState.transferTotalSize = transferSize
-          connState.transferring = true
-          dispatchConn({ type: 'SET_STATUS', payload: 'transferring' })
-        }
-
-        function endTransfer(): void {
-          connState.transferring = false
-          connState.currentFileIndex = -1
-          aggregateUI()
-          const anyActive = Array.from(connectionsRef.current.values()).some(cs => cs.transferring)
-          if (!anyActive) dispatchConn({ type: 'SET_STATUS', payload: 'connected' })
         }
 
         if (msg.type === 'request-file') {

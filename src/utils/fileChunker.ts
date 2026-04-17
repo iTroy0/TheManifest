@@ -220,13 +220,23 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
     // Race 3: timeout to prevent infinite hang on zombie channels.
     // Rejects (not resolves) so the caller can detect the stalled channel
     // and abort the file transfer instead of piling chunks into a dead buffer.
+    //
+    // Scale the ceiling to how much is actually queued, assuming a slow-
+    // cellular floor of 128 KB/s: (bufferedAmount / 128KB) * 2000ms gives
+    // the time needed to drain at 2× that floor. A flat 15 s used to kill
+    // big transfers on weak links mid-file — a 4 MB buffer at 256 KB/s
+    // needs ~16 s to drain, hitting the old cap before progress could
+    // surface. Clamp between 15 s (fast path floor) and 60 s (safety).
+    const MIN_THROUGHPUT_BPS = 128 * 1024
+    const scaled = Math.ceil((dc.bufferedAmount / MIN_THROUGHPUT_BPS) * 2000)
+    const drainTimeoutMs = Math.min(60_000, Math.max(15_000, scaled))
     drainTimeout = setTimeout(() => {
       if (!settled) {
         settled = true
         cleanup()
         reject(new Error('Buffer drain timeout — channel may be stalled'))
       }
-    }, 15_000)
+    }, drainTimeoutMs)
 
     function cleanup(): void {
       if (!dc) return
