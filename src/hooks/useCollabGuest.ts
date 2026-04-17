@@ -21,21 +21,21 @@ import {
   SharedFile,
   isValidSharedFile,
 } from './state/collabState'
+import {
+  MAX_RETRIES,
+  TIMEOUT_MS,
+  RECONNECT_DELAY,
+  MAX_RECONNECTS,
+  FALLBACK_MAX_BYTES,
+  FALLBACK_TOO_LARGE_MSG,
+  DOWNLOAD_REQUEST_TIMEOUT_MS,
+} from '../net/config'
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-const MAX_RETRIES = 2
-const TIMEOUT_MS = 10000
-const RECONNECT_DELAY = 2000
-const MAX_RECONNECTS = 3
-// H9 — hard cap when falling back to in-memory buffering.
-const FALLBACK_MAX_BYTES = 200 * 1024 * 1024
-const FALLBACK_TOO_LARGE_MSG = 'File too large for this browser. Max 200 MB without Chrome/Edge.'
 // P1 — if direct P2P hasn't reached 'connected' within this window, surface
 // a direct-failed status so the user can opt into relay.
 const DIRECT_FAIL_WINDOW_MS = 10_000
-// M2 — download request timeout.
-const DOWNLOAD_REQUEST_TIMEOUT_MS = 30_000
 
 // ── Types ────────────────────────────────────────────────────────────────
 

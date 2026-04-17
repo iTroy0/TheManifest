@@ -16,13 +16,13 @@ import {
   initialConnection,
 } from './state/receiverState'
 
-// ── Constants ────────────────────────────────────────────────────────────
-
-const MAX_RETRIES = 2
-const TIMEOUT_MS = 10000
-const RECONNECT_DELAY = 2000
-const MAX_RECONNECTS = 3
-const MAX_CHAT_IMAGE_SIZE = 10 * 1024 * 1024
+import {
+  MAX_RETRIES,
+  TIMEOUT_MS,
+  RECONNECT_DELAY,
+  MAX_RECONNECTS,
+  MAX_CHAT_IMAGE_SIZE,
+} from '../net/config'
 
 // ── Types ────────────────────────────────────────────────────────────────
 

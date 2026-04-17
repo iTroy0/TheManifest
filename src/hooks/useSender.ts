@@ -12,6 +12,7 @@ import {
   initialConnection,
 } from './state/senderState'
 import { ChatMessage } from '../types'
+import { MAX_CONNECTIONS, MAX_CHAT_IMAGE_SIZE } from '../net/config'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -139,7 +140,6 @@ export function useSender() {
     peer.on('connection', (conn: DataConnection) => {
       if (destroyed) return
 
-      const MAX_CONNECTIONS = 20
       if (connectionsRef.current.size >= MAX_CONNECTIONS) {
         conn.close()
         return
@@ -972,8 +972,6 @@ async function sendSingleFile(
 
 // ── handleHostChunk ───────────────────────────────────────────────────────
 
-const MAX_CHAT_IMAGE_SIZE_SENDER = 10 * 1024 * 1024 // 10MB ceiling
-
 async function handleHostChunk(connState: ConnState, rawData: ArrayBuffer | ArrayBufferView): Promise<void> {
   if (!connState.encryptKey) return
   const buffer = rawData instanceof ArrayBuffer
@@ -994,7 +992,7 @@ async function handleHostChunk(connState: ConnState, rawData: ArrayBuffer | Arra
   if (!inFlight) return
   const bytes = plain instanceof Uint8Array ? plain : new Uint8Array(plain)
   // Enforce size cap even on the relay path to prevent a malicious peer from exhausting host memory
-  if (inFlight.receivedBytes + bytes.byteLength > MAX_CHAT_IMAGE_SIZE_SENDER) {
+  if (inFlight.receivedBytes + bytes.byteLength > MAX_CHAT_IMAGE_SIZE) {
     console.warn('handleHostChunk: chat image exceeds size cap, dropping')
     connState.inProgressImage = null
     return

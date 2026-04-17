@@ -21,22 +21,15 @@ import {
   SharedFile,
   isValidSharedFile,
 } from './state/collabState'
+import {
+  FALLBACK_MAX_BYTES,
+  FALLBACK_TOO_LARGE_MSG,
+  MAX_PASSWORD_ATTEMPTS,
+  DOWNLOAD_REQUEST_TIMEOUT_MS,
+  MAX_CONNECTIONS,
+} from '../net/config'
 
 // ── Types ────────────────────────────────────────────────────────────────
-
-// Limit: number of in-memory buffered downloads (fallback path) before
-// we refuse rather than blow up the tab. 200 MB — matches H9.
-const FALLBACK_MAX_BYTES = 200 * 1024 * 1024
-
-// H9 — error message surfaced when falling back to in-memory path and size
-// would exceed FALLBACK_MAX_BYTES.
-const FALLBACK_TOO_LARGE_MSG = 'File too large for this browser. Max 200 MB without Chrome/Edge.'
-
-// Max wrong password attempts before we lock out the connection (C4).
-const MAX_PASSWORD_ATTEMPTS = 5
-
-// M2 — guest waits this long for the owner to start streaming.
-const DOWNLOAD_REQUEST_TIMEOUT_MS = 30_000
 
 interface ActiveTransfer {
   fileId: string
@@ -513,7 +506,6 @@ export function useCollabHost() {
     peer.on('connection', (conn: DataConnection) => {
       if (destroyed) return
 
-      const MAX_CONNECTIONS = 20
       if (connectionsRef.current.size >= MAX_CONNECTIONS) {
         conn.close()
         return
