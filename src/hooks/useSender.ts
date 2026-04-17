@@ -660,6 +660,8 @@ export function useSender() {
                   meta.totalSent = sent
                   meta.progress[fileToSend.name] = total > 0 ? Math.round(sent / total * 100) : 0
                   meta.currentFileIndex = fileIndex
+                  const elapsed = (Date.now() - (meta.startTime ?? Date.now())) / 1000
+                  meta.speed = elapsed > 0.5 ? meta.totalSent / elapsed : 0
                   aggregateUI()
                 },
               })
@@ -704,6 +706,8 @@ export function useSender() {
                   meta.totalSent = batchBytes + sent
                   meta.progress[idxFile.name] = total > 0 ? Math.round(sent / total * 100) : 0
                   meta.currentFileIndex = idx
+                  const elapsed = (Date.now() - (meta.startTime ?? Date.now())) / 1000
+                  meta.speed = elapsed > 0.5 ? meta.totalSent / elapsed : 0
                   aggregateUI()
                 },
               })
@@ -751,6 +755,8 @@ export function useSender() {
                   meta.totalSent = batchBytes + sent
                   meta.progress[readyFile.name] = total > 0 ? Math.round(sent / total * 100) : 0
                   meta.currentFileIndex = i
+                  const elapsed = (Date.now() - (meta.startTime ?? Date.now())) / 1000
+                  meta.speed = elapsed > 0.5 ? meta.totalSent / elapsed : 0
                   aggregateUI()
                 },
               })
@@ -766,7 +772,10 @@ export function useSender() {
           }
           if (!meta.abort.aborted) {
             try { session.send({ type: 'done' } satisfies PortalMsg) } catch (e) { log.warn('useSender.done.send', e) }
-            meta.transferring = false
+            // Snap overall progress to 100 and flip transferring off via the
+            // same path the request-all and request-file branches use, so the
+            // UI's overall bar and status follow a single source of truth.
+            endTransfer()
             dispatchConn({ type: 'SET_STATUS', payload: 'done' })
           }
         }
@@ -789,6 +798,8 @@ export function useSender() {
                 meta.totalSent = sent
                 meta.progress[resumeFile.name] = total > 0 ? Math.round(sent / total * 100) : 0
                 meta.currentFileIndex = resumeIndex
+                const elapsed = (Date.now() - (meta.startTime ?? Date.now())) / 1000
+                meta.speed = elapsed > 0.5 ? meta.totalSent / elapsed : 0
                 aggregateUI()
               },
             })
