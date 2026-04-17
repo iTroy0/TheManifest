@@ -1,0 +1,153 @@
+// Shared connection utilities extracted from useReceiver and useSender
+// to eliminate ~90 lines of duplicated heartbeat, RTT, and typing logic.
+
+import type { DataConnection } from 'peerjs'
+import type React from 'react'
+
+export interface HeartbeatOptions {
+  onDead: () => void
+  interval?: number
+  timeout?: number
+}
+
+export interface HeartbeatHandle {
+  markAlive: () => void
+  cleanup: () => void
+  getLastSeen: () => number
+}
+
+// ── Heartbeat ────────────────────────────────────────────────────────────
+// Sends a ping every `interval` ms and checks for incoming activity every
+// `interval` ms. If nothing has been received in `timeout` ms, calls
+// `onDead`. Returns { markAlive, cleanup } — the caller must call
+// markAlive() on every incoming message, and cleanup() on disconnect.
+export function setupHeartbeat(conn: DataConnection, { onDead, interval = 5000, timeout = 15000 }: HeartbeatOptions): HeartbeatHandle {
+  let lastSeen = Date.now()
+
+  // Note: heartbeat pings are intentionally unencrypted (low-value timing data).
+  // DTLS provides transport-layer encryption. Application-level E2E encryption
+  // is reserved for content-bearing messages (chat, file chunks).
+  // Counter increments on send failure, only resets when we actually hear back
+  // from the peer (via markAlive). A pattern of alternating send-success /
+  // no-response would otherwise mask a half-open connection indefinitely.
+  let consecutivePingFailures = 0
+
+  const pingTimer = setInterval(() => {
+    try {
+      conn.send({ type: 'ping', ts: Date.now() })
+      // Successful send means the data channel is at least half-alive right
+      // now. Reset so a short network blip in the middle of an otherwise
+      // healthy session can't rack up 3 failures across 15 s and kill a
+      // connection that recovered between pings.
+      consecutivePingFailures = 0
+    } catch {
+      consecutivePingFailures++
+      if (consecutivePingFailures >= 3) {
+        cleanup()
+        onDead()
+        return
+      }
+    }
+  }, interval)
+
+  // Reset lastSeen and ping failure counter on wake to prevent false-positive
+  // death after sleep (setInterval paused during sleep, then fires immediately)
+  const handleVisibility = (): void => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      lastSeen = Date.now()
+      consecutivePingFailures = 0
+    }
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibility)
+  }
+
+  const checkTimer = setInterval(() => {
+    if (Date.now() - lastSeen > timeout) {
+      cleanup()
+      onDead()
+    }
+  }, interval)
+
+  function markAlive(): void {
+    lastSeen = Date.now()
+    consecutivePingFailures = 0
+  }
+
+  function cleanup(): void {
+    clearInterval(pingTimer)
+    clearInterval(checkTimer)
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }
+
+  return { markAlive, cleanup, getLastSeen: () => lastSeen }
+}
+
+export interface RTTPollingHandle {
+  cleanup: () => void
+}
+
+// ── RTT polling ──────────────────────────────────────────────────────────
+// Polls the RTCPeerConnection stats every `interval` ms and calls
+// `setRtt(ms)` with the latest round-trip time. Returns { cleanup } or
+// null if no peerConnection is available.
+export function setupRTTPolling(
+  peerConnection: RTCPeerConnection | null | undefined,
+  setRtt: (rtt: number | null) => void,
+  interval = 3000
+): RTTPollingHandle | null {
+  if (!peerConnection) return null
+
+  // Track how many polls in a row returned no usable candidate-pair so we can
+  // surface staleness instead of showing an arbitrarily old value forever.
+  let missedPolls = 0
+
+  const timer = setInterval(() => {
+    peerConnection.getStats().then(stats => {
+      let best: number | null = null
+      let fallback: number | null = null
+      stats.forEach(r => {
+        const report = r as RTCIceCandidatePairStats
+        if (report.type !== 'candidate-pair') return
+        if (report.currentRoundTripTime == null) return
+        const ms = Math.round(report.currentRoundTripTime * 1000)
+        if (report.state === 'succeeded') {
+          if (best == null || ms < best) best = ms
+        } else if (report.state === 'in-progress') {
+          if (fallback == null || ms < fallback) fallback = ms
+        }
+      })
+      const picked = best ?? fallback
+      if (picked != null) {
+        missedPolls = 0
+        setRtt(picked)
+      } else {
+        missedPolls++
+        // Three consecutive misses — mark unknown rather than leaving a stale number.
+        if (missedPolls >= 3) setRtt(null)
+      }
+    }).catch((err) => { console.warn('RTT stats query failed:', err) })
+  }, interval)
+
+  return { cleanup: () => clearInterval(timer) }
+}
+
+// ── Typing indicator ─────────────────────────────────────────────────────
+// Updates the typing-users list when a typing message arrives, then
+// automatically removes the user after `duration` ms if no further typing
+// events arrive. `timeoutMap` is a mutable object (e.g. a ref.current)
+// keyed by nickname.
+export function handleTypingMessage(
+  nick: string,
+  setTypingUsers: React.Dispatch<React.SetStateAction<string[]>>,
+  timeoutMap: Record<string, ReturnType<typeof setTimeout>>,
+  duration = 3000
+): void {
+  setTypingUsers(prev => prev.includes(nick) ? prev : [...prev, nick])
+  clearTimeout(timeoutMap[nick])
+  timeoutMap[nick] = setTimeout(() => {
+    setTypingUsers(prev => prev.filter(n => n !== nick))
+  }, duration)
+}

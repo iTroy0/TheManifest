@@ -1,0 +1,10 @@
+node_modules
+dist
+.claude
+*.log
+.env
+.omc
+CLAUDE.md
+playwright-report
+test-results
+.playwright
