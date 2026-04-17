@@ -295,7 +295,16 @@ export function useCollabHost() {
       return dl.status === 'requesting' || dl.status === 'downloading' || dl.status === 'queued'
     })
     const initialStatus: FileDownload['status'] = ownerBusy ? 'queued' : 'requesting'
-    dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download: { status: initialStatus, progress: 0, speed: 0 } })
+    const download: FileDownload = { status: initialStatus, progress: 0, speed: 0 }
+    // Mirror into filesRef immediately so a synchronous burst of
+    // requestFile calls from "Download all" sees prior entries — React
+    // doesn't re-render between for-loop iterations, so snap.downloads
+    // would otherwise stay empty across the whole batch.
+    filesRef.current = {
+      ...filesRef.current,
+      downloads: { ...filesRef.current.downloads, [fileId]: download },
+    }
+    dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download })
     scheduleDownloadTimeout(fileId)
 
     try {

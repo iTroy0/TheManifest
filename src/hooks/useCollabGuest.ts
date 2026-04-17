@@ -229,7 +229,17 @@ export function useCollabGuest(roomId: string) {
       return dl.status === 'requesting' || dl.status === 'downloading' || dl.status === 'queued'
     })
     const initialStatus: FileDownload['status'] = ownerBusy ? 'queued' : 'requesting'
-    dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download: { status: initialStatus, progress: 0, speed: 0 } })
+    const download: FileDownload = { status: initialStatus, progress: 0, speed: 0 }
+    // Mirror the dispatch into filesRef immediately. A synchronous burst of
+    // requestFile calls from "Download all" doesn't trigger re-renders
+    // between iterations, so without this the second/third call would read
+    // the stale `snap.downloads` and fall through to 'requesting' for
+    // every file instead of queueing them behind the first.
+    filesRef.current = {
+      ...filesRef.current,
+      downloads: { ...filesRef.current.downloads, [fileId]: download },
+    }
+    dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download })
     scheduleDownloadTimeout(fileId)
 
     // Try direct P2P first if we have a connection to the owner
