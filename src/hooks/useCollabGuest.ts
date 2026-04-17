@@ -2,6 +2,7 @@ import Peer, { DataConnection } from 'peerjs'
 import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
 import { generateKeyPair, exportPublicKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, uint8ToBase64 } from '../utils/crypto'
 import { finalizeKeyExchange } from '../net/keyExchange'
+import { createSession, type Session, type TransferHandle } from '../net/session'
 import { STUN_ONLY, getWithTurn } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
@@ -44,34 +45,6 @@ const DIRECT_FAIL_WINDOW_MS = 10_000
 
 // ── Types ────────────────────────────────────────────────────────────────
 
-interface PeerConnection {
-  peerId: string
-  name: string
-  conn: DataConnection | null
-  encryptKey: CryptoKey | null
-  keyPair: CryptoKeyPair | null
-  directConnection: boolean
-  fingerprint?: string
-  // Mesh handshake bookkeeping (mirrors GuestConnection in useCollabHost).
-  pendingRemoteKey?: Uint8Array | null
-  keyExchangeTimeout?: ReturnType<typeof setTimeout>
-  heartbeat?: ReturnType<typeof setupHeartbeat> | null
-  chunkQueue?: Promise<void>
-  // Per-mesh-peer current file id for inbound chunk routing. We keep a
-  // per-peer slot rather than a global one so concurrent mesh transfers
-  // from different peers don't stomp on each other.
-  currentDownloadFileId?: string | null
-  // In-flight downloads arriving over this mesh connection.
-  inProgressFiles?: Map<string, InProgressFile>
-  // Serializes outbound file transfers on this conn so two concurrent
-  // sendFileToRequester calls can't interleave packets. PeerJS's binary
-  // chunked serializer reassembles by order on a single data channel,
-  // and two simultaneous loops write overlapping sends that corrupt into
-  // AES-GCM auth-tag failures on the receiver (seen as
-  // `handleMeshChunk.decrypt` warns after "Download all").
-  uploadQueue?: Promise<void>
-}
-
 interface InProgressFile {
   fileId: string
   name: string
@@ -83,17 +56,27 @@ interface InProgressFile {
   startTime: number
 }
 
-interface InProgressImage {
-  id?: string
-  mime: string
-  size: number
-  text: string
-  replyTo: { text: string; from: string; time: number } | null
-  time: number
-  from: string
-  duration?: number
-  chunks: Uint8Array[]
-  receivedBytes: number
+// Per-mesh-peer accounting that doesn't belong on Session. Everything else
+// (handshake, liveness, lanes, fingerprint) is on `session`.
+interface MeshMeta {
+  inProgressFiles: Map<string, InProgressFile>
+  currentDownloadFileId: string | null
+}
+
+interface MeshEntry {
+  session: Session
+  meta: MeshMeta
+}
+
+// Hook-level router for outbound transfers: fileId -> the session that holds
+// the actual TransferHandle. `targetPeerId === null` means the transfer
+// flows through the host relay; any other value is a direct mesh transfer
+// to that specific guest. The handle lives in session.activeTransfers; this
+// map just tells us WHICH session to dispatch pause/resume/cancel on when
+// a control message arrives over the host conn.
+interface ActiveTransferRoute {
+  targetPeerId: string | null
+  session: Session
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────
@@ -111,22 +94,18 @@ export function useCollabGuest(roomId: string) {
   const typingTimeouts = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const lastMsgTime = useRef<number>(0)
   const peerRef = useRef<InstanceType<typeof Peer> | null>(null)
-  const hostConnRef = useRef<DataConnection | null>(null)
-  const decryptKeyRef = useRef<CryptoKey | null>(null)
-  const keyPairRef = useRef<CryptoKeyPair | null>(null)
+  // Host connection — a single Session that replaces hostConnRef,
+  // decryptKeyRef, keyPairRef, heartbeatRef, rttPollerRef,
+  // keyExchangeTimeoutRef, chunkQueueRef, imageSendQueueRef,
+  // inProgressImageRef, and hostUploadQueueRef.
+  const hostSessionRef = useRef<Session | null>(null)
   const destroyedRef = useRef<boolean>(false)
   const attemptRef = useRef<number>(0)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const useTurnRef = useRef<boolean>(false)
   const reconnectCountRef = useRef<number>(0)
-  const heartbeatRef = useRef<ReturnType<typeof setupHeartbeat> | null>(null)
-  const rttPollerRef = useRef<ReturnType<typeof setupRTTPolling> | null>(null)
-  const keyExchangeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const chunkQueueRef = useRef<Promise<void>>(Promise.resolve())
-  const imageSendQueueRef = useRef<Promise<void>>(Promise.resolve())
   const imageBlobUrlsRef = useRef<string[]>([])
-  const inProgressImageRef = useRef<InProgressImage | null>(null)
-  // H2 — per-fileId in-progress downloads.
+  // H2 — per-fileId in-progress downloads (from host).
   const inProgressFilesRef = useRef<Map<string, InProgressFile>>(new Map())
   // Which fileId the next chunk packet belongs to (serialized per sender).
   // Since guest only receives files through a single host conn in practice,
@@ -142,10 +121,11 @@ export function useCollabGuest(roomId: string) {
   // M2 — request-timeout timers keyed by fileId.
   const downloadTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
-  // Active file transfers (when sending files to other peers)
-  // targetPeerId === null means the transfer is going through the host relay;
-  // any other value is a direct mesh transfer to that specific guest.
-  const activeTransfersRef = useRef<Map<string, { fileId: string; targetPeerId: string | null; aborted: boolean; paused: boolean; pauseResolver?: () => void }>>(new Map())
+  // Outbound transfer router — fileId -> { targetPeerId, session-that-owns-the-handle }.
+  // Plain TransferHandle lives inside session.activeTransfers; this map
+  // lets a host-relayed control message find the right session without
+  // walking every mesh entry.
+  const activeTransferRoutesRef = useRef<Map<string, ActiveTransferRoute>>(new Map())
 
   // Keep fresh reference to files state
   const filesRef = useRef(files)
@@ -167,14 +147,7 @@ export function useCollabGuest(roomId: string) {
 
   // P2P connections to other guests (mesh). H7 uses these for guest→guest
   // uploads when a direct mesh connection exists.
-  const peerConnectionsRef = useRef<Map<string, PeerConnection>>(new Map())
-
-  // Serializes outbound file transfers routed through the host data channel
-  // (mirror of PeerConnection.uploadQueue for the mesh path). When the user
-  // hits "Download all", the host fan-outs N concurrent requests to this
-  // guest, and this queue is what keeps their send loops from interleaving
-  // on the single host data channel.
-  const hostUploadQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const peerConnectionsRef = useRef<Map<string, MeshEntry>>(new Map())
 
   // For calls
   const [peerInstance, setPeerInstance] = useState<InstanceType<typeof Peer> | null>(null)
@@ -185,14 +158,14 @@ export function useCollabGuest(roomId: string) {
   }, [])
 
   const sendCallMessage = useCallback((msg: Record<string, unknown>): void => {
-    const c = hostConnRef.current
-    if (c && c.open) { try { c.send(msg) } catch (e) { log.warn('useCollabGuest.sendCallMessage', e) } }
+    const sess = hostSessionRef.current
+    if (sess && sess.conn.open) { try { sess.send(msg) } catch (e) { log.warn('useCollabGuest.sendCallMessage', e) } }
   }, [])
 
   // Send to host (for relaying or direct communication)
   const sendToHost = useCallback((msg: Record<string, unknown>): void => {
-    const c = hostConnRef.current
-    if (c && c.open) { try { c.send(msg) } catch (e) { log.warn('useCollabGuest.sendToHost', e) } }
+    const sess = hostSessionRef.current
+    if (sess && sess.conn.open) { try { sess.send(msg) } catch (e) { log.warn('useCollabGuest.sendToHost', e) } }
   }, [])
 
   // M2 — request-timeout helpers.
@@ -216,7 +189,8 @@ export function useCollabGuest(roomId: string) {
 
   // Request file from owner (prefer mesh, fall back to host relay).
   const requestFile = useCallback(async (fileId: string, ownerId: string): Promise<void> => {
-    if (!decryptKeyRef.current) return
+    const hostSess = hostSessionRef.current
+    if (!hostSess?.encryptKey) return
 
     // If another download from the same owner is still in flight, mark this
     // one 'queued' instead of 'requesting' — per-conn uploadQueue on the
@@ -244,25 +218,26 @@ export function useCollabGuest(roomId: string) {
     scheduleDownloadTimeout(fileId)
 
     // Try direct P2P first if we have a connection to the owner
-    const peerConn = peerConnectionsRef.current.get(ownerId)
-    if (peerConn?.conn && peerConn.encryptKey) {
+    const meshEntry = peerConnectionsRef.current.get(ownerId)
+    if (meshEntry?.session.conn && meshEntry.session.encryptKey) {
       try {
-        const encrypted = await encryptJSON(peerConn.encryptKey, { type: 'collab-request-file', fileId } satisfies CollabInnerMsg)
-        peerConn.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+        const encrypted = await encryptJSON(meshEntry.session.encryptKey, { type: 'collab-request-file', fileId } satisfies CollabInnerMsg)
+        meshEntry.session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
         return
       } catch (e) { log.warn('useCollabGuest.requestFile.mesh', e) }
     }
 
     // Fall back to host relay — include owner so host can relay to correct peer.
     try {
-      const encrypted = await encryptJSON(decryptKeyRef.current, { type: 'collab-request-file', fileId, owner: ownerId } satisfies CollabInnerMsg)
+      const encrypted = await encryptJSON(hostSess.encryptKey, { type: 'collab-request-file', fileId, owner: ownerId } satisfies CollabInnerMsg)
       sendToHost({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
     } catch (e) { log.warn('useCollabGuest.requestFile.viaHost', e) }
   }, [sendToHost, scheduleDownloadTimeout])
 
   // Share a file
   const shareFile = useCallback(async (file: File): Promise<void> => {
-    if (!decryptKeyRef.current || !room.myPeerId) return
+    const hostSess = hostSessionRef.current
+    if (!hostSess?.encryptKey || !room.myPeerId) return
 
     // M6 — crypto.randomUUID for fileIds.
     const fileId = typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -305,7 +280,7 @@ export function useCollabGuest(roomId: string) {
 
     // Notify host (who will broadcast to others)
     try {
-      const encrypted = await encryptJSON(decryptKeyRef.current, {
+      const encrypted = await encryptJSON(hostSess.encryptKey, {
         type: 'collab-file-shared',
         file: sharedFile,
       } satisfies CollabInnerMsg)
@@ -315,7 +290,8 @@ export function useCollabGuest(roomId: string) {
 
   // Remove a file that I shared
   const removeFile = useCallback(async (fileId: string): Promise<void> => {
-    if (!decryptKeyRef.current || !room.myPeerId) return
+    const hostSess = hostSessionRef.current
+    if (!hostSess?.encryptKey || !room.myPeerId) return
 
     // Only remove if I own this file
     if (!filesRef.current.mySharedFiles.has(fileId)) return
@@ -326,7 +302,7 @@ export function useCollabGuest(roomId: string) {
 
     // Notify host (who will broadcast to others). Include `from` for C3.
     try {
-      const encrypted = await encryptJSON(decryptKeyRef.current, {
+      const encrypted = await encryptJSON(hostSess.encryptKey, {
         type: 'collab-file-removed',
         fileId,
         from: room.myPeerId,
@@ -348,23 +324,20 @@ export function useCollabGuest(roomId: string) {
 
     // Pick the transport: mesh first if we have one to the requester, else
     // host relay. If requester is another guest and mesh is missing, reject.
-    let conn: DataConnection | null = null
-    let key: CryptoKey | null = null
+    let targetSession: Session | null = null
     let targetPeerId: string | null = null
-    let meshEntry: PeerConnection | null = null
 
     if (requesterPeerId) {
       const mesh = peerConnectionsRef.current.get(requesterPeerId)
-      if (mesh?.conn?.open && mesh.encryptKey) {
-        conn = mesh.conn
-        key = mesh.encryptKey
+      if (mesh?.session.conn?.open && mesh.session.encryptKey) {
+        targetSession = mesh.session
         targetPeerId = requesterPeerId
-        meshEntry = mesh
       } else {
         // H7 — no direct mesh. Tell the requester we can't send (through host).
-        if (decryptKeyRef.current && hostConnRef.current) {
+        const hostSess = hostSessionRef.current
+        if (hostSess?.encryptKey) {
           try {
-            const enc = await encryptJSON(decryptKeyRef.current, {
+            const enc = await encryptJSON(hostSess.encryptKey, {
               type: 'collab-file-unavailable',
               fileId,
               reason: 'no-direct-connection',
@@ -377,21 +350,30 @@ export function useCollabGuest(roomId: string) {
       }
     } else {
       // Requester is the host itself.
-      conn = hostConnRef.current
-      key = decryptKeyRef.current
+      const hostSess = hostSessionRef.current
+      if (!hostSess?.encryptKey) return
+      targetSession = hostSess
+      targetPeerId = null
     }
 
-    if (!conn || !key) return
+    if (!targetSession || !targetSession.encryptKey) return
 
     // Hold locals in typed constants so the closure below doesn't need
     // non-null assertions every line.
-    const sendConn = conn
-    const sendKey = key
+    const sendSession = targetSession
+    const sendKey = targetSession.encryptKey
 
-    // Create transfer state for this file, tagged with its target so
-    // teardownMesh can abort only the uploads that were going to a dead conn.
-    const transfer = { fileId, targetPeerId, aborted: false, paused: false, pauseResolver: undefined as (() => void) | undefined }
-    activeTransfersRef.current.set(fileId, transfer)
+    // Register the transfer on the session so inbound pause/resume/cancel
+    // route via session.pauseTransfer / etc. Also drop a route entry so
+    // host-relayed control messages can find the right session.
+    const handle: TransferHandle = {
+      transferId: fileId,
+      direction: 'outbound',
+      aborted: false,
+      paused: false,
+    }
+    sendSession.beginTransfer(handle)
+    activeTransferRoutesRef.current.set(fileId, { targetPeerId, session: sendSession })
 
     // Actual transfer loop. Runs inside an uploadQueue so concurrent
     // requests on the same data channel can't interleave packets — peerjs
@@ -406,108 +388,101 @@ export function useCollabGuest(roomId: string) {
       dispatchTransfer({ type: 'START_UPLOAD', fileId, fileName: file.name })
 
       try {
-        const startMsg = await encryptJSON(sendKey, {
-          type: 'collab-file-start',
-          fileId,
-          name: file.name,
-          size: file.size,
-          totalChunks,
-        } satisfies CollabInnerMsg)
-        sendConn.send({ type: 'collab-msg-enc', data: startMsg } satisfies CollabUnencryptedMsg)
-      } catch {
-        activeTransfersRef.current.delete(fileId)
-        dispatchTransfer({ type: 'END_UPLOAD', fileId })
-        return
-      }
-
-      let chunkIndex = 0
-      let fileSent = 0
-      const startTime = Date.now()
-
-      for await (const { buffer: chunkData } of chunkFileAdaptive(file, chunker)) {
-        if (transfer.aborted) {
-          activeTransfersRef.current.delete(fileId)
-          dispatchTransfer({ type: 'END_UPLOAD', fileId })
-          return
-        }
-
-        while (transfer.paused && !transfer.aborted) {
-          await new Promise<void>(resolve => {
-            transfer.pauseResolver = resolve
-          })
-        }
-        if (transfer.aborted) {
-          activeTransfersRef.current.delete(fileId)
-          dispatchTransfer({ type: 'END_UPLOAD', fileId })
-          return
-        }
-
-        const dataToSend = await encryptChunk(sendKey, new Uint8Array(chunkData))
-        const packet = buildChunkPacket(0xFFFE, chunkIndex, dataToSend)
-        sendConn.send(packet)
-        await waitForBufferDrain(sendConn)
-
-        chunkIndex++
-        fileSent += chunkData.byteLength
-
-        if (throttler.shouldUpdate()) {
-          const elapsed = (Date.now() - startTime) / 1000
-          const speed = elapsed > 0.5 ? fileSent / elapsed : 0
-          const progress = file.size > 0 ? Math.min(100, Math.round((fileSent / file.size) * 100)) : 0
-          dispatchTransfer({ type: 'UPDATE_UPLOAD', fileId, progress, speed })
-        }
-      }
-
-      if (!transfer.aborted) {
         try {
-          const endMsg = await encryptJSON(sendKey, { type: 'collab-file-end', fileId } satisfies CollabInnerMsg)
-          sendConn.send({ type: 'collab-msg-enc', data: endMsg } satisfies CollabUnencryptedMsg)
-        } catch (e) { log.warn('useCollabGuest.mesh.sendFileEnd', e) }
-      }
+          const startMsg = await encryptJSON(sendKey, {
+            type: 'collab-file-start',
+            fileId,
+            name: file.name,
+            size: file.size,
+            totalChunks,
+          } satisfies CollabInnerMsg)
+          sendSession.send({ type: 'collab-msg-enc', data: startMsg } satisfies CollabUnencryptedMsg)
+        } catch {
+          dispatchTransfer({ type: 'END_UPLOAD', fileId })
+          return
+        }
 
-      activeTransfersRef.current.delete(fileId)
-      dispatchTransfer({ type: 'END_UPLOAD', fileId })
+        let chunkIndex = 0
+        let fileSent = 0
+        const startTime = Date.now()
+
+        for await (const { buffer: chunkData } of chunkFileAdaptive(file, chunker)) {
+          if (handle.aborted) {
+            dispatchTransfer({ type: 'END_UPLOAD', fileId })
+            return
+          }
+
+          while (handle.paused && !handle.aborted) {
+            await new Promise<void>(resolve => {
+              handle.pauseResolver = resolve
+            })
+            handle.pauseResolver = undefined
+          }
+          if (handle.aborted) {
+            dispatchTransfer({ type: 'END_UPLOAD', fileId })
+            return
+          }
+
+          const dataToSend = await encryptChunk(sendKey, new Uint8Array(chunkData))
+          const packet = buildChunkPacket(0xFFFE, chunkIndex, dataToSend)
+          sendSession.sendBinary(packet)
+          await waitForBufferDrain(sendSession.conn)
+
+          chunkIndex++
+          fileSent += chunkData.byteLength
+
+          if (throttler.shouldUpdate()) {
+            const elapsed = (Date.now() - startTime) / 1000
+            const speed = elapsed > 0.5 ? fileSent / elapsed : 0
+            const progress = file.size > 0 ? Math.min(100, Math.round((fileSent / file.size) * 100)) : 0
+            dispatchTransfer({ type: 'UPDATE_UPLOAD', fileId, progress, speed })
+          }
+        }
+
+        if (!handle.aborted) {
+          try {
+            const endMsg = await encryptJSON(sendKey, { type: 'collab-file-end', fileId } satisfies CollabInnerMsg)
+            sendSession.send({ type: 'collab-msg-enc', data: endMsg } satisfies CollabUnencryptedMsg)
+          } catch (e) { log.warn('useCollabGuest.mesh.sendFileEnd', e) }
+        }
+      } finally {
+        sendSession.endTransfer(fileId, handle.aborted ? 'cancelled' : 'complete')
+        activeTransferRoutesRef.current.delete(fileId)
+        dispatchTransfer({ type: 'END_UPLOAD', fileId })
+      }
     }
 
-    const prevQueue = meshEntry
-      ? (meshEntry.uploadQueue ?? Promise.resolve())
-      : hostUploadQueueRef.current
-    const next = prevQueue
+    const next = sendSession.uploadQueue
       .then(runTransfer)
       .catch(e => log.warn('useCollabGuest.sendFileToRequester.queue', e))
-    if (meshEntry) meshEntry.uploadQueue = next
-    else hostUploadQueueRef.current = next
+    sendSession.uploadQueue = next
     await next
   }, [sendToHost])
 
   // ── Mesh (guest ↔ guest) ─────────────────────────────────────────────
-  // Tear down a single mesh PeerConnection entry, abort any active transfers
-  // tied to it, and mark the participant as no-longer-directly-connected.
+  // Tear down a single mesh Session, abort any outbound transfers routed
+  // through it, and mark the participant as no-longer-directly-connected.
   const teardownMesh = useCallback((peerId: string, reason: string): void => {
     const entry = peerConnectionsRef.current.get(peerId)
     if (!entry) return
     peerConnectionsRef.current.delete(peerId)
-    if (entry.keyExchangeTimeout) { clearTimeout(entry.keyExchangeTimeout); entry.keyExchangeTimeout = undefined }
-    if (entry.heartbeat) { try { entry.heartbeat.cleanup() } catch (e) { log.warn('useCollabGuest.mesh.teardown.heartbeat', e) } }
-    if (entry.inProgressFiles) {
-      for (const f of entry.inProgressFiles.values()) {
-        if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.mesh.teardown.streamAbort', e) } }
-        dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: f.fileId, payload: { status: 'error', error: reason } })
-      }
-      entry.inProgressFiles.clear()
+    // Abort any in-progress inbound downloads arriving on this mesh.
+    for (const f of entry.meta.inProgressFiles.values()) {
+      if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.mesh.teardown.streamAbort', e) } }
+      dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: f.fileId, payload: { status: 'error', error: reason } })
     }
-    // H10 — selectively abort outbound transfers whose target was this mesh
-    // peer. Transfers going through the host relay (targetPeerId === null) or
-    // to a different mesh peer are untouched.
-    activeTransfersRef.current.forEach(t => {
-      if (t.targetPeerId !== peerId) return
-      t.aborted = true
-      if (t.pauseResolver) { t.pauseResolver(); t.pauseResolver = undefined }
-    })
-    if (entry.conn) {
-      try { entry.conn.removeAllListeners() } catch (e) { log.warn('useCollabGuest.mesh.teardown.removeListeners', e) }
-      try { entry.conn.close() } catch (e) { log.warn('useCollabGuest.mesh.teardown.close', e) }
+    entry.meta.inProgressFiles.clear()
+    entry.meta.currentDownloadFileId = null
+    // Session-level cleanup — heartbeat, rttPoller, keyExchangeTimeout,
+    // active transfers (per-mesh-peer outbound uploads) all unblocked
+    // via close(). Idempotent.
+    entry.session.close('peer-disconnect')
+    // Clear router entries that pointed at this now-dead session.
+    for (const [fid, route] of activeTransferRoutesRef.current) {
+      if (route.session === entry.session) activeTransferRoutesRef.current.delete(fid)
     }
+    try { entry.session.conn.removeAllListeners() } catch (e) { log.warn('useCollabGuest.mesh.teardown.removeListeners', e) }
+    try { entry.session.conn.close() } catch (e) { log.warn('useCollabGuest.mesh.teardown.close', e) }
     dispatchParticipants({ type: 'UPDATE_PARTICIPANT', peerId, payload: { fingerprint: undefined, directConnection: false } })
   }, [])
 
@@ -518,42 +493,38 @@ export function useCollabGuest(roomId: string) {
     if (destroyedRef.current) { try { conn.close() } catch (e) { log.warn('useCollabGuest.mesh.setup.closeDestroyed', e) }; return }
     // Double-connection prevention: if a live entry already exists, drop the new one.
     const existing = peerConnectionsRef.current.get(peerId)
-    if (existing && existing.conn && existing.conn.open) {
+    if (existing && existing.session.conn && existing.session.conn.open) {
       try { conn.close() } catch (e) { log.warn('useCollabGuest.mesh.setup.closeDup', e) }
       return
     }
 
     // Seed a fresh entry (wipes any stale non-open placeholder).
-    const entry: PeerConnection = {
-      peerId,
-      name: '',
-      conn,
-      encryptKey: null,
-      keyPair: null,
-      directConnection: false,
-      pendingRemoteKey: null,
-      heartbeat: null,
-      chunkQueue: Promise.resolve(),
-      uploadQueue: Promise.resolve(),
-      currentDownloadFileId: null,
-      inProgressFiles: new Map(),
+    const session = createSession({ conn, role: 'collab-guest-mesh' })
+    session.dispatch({ type: 'connect-start' })
+    const entry: MeshEntry = {
+      session,
+      meta: {
+        inProgressFiles: new Map(),
+        currentDownloadFileId: null,
+      },
     }
     peerConnectionsRef.current.set(peerId, entry)
 
     conn.on('open', async () => {
       if (destroyedRef.current) { try { conn.close() } catch (e) { log.warn('useCollabGuest.mesh.open.closeDestroyed', e) }; return }
+      session.dispatch({ type: 'conn-open' })
       // Heartbeat for dead-mesh detection.
-      entry.heartbeat = setupHeartbeat(conn, {
+      session.heartbeat = setupHeartbeat(conn, {
         onDead: () => teardownMesh(peerId, 'mesh connection lost'),
       })
 
       try {
-        entry.keyPair = await generateKeyPair()
-        const pubKeyBytes = await exportPublicKey(entry.keyPair.publicKey)
-        try { conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabGuest.mesh.sendPublicKey', e) }
+        session.setKeyPair(await generateKeyPair())
+        const pubKeyBytes = await exportPublicKey(session.keyPair!.publicKey)
+        try { session.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabGuest.mesh.sendPublicKey', e) }
 
-        entry.keyExchangeTimeout = setTimeout(() => {
-          if (!entry.encryptKey) {
+        session.keyExchangeTimeout = setTimeout(() => {
+          if (!session.encryptKey) {
             console.warn('mesh key exchange timed out for', peerId)
             teardownMesh(peerId, 'mesh key exchange timed out')
           }
@@ -563,31 +534,28 @@ export function useCollabGuest(roomId: string) {
         // the handshake here. We also re-check at the end to cover the narrow
         // window where the remote public-key lands between this check and the
         // data handler's own derive path (can't actually happen today because
-        // entry.keyPair is set before this point and the data handler will
+        // session.keyPair is set before this point and the data handler will
         // derive directly, but the re-check costs nothing and prevents a
         // silent 10 s stall if a future refactor introduces the race).
         async function drainPendingRemoteKey(): Promise<void> {
-          if (!entry.keyPair || !entry.pendingRemoteKey || entry.encryptKey) return
+          if (!session.keyPair || !session.pendingRemoteKey || session.encryptKey) return
           try {
             const { encryptKey, fingerprint: fp } = await finalizeKeyExchange({
-              localPrivate: entry.keyPair.privateKey,
+              localPrivate: session.keyPair.privateKey,
               localPublic: pubKeyBytes,
-              remotePublic: entry.pendingRemoteKey,
+              remotePublic: session.pendingRemoteKey,
             })
-            entry.encryptKey = encryptKey
-            if (entry.keyExchangeTimeout) { clearTimeout(entry.keyExchangeTimeout); entry.keyExchangeTimeout = undefined }
-            entry.fingerprint = fp
-            entry.directConnection = true
-            entry.pendingRemoteKey = null
+            session.dispatch({ type: 'keys-derived', encryptKey, fingerprint: fp })
+            session.pendingRemoteKey = null
             dispatchParticipants({ type: 'UPDATE_PARTICIPANT', peerId, payload: { fingerprint: fp, directConnection: true } })
           } catch {
             teardownMesh(peerId, 'mesh key derivation failed')
           }
         }
 
-        if (entry.pendingRemoteKey) await drainPendingRemoteKey()
+        if (session.pendingRemoteKey) await drainPendingRemoteKey()
         // Re-check after any microtask gap above.
-        if (entry.pendingRemoteKey && !entry.encryptKey) await drainPendingRemoteKey()
+        if (session.pendingRemoteKey && !session.encryptKey) await drainPendingRemoteKey()
       } catch (err) {
         console.warn('mesh handshake setup failed:', err)
         teardownMesh(peerId, 'mesh handshake failed')
@@ -597,8 +565,8 @@ export function useCollabGuest(roomId: string) {
     conn.on('data', async (data: unknown) => {
       if (destroyedRef.current) return
       const current = peerConnectionsRef.current.get(peerId)
-      if (!current || current.conn !== conn) return
-      if (current.heartbeat) current.heartbeat.markAlive()
+      if (!current || current.session !== session) return
+      if (session.heartbeat) session.heartbeat.markAlive()
 
       // Binary chunk packets
       if (
@@ -606,7 +574,7 @@ export function useCollabGuest(roomId: string) {
         data instanceof Uint8Array ||
         (data && typeof data === 'object' && typeof (data as { byteLength?: unknown }).byteLength === 'number' && !(data as { type?: unknown }).type)
       ) {
-        current.chunkQueue = (current.chunkQueue ?? Promise.resolve())
+        session.chunkQueue = session.chunkQueue
           .then(() => handleMeshChunk(current, data as ArrayBuffer))
           .catch(e => log.warn('useCollabGuest.mesh.chunkQueue', e))
         return
@@ -618,30 +586,27 @@ export function useCollabGuest(roomId: string) {
       const msg = data as CollabUnencryptedMsg
       if (msg.type === 'pong') return
       if (msg.type === 'ping') {
-        try { conn.send({ type: 'pong', ts: msg.ts } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabGuest.mesh.sendPong', e) }
+        try { session.send({ type: 'pong', ts: msg.ts } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabGuest.mesh.sendPong', e) }
         return
       }
 
       // Mesh ECDH key exchange.
       if (msg.type === 'public-key') {
         const remoteKeyRaw = new Uint8Array(msg.key as number[])
-        if (!current.keyPair) {
+        if (!session.keyPair) {
           // Buffer until our keyPair is ready (initiator side may race here).
-          current.pendingRemoteKey = remoteKeyRaw
+          session.pendingRemoteKey = remoteKeyRaw
           return
         }
-        if (current.encryptKey) return
+        if (session.encryptKey) return
         try {
-          const localPubBytes = await exportPublicKey(current.keyPair.publicKey)
+          const localPubBytes = await exportPublicKey(session.keyPair.publicKey)
           const { encryptKey, fingerprint: fp } = await finalizeKeyExchange({
-            localPrivate: current.keyPair.privateKey,
+            localPrivate: session.keyPair.privateKey,
             localPublic: localPubBytes,
             remotePublic: remoteKeyRaw,
           })
-          current.encryptKey = encryptKey
-          if (current.keyExchangeTimeout) { clearTimeout(current.keyExchangeTimeout); current.keyExchangeTimeout = undefined }
-          current.fingerprint = fp
-          current.directConnection = true
+          session.dispatch({ type: 'keys-derived', encryptKey, fingerprint: fp })
           dispatchParticipants({ type: 'UPDATE_PARTICIPANT', peerId, payload: { fingerprint: fp, directConnection: true } })
         } catch {
           teardownMesh(peerId, 'mesh key derivation failed')
@@ -651,9 +616,9 @@ export function useCollabGuest(roomId: string) {
 
       // Encrypted collab messages over mesh.
       if (msg.type === 'collab-msg-enc') {
-        if (!current.encryptKey || !msg.data) return
+        if (!session.encryptKey || !msg.data) return
         let payload: CollabInnerMsg
-        try { payload = await decryptJSON<CollabInnerMsg>(current.encryptKey, msg.data as string) }
+        try { payload = await decryptJSON<CollabInnerMsg>(session.encryptKey, msg.data as string) }
         catch (e) { log.warn('useCollabGuest.mesh.decrypt', e); return }
 
         // collab-file-start (inbound download from mesh peer)
@@ -663,7 +628,7 @@ export function useCollabGuest(roomId: string) {
           const fileSize = payload.size as number
           clearDownloadTimeout(fileId)
           const stream = createFileStream(fileName, fileSize)
-          current.inProgressFiles!.set(fileId, {
+          current.meta.inProgressFiles.set(fileId, {
             fileId,
             name: fileName,
             size: fileSize,
@@ -673,18 +638,18 @@ export function useCollabGuest(roomId: string) {
             stream,
             startTime: Date.now(),
           })
-          current.currentDownloadFileId = fileId
+          current.meta.currentDownloadFileId = fileId
           dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download: { status: 'downloading', progress: 0, speed: 0 } })
           return
         }
 
         if (payload.type === 'collab-file-end') {
-          await (current.chunkQueue ?? Promise.resolve())
+          await session.chunkQueue
           const fileId = payload.fileId as string
-          const inFlight = current.inProgressFiles!.get(fileId)
+          const inFlight = current.meta.inProgressFiles.get(fileId)
           if (!inFlight) return
-          current.inProgressFiles!.delete(fileId)
-          if (current.currentDownloadFileId === fileId) current.currentDownloadFileId = null
+          current.meta.inProgressFiles.delete(fileId)
+          if (current.meta.currentDownloadFileId === fileId) current.meta.currentDownloadFileId = null
           if (inFlight.stream) { try { await inFlight.stream.close() } catch (e) { log.warn('useCollabGuest.mesh.fileEnd.streamClose', e) } }
           else {
             const totalLen = inFlight.chunks.reduce((s, c) => s + c.byteLength, 0)
@@ -714,38 +679,28 @@ export function useCollabGuest(roomId: string) {
           } else {
             // Respond over mesh that we don't have it.
             try {
-              const enc = await encryptJSON(current.encryptKey, {
+              const enc = await encryptJSON(session.encryptKey, {
                 type: 'collab-file-unavailable', fileId, reason: 'unknown-file',
               } satisfies CollabInnerMsg)
-              conn.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
+              session.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
             } catch (e) { log.warn('useCollabGuest.mesh.requestRelay', e) }
           }
           return
         }
 
         if (payload.type === 'collab-pause-file') {
-          const fileId = payload.fileId as string
-          const t = activeTransfersRef.current.get(fileId)
-          if (t) t.paused = true
+          // Mesh pauses only affect transfers living on THIS session (outbound
+          // uploads routed directly). No origin check needed — mesh conn is
+          // already authenticated end-to-end via ECDH.
+          session.pauseTransfer(payload.fileId as string)
           return
         }
         if (payload.type === 'collab-resume-file') {
-          const fileId = payload.fileId as string
-          const t = activeTransfersRef.current.get(fileId)
-          if (t) {
-            t.paused = false
-            if (t.pauseResolver) { t.pauseResolver(); t.pauseResolver = undefined }
-          }
+          session.resumeTransfer(payload.fileId as string)
           return
         }
         if (payload.type === 'collab-cancel-file') {
-          const fileId = payload.fileId as string
-          const t = activeTransfersRef.current.get(fileId)
-          if (t) {
-            t.aborted = true
-            t.paused = false
-            if (t.pauseResolver) { t.pauseResolver(); t.pauseResolver = undefined }
-          }
+          session.cancelTransfer(payload.fileId as string)
           return
         }
         if (payload.type === 'collab-file-unavailable') {
@@ -757,12 +712,12 @@ export function useCollabGuest(roomId: string) {
         }
         if (payload.type === 'collab-cancel-all') {
           // Abort any inbound transfers from this mesh peer.
-          for (const f of current.inProgressFiles!.values()) {
+          for (const f of current.meta.inProgressFiles.values()) {
             if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.mesh.cancelAll.streamAbort', e) } }
             dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: f.fileId, payload: { status: 'error', error: 'cancelled' } })
           }
-          current.inProgressFiles!.clear()
-          current.currentDownloadFileId = null
+          current.meta.inProgressFiles.clear()
+          current.meta.currentDownloadFileId = null
           return
         }
         return
@@ -777,30 +732,31 @@ export function useCollabGuest(roomId: string) {
   }, [teardownMesh, sendFileToRequester, clearDownloadTimeout])
 
   // Handle an inbound chunk over a mesh connection (per-peer routing).
-  async function handleMeshChunk(entry: PeerConnection, rawData: ArrayBuffer): Promise<void> {
-    if (!entry.encryptKey) return
+  async function handleMeshChunk(entry: MeshEntry, rawData: ArrayBuffer): Promise<void> {
+    const { session, meta } = entry
+    if (!session.encryptKey) return
     const buffer = rawData instanceof ArrayBuffer ? rawData : (rawData as ArrayBufferView).buffer as ArrayBuffer
     let parsed: { fileIndex: number; chunkIndex: number; data: ArrayBuffer }
     try { parsed = parseChunkPacket(buffer) } catch (e) { log.warn('useCollabGuest.handleMeshChunk.parse', e); return }
     if (parsed.fileIndex !== 0xFFFE) return
-    const currentFileId = entry.currentDownloadFileId
+    const currentFileId = meta.currentDownloadFileId
     if (!currentFileId) return
-    const inFlight = entry.inProgressFiles!.get(currentFileId)
+    const inFlight = meta.inProgressFiles.get(currentFileId)
     if (!inFlight) return
     try {
-      const decrypted = await decryptChunk(entry.encryptKey, new Uint8Array(parsed.data))
+      const decrypted = await decryptChunk(session.encryptKey, new Uint8Array(parsed.data))
       const bytes = new Uint8Array(decrypted)
 
       if (inFlight.stream) {
         await inFlight.stream.write(bytes)
       } else {
         if (inFlight.receivedBytes + bytes.byteLength > FALLBACK_MAX_BYTES) {
-          entry.inProgressFiles!.delete(currentFileId)
-          if (entry.currentDownloadFileId === currentFileId) entry.currentDownloadFileId = null
+          meta.inProgressFiles.delete(currentFileId)
+          if (meta.currentDownloadFileId === currentFileId) meta.currentDownloadFileId = null
           dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: currentFileId, payload: { status: 'error', error: FALLBACK_TOO_LARGE_MSG } })
           try {
-            const enc = await encryptJSON(entry.encryptKey, { type: 'collab-cancel-file', fileId: currentFileId } satisfies CollabInnerMsg)
-            entry.conn?.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
+            const enc = await encryptJSON(session.encryptKey, { type: 'collab-cancel-file', fileId: currentFileId } satisfies CollabInnerMsg)
+            session.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
           } catch (e) { log.warn('useCollabGuest.handleMeshChunk.cancelTooLarge', e) }
           return
         }
@@ -814,12 +770,12 @@ export function useCollabGuest(roomId: string) {
     } catch (e) {
       log.warn('useCollabGuest.handleMeshChunk.decrypt', e)
       if (inFlight.stream) { try { await inFlight.stream.abort() } catch (e2) { log.warn('useCollabGuest.handleMeshChunk.streamAbort', e2) } }
-      entry.inProgressFiles!.delete(currentFileId)
-      if (entry.currentDownloadFileId === currentFileId) entry.currentDownloadFileId = null
+      meta.inProgressFiles.delete(currentFileId)
+      if (meta.currentDownloadFileId === currentFileId) meta.currentDownloadFileId = null
       dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: inFlight.fileId, payload: { status: 'error', progress: 0, error: 'decrypt failed' } })
       try {
-        const enc = await encryptJSON(entry.encryptKey, { type: 'collab-cancel-file', fileId: inFlight.fileId } satisfies CollabInnerMsg)
-        entry.conn?.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
+        const enc = await encryptJSON(session.encryptKey, { type: 'collab-cancel-file', fileId: inFlight.fileId } satisfies CollabInnerMsg)
+        session.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
       } catch (e) { log.warn('useCollabGuest.handleMeshChunk.cancelAfterFail', e) }
     }
   }
@@ -858,7 +814,6 @@ export function useCollabGuest(roomId: string) {
     async function connect(): Promise<void> {
       if (destroyedRef.current) return
       attemptRef.current++
-      // Nit — simplify ternary to just 'joining' outside of reconnect.
       dispatchRoom({ type: 'SET_STATUS', payload: isReconnect ? 'reconnecting' : 'joining' })
 
       const config = useTurnRef.current ? await getWithTurn() : STUN_ONLY
@@ -906,34 +861,40 @@ export function useCollabGuest(roomId: string) {
         dispatchRoom({ type: 'SET', payload: { myPeerId: myId } })
 
         const conn = peer.connect(roomId, { reliable: true })
-        hostConnRef.current = conn
+        // Allocate the host session up front. It sits in 'connecting'
+        // until conn.on('open') ticks the transition.
+        const hostSess = createSession({
+          conn,
+          role: 'collab-guest-host',
+          generation: attemptRef.current,
+        })
+        hostSessionRef.current = hostSess
+        hostSess.dispatch({ type: 'connect-start' })
         setPeerInstance(peer)
-        let disconnectHandled = false
 
         conn.on('open', () => {
           if (destroyedRef.current) return
           clearTimeout(timeoutRef.current!)
           reconnectCountRef.current = 0
+          hostSess.dispatch({ type: 'conn-open' })
 
-          if (rttPollerRef.current) rttPollerRef.current.cleanup()
-          rttPollerRef.current = setupRTTPolling(conn.peerConnection, setRtt)
+          hostSess.rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
 
           function handleDisconnect(reason: string): void {
-            if (disconnectHandled || destroyedRef.current) return
-            disconnectHandled = true
-            if (heartbeatRef.current) heartbeatRef.current.cleanup()
-            if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
-            if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
+            if (destroyedRef.current) return
+            if (hostSessionRef.current !== hostSess) return
+            if (hostSess.state === 'closed' || hostSess.state === 'error' || hostSess.state === 'kicked') return
             if (directFailTimerRef.current) { clearTimeout(directFailTimerRef.current); directFailTimerRef.current = null }
             try { conn.removeAllListeners() } catch (e) { log.warn('useCollabGuest.handleDisconnect.removeListeners', e) }
 
-            // H10 — unblock any of our outgoing uploads so their pause
-            // loop exits and the async iterator can return cleanly.
-            activeTransfersRef.current.forEach(t => {
-              t.aborted = true
-              if (t.pauseResolver) { t.pauseResolver(); t.pauseResolver = undefined }
-            })
-            activeTransfersRef.current.clear()
+            // Session-level close: heartbeat, rttPoller, keyExchangeTimeout,
+            // every active outbound transfer on this session aborted +
+            // pauseResolved.
+            hostSess.close('peer-disconnect')
+            // Drop routes that pointed at the host session.
+            for (const [fid, route] of activeTransferRoutesRef.current) {
+              if (route.session === hostSess) activeTransferRoutesRef.current.delete(fid)
+            }
 
             // Close every mesh connection on host disconnect.
             for (const mpid of Array.from(peerConnectionsRef.current.keys())) {
@@ -944,13 +905,8 @@ export function useCollabGuest(roomId: string) {
             setMessages(prev => [...prev, { text: reason, from: 'system', time: Date.now(), self: false }].slice(-500))
 
             if (reconnectCountRef.current < MAX_RECONNECTS) {
-              chunkQueueRef.current = Promise.resolve()
-              imageSendQueueRef.current = Promise.resolve()
-              inProgressImageRef.current = null
               inProgressFilesRef.current.clear()
               currentDownloadFileIdRef.current = null
-              decryptKeyRef.current = null
-              keyPairRef.current = null
               reconnectCountRef.current++
               peer.destroy()
               const token = reconnectTokenRef.current
@@ -963,12 +919,13 @@ export function useCollabGuest(roomId: string) {
             }
           }
 
-          heartbeatRef.current = setupHeartbeat(conn, {
+          hostSess.heartbeat = setupHeartbeat(conn, {
             onDead: () => handleDisconnect('Connection lost'),
           })
 
-          keyExchangeTimeoutRef.current = setTimeout(() => {
-            if (!decryptKeyRef.current && !destroyedRef.current) {
+          hostSess.keyExchangeTimeout = setTimeout(() => {
+            if (hostSessionRef.current !== hostSess) return
+            if (!hostSess.encryptKey && !destroyedRef.current) {
               console.warn('Key exchange timed out')
               conn.close()
             }
@@ -1009,20 +966,22 @@ export function useCollabGuest(roomId: string) {
           }
 
           dispatchRoom({ type: 'SET_STATUS', payload: 'connected' })
-          conn.send({ type: 'join', nickname: myNameRef.current } satisfies CollabUnencryptedMsg)
+          try { hostSess.send({ type: 'join', nickname: myNameRef.current } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabGuest.sendJoin', e) }
         })
 
         conn.on('data', async (data: unknown) => {
           if (destroyedRef.current) return
-          if (heartbeatRef.current) heartbeatRef.current.markAlive()
+          if (hostSess.heartbeat) hostSess.heartbeat.markAlive()
 
-          // Nit — tighter binary detection.
+          // Binary chunk detection.
           if (
             data instanceof ArrayBuffer ||
             data instanceof Uint8Array ||
             (data && typeof data === 'object' && typeof (data as { byteLength?: unknown }).byteLength === 'number' && !(data as { type?: unknown }).type)
           ) {
-            chunkQueueRef.current = chunkQueueRef.current.then(() => handleChunk(data as ArrayBuffer)).catch(e => log.warn('useCollabGuest.chunkQueue', e))
+            hostSess.chunkQueue = hostSess.chunkQueue
+              .then(() => handleChunk(hostSess, data as ArrayBuffer))
+              .catch(e => log.warn('useCollabGuest.chunkQueue', e))
             return
           }
 
@@ -1043,7 +1002,7 @@ export function useCollabGuest(roomId: string) {
 
           if (msg.type === 'pong') return
           if (msg.type === 'ping') {
-            try { conn.send({ type: 'pong', ts: msg.ts } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabGuest.sendPong', e) }
+            try { hostSess.send({ type: 'pong', ts: msg.ts } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabGuest.sendPong', e) }
             return
           }
 
@@ -1069,21 +1028,20 @@ export function useCollabGuest(roomId: string) {
 
           // Key exchange
           if (msg.type === 'public-key') {
-            if (decryptKeyRef.current) return
+            if (hostSess.encryptKey) return
             try {
-              if (!keyPairRef.current) {
-                keyPairRef.current = await generateKeyPair()
+              if (!hostSess.keyPair) {
+                hostSess.setKeyPair(await generateKeyPair())
               }
-              const pubKeyBytes = await exportPublicKey(keyPairRef.current.publicKey)
-              conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies CollabUnencryptedMsg)
+              const pubKeyBytes = await exportPublicKey(hostSess.keyPair!.publicKey)
+              try { hostSess.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabGuest.sendPublicKey', e) }
               const remoteKeyBytes = new Uint8Array(msg.key as number[])
               const { encryptKey, fingerprint } = await finalizeKeyExchange({
-                localPrivate: keyPairRef.current.privateKey,
+                localPrivate: hostSess.keyPair!.privateKey,
                 localPublic: pubKeyBytes,
                 remotePublic: remoteKeyBytes,
               })
-              decryptKeyRef.current = encryptKey
-              if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
+              hostSess.dispatch({ type: 'keys-derived', encryptKey, fingerprint })
               dispatchRoom({ type: 'SET', payload: { fingerprint } })
             } catch {
               dispatchRoom({ type: 'SET_STATUS', payload: 'error' })
@@ -1143,9 +1101,9 @@ export function useCollabGuest(roomId: string) {
 
           // Encrypted chat
           if (msg.type === 'chat-encrypted') {
-            if (!decryptKeyRef.current || !msg.data) return
+            if (!hostSess.encryptKey || !msg.data) return
             let payload: Record<string, unknown> = {}
-            try { payload = await decryptJSON(decryptKeyRef.current, msg.data as string) }
+            try { payload = await decryptJSON(hostSess.encryptKey, msg.data as string) }
             catch (e) { log.warn('useCollabGuest.chatEncrypted.decrypt', e); return }
             setMessages(prev => [...prev, {
               id: payload.id as string | undefined,
@@ -1162,20 +1120,20 @@ export function useCollabGuest(roomId: string) {
 
           // Collab encrypted messages
           if (msg.type === 'collab-msg-enc') {
-            if (!decryptKeyRef.current || !msg.data) return
+            if (!hostSess.encryptKey || !msg.data) return
             let payload: CollabInnerMsg
-            try { payload = await decryptJSON<CollabInnerMsg>(decryptKeyRef.current, msg.data as string) }
+            try { payload = await decryptJSON<CollabInnerMsg>(hostSess.encryptKey, msg.data as string) }
             catch (e) { log.warn('useCollabGuest.collabMsgEnc.decrypt', e); return }
 
             // File list from host — C2 validation.
             if (payload.type === 'collab-file-list') {
-              const raw = payload.files
-              if (!Array.isArray(raw)) {
+              const rawFiles = payload.files
+              if (!Array.isArray(rawFiles)) {
                 console.warn('dropped invalid collab-file-list: not an array')
                 return
               }
               const validated: SharedFile[] = []
-              for (const f of raw) {
+              for (const f of rawFiles) {
                 const sanitized = sanitizeSharedFile(f)
                 if (!sanitized) {
                   log.warn('useCollabGuest.collabFileList.invalid', validateSharedFile(f) ?? 'unknown')
@@ -1288,7 +1246,7 @@ export function useCollabGuest(roomId: string) {
 
             // File transfer end — H2.
             if (payload.type === 'collab-file-end') {
-              await chunkQueueRef.current
+              await hostSess.chunkQueue
               const fileId = payload.fileId as string
               const inFlight = inProgressFilesRef.current.get(fileId)
               if (!inFlight) return
@@ -1351,7 +1309,7 @@ export function useCollabGuest(roomId: string) {
             // `requesterPeerId: gs.peerId` where gs is the sender. Without
             // the match-check below, ANY guest could cancel another guest's
             // in-flight download just by knowing the fileId (both are in the
-            // shared file list broadcast). `transfer.targetPeerId` is null
+            // shared file list broadcast). `route.targetPeerId` is null
             // when the host itself is the requester, which matches a
             // missing requesterPeerId on host-originated control messages.
             if (
@@ -1361,25 +1319,15 @@ export function useCollabGuest(roomId: string) {
             ) {
               const fileId = payload.fileId as string
               const requesterPeerId = (payload.requesterPeerId as string | undefined) ?? null
-              const transfer = activeTransfersRef.current.get(fileId)
-              if (!transfer || transfer.targetPeerId !== requesterPeerId) return
+              const route = activeTransferRoutesRef.current.get(fileId)
+              if (!route || route.targetPeerId !== requesterPeerId) return
 
               if (payload.type === 'collab-pause-file') {
-                transfer.paused = true
+                route.session.pauseTransfer(fileId)
               } else if (payload.type === 'collab-resume-file') {
-                transfer.paused = false
-                if (transfer.pauseResolver) {
-                  transfer.pauseResolver()
-                  transfer.pauseResolver = undefined
-                }
+                route.session.resumeTransfer(fileId)
               } else {
-                // collab-cancel-file
-                transfer.aborted = true
-                transfer.paused = false
-                if (transfer.pauseResolver) {
-                  transfer.pauseResolver()
-                  transfer.pauseResolver = undefined
-                }
+                route.session.cancelTransfer(fileId)
               }
               return
             }
@@ -1438,25 +1386,25 @@ export function useCollabGuest(roomId: string) {
           // Mid-stream abort — clear the in-progress image slot so a new
           // start message doesn't see leftover bytes from the stalled one.
           if (msg.type === 'chat-image-abort') {
-            inProgressImageRef.current = null
+            hostSess.inProgressImage = null
             return
           }
 
           // Chat image handling
           if (msg.type === 'chat-image-start-enc') {
-            if (!decryptKeyRef.current || !msg.data) return
-            let meta: Record<string, unknown>
-            try { meta = await decryptJSON(decryptKeyRef.current, msg.data as string) }
+            if (!hostSess.encryptKey || !msg.data) return
+            let metaPayload: Record<string, unknown>
+            try { metaPayload = await decryptJSON(hostSess.encryptKey, msg.data as string) }
             catch (e) { log.warn('useCollabGuest.chatImageStart.decrypt', e); return }
-            inProgressImageRef.current = {
-              id: meta.id as string | undefined,
-              mime: meta.mime as string || 'application/octet-stream',
-              size: meta.size as number || 0,
-              text: meta.text as string || '',
-              replyTo: meta.replyTo as { text: string; from: string; time: number } | null,
-              time: meta.time as number || Date.now(),
+            hostSess.inProgressImage = {
+              id: metaPayload.id as string | undefined,
+              mime: metaPayload.mime as string || 'application/octet-stream',
+              size: metaPayload.size as number || 0,
+              text: metaPayload.text as string || '',
+              replyTo: metaPayload.replyTo as { text: string; from: string; time: number } | null,
+              time: metaPayload.time as number || Date.now(),
               from: msg.from as string || 'Sender',
-              duration: meta.duration as number | undefined,
+              duration: metaPayload.duration as number | undefined,
               chunks: [],
               receivedBytes: 0,
             }
@@ -1464,9 +1412,9 @@ export function useCollabGuest(roomId: string) {
           }
 
           if (msg.type === 'chat-image-end-enc') {
-            await chunkQueueRef.current
-            const inFlight = inProgressImageRef.current
-            inProgressImageRef.current = null
+            await hostSess.chunkQueue
+            const inFlight = hostSess.inProgressImage
+            hostSess.inProgressImage = null
             if (!inFlight) return
             const blob = new Blob(inFlight.chunks as unknown as BlobPart[], { type: inFlight.mime })
             const url = URL.createObjectURL(blob)
@@ -1487,18 +1435,14 @@ export function useCollabGuest(roomId: string) {
         })
 
         conn.on('close', () => {
-          if (destroyedRef.current || disconnectHandled) return
-          disconnectHandled = true
+          if (destroyedRef.current) return
+          if (hostSessionRef.current !== hostSess) return
+          if (hostSess.state === 'closed' || hostSess.state === 'error' || hostSess.state === 'kicked') return
           try { conn.removeAllListeners() } catch (e) { log.warn('useCollabGuest.close.removeListeners', e) }
-          if (heartbeatRef.current) heartbeatRef.current.cleanup()
-          if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
-
-          // H10 — unblock paused transfers
-          activeTransfersRef.current.forEach(t => {
-            t.aborted = true
-            if (t.pauseResolver) { t.pauseResolver(); t.pauseResolver = undefined }
-          })
-          activeTransfersRef.current.clear()
+          hostSess.close('peer-disconnect')
+          for (const [fid, route] of activeTransferRoutesRef.current) {
+            if (route.session === hostSess) activeTransferRoutesRef.current.delete(fid)
+          }
 
           setRtt(null)
           setMessages(prev => [...prev, { text: 'Disconnected from room', from: 'system', time: Date.now(), self: false }].slice(-500))
@@ -1531,8 +1475,8 @@ export function useCollabGuest(roomId: string) {
   }, [roomId, sendFileToRequester, clearDownloadTimeout, setupMeshConnection, initiateMeshIfNeeded, teardownMesh])
 
   // Handle incoming chunks (H2 — per-fileId routing, H9 — fallback cap).
-  async function handleChunk(rawData: ArrayBuffer): Promise<void> {
-    if (!decryptKeyRef.current) return
+  async function handleChunk(hostSess: Session, rawData: ArrayBuffer): Promise<void> {
+    if (!hostSess.encryptKey) return
     const buffer = rawData instanceof ArrayBuffer ? rawData : (rawData as ArrayBufferView).buffer as ArrayBuffer
 
     let parsed: { fileIndex: number; chunkIndex: number; data: ArrayBuffer }
@@ -1542,11 +1486,11 @@ export function useCollabGuest(roomId: string) {
 
     // Chat image chunk
     if (parsed.fileIndex === CHAT_IMAGE_FILE_INDEX) {
-      if (!inProgressImageRef.current) return
+      if (!hostSess.inProgressImage) return
       try {
-        const decrypted = await decryptChunk(decryptKeyRef.current, new Uint8Array(parsed.data))
-        inProgressImageRef.current.chunks.push(new Uint8Array(decrypted))
-        inProgressImageRef.current.receivedBytes += decrypted.byteLength
+        const decrypted = await decryptChunk(hostSess.encryptKey, new Uint8Array(parsed.data))
+        hostSess.inProgressImage.chunks.push(new Uint8Array(decrypted))
+        hostSess.inProgressImage.receivedBytes += decrypted.byteLength
       } catch (e) { log.warn('useCollabGuest.handleChunk.chatImageDecrypt', e) }
       return
     }
@@ -1558,7 +1502,7 @@ export function useCollabGuest(roomId: string) {
       const inFlight = inProgressFilesRef.current.get(currentFileId)
       if (!inFlight) return
       try {
-        const decrypted = await decryptChunk(decryptKeyRef.current, new Uint8Array(parsed.data))
+        const decrypted = await decryptChunk(hostSess.encryptKey, new Uint8Array(parsed.data))
         const bytes = new Uint8Array(decrypted)
 
         if (inFlight.stream) {
@@ -1571,7 +1515,7 @@ export function useCollabGuest(roomId: string) {
             dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: currentFileId, payload: { status: 'error', error: FALLBACK_TOO_LARGE_MSG } })
             // M7 — notify sender to stop.
             try {
-              const enc = await encryptJSON(decryptKeyRef.current!, { type: 'collab-cancel-file', fileId: currentFileId } satisfies CollabInnerMsg)
+              const enc = await encryptJSON(hostSess.encryptKey, { type: 'collab-cancel-file', fileId: currentFileId } satisfies CollabInnerMsg)
               sendToHost({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
             } catch (e) { log.warn('useCollabGuest.handleChunk.cancelTooLarge', e) }
             return
@@ -1597,7 +1541,7 @@ export function useCollabGuest(roomId: string) {
         dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: inFlight.fileId, payload: { status: 'error', progress: 0, error: 'decrypt failed' } })
         // M7 — tell sender to stop streaming.
         try {
-          const enc = await encryptJSON(decryptKeyRef.current!, { type: 'collab-cancel-file', fileId: inFlight.fileId } satisfies CollabInnerMsg)
+          const enc = await encryptJSON(hostSess.encryptKey, { type: 'collab-cancel-file', fileId: inFlight.fileId } satisfies CollabInnerMsg)
           sendToHost({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
         } catch (e) { log.warn('useCollabGuest.handleChunk.cancelAfterFail', e) }
       }
@@ -1614,7 +1558,8 @@ export function useCollabGuest(roomId: string) {
       if (!isMountedRef.current) return
       // Fresh network → fresh reconnect budget.
       reconnectCountRef.current = 0
-      if (hostConnRef.current && !hostConnRef.current.open && !destroyedRef.current) {
+      const sess = hostSessionRef.current
+      if (sess && !sess.conn.open && !destroyedRef.current) {
         startConnection(useTurnRef.current, true)
       }
     }
@@ -1624,7 +1569,8 @@ export function useCollabGuest(roomId: string) {
       if (!isMountedRef.current || destroyedRef.current) return
       if (typeof document === 'undefined') return
       if (document.visibilityState !== 'visible') return
-      if (heartbeatRef.current) heartbeatRef.current.markAlive()
+      const hb = hostSessionRef.current?.heartbeat
+      if (hb) hb.markAlive()
       const p = peerRef.current
       if (p && p.disconnected && !p.destroyed) {
         try { p.reconnect() } catch (e) { log.warn('useCollabGuest.visibilityReconnect', e) }
@@ -1638,13 +1584,10 @@ export function useCollabGuest(roomId: string) {
       isMountedRef.current = false
       destroyedRef.current = true
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
-      if (heartbeatRef.current) heartbeatRef.current.cleanup()
-      if (rttPollerRef.current) rttPollerRef.current.cleanup()
-      if (keyExchangeTimeoutRef.current) clearTimeout(keyExchangeTimeoutRef.current)
       if (directFailTimerRef.current) clearTimeout(directFailTimerRef.current)
       Object.values(typingTimeouts.current).forEach(clearTimeout)
       typingTimeouts.current = {}
-      // Abort any in-progress file streams
+      // Abort any in-progress file streams (downloads from host)
       inProgressFilesRef.current.forEach(f => {
         if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.unmount.streamAbort', e) } }
       })
@@ -1652,25 +1595,27 @@ export function useCollabGuest(roomId: string) {
       currentDownloadFileIdRef.current = null
       downloadTimeoutsRef.current.forEach(t => clearTimeout(t))
       downloadTimeoutsRef.current.clear()
-      if (hostConnRef.current) {
-        try { hostConnRef.current.removeAllListeners() } catch (e) { log.warn('useCollabGuest.unmount.hostRemoveListeners', e) }
-        try { hostConnRef.current.close() } catch (e) { log.warn('useCollabGuest.unmount.hostClose', e) }
+      // Host session — idempotent close runs heartbeat/rttPoller/timer/
+      // active-transfer cleanup.
+      const hostSess = hostSessionRef.current
+      if (hostSess) {
+        try { hostSess.conn.removeAllListeners() } catch (e) { log.warn('useCollabGuest.unmount.hostRemoveListeners', e) }
+        hostSess.close('session-abort')
+        try { hostSess.conn.close() } catch (e) { log.warn('useCollabGuest.unmount.hostClose', e) }
+        hostSessionRef.current = null
       }
-      // Close every mesh connection on unmount.
+      // Close every mesh session on unmount.
       for (const entry of peerConnectionsRef.current.values()) {
-        if (entry.keyExchangeTimeout) clearTimeout(entry.keyExchangeTimeout)
-        if (entry.heartbeat) { try { entry.heartbeat.cleanup() } catch (e) { log.warn('useCollabGuest.unmount.meshHeartbeat', e) } }
-        if (entry.inProgressFiles) {
-          for (const f of entry.inProgressFiles.values()) {
-            if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.unmount.meshStreamAbort', e) } }
-          }
+        for (const f of entry.meta.inProgressFiles.values()) {
+          if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.unmount.meshStreamAbort', e) } }
         }
-        if (entry.conn) {
-          try { entry.conn.removeAllListeners() } catch (e) { log.warn('useCollabGuest.unmount.meshRemoveListeners', e) }
-          try { entry.conn.close() } catch (e) { log.warn('useCollabGuest.unmount.meshClose', e) }
-        }
+        entry.meta.inProgressFiles.clear()
+        entry.session.close('session-abort')
+        try { entry.session.conn.removeAllListeners() } catch (e) { log.warn('useCollabGuest.unmount.meshRemoveListeners', e) }
+        try { entry.session.conn.close() } catch (e) { log.warn('useCollabGuest.unmount.meshClose', e) }
       }
       peerConnectionsRef.current.clear()
+      activeTransferRoutesRef.current.clear()
       if (peerRef.current) peerRef.current.destroy()
       imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch (e) { log.warn('useCollabGuest.unmount.revokeBlob', e) } })
       setPeerInstance(null)
@@ -1679,10 +1624,11 @@ export function useCollabGuest(roomId: string) {
 
   // Submit password — H12: clear passwordError on new attempt.
   const submitPassword = useCallback(async (password: string): Promise<void> => {
-    if (!decryptKeyRef.current) return
+    const hostSess = hostSessionRef.current
+    if (!hostSess?.encryptKey) return
     dispatchRoom({ type: 'SET', payload: { passwordError: false } })
     try {
-      const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(password))
+      const encrypted = await encryptChunk(hostSess.encryptKey, new TextEncoder().encode(password))
       sendToHost({ type: 'password-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)) } satisfies CollabUnencryptedMsg)
     } catch (e) { log.warn('useCollabGuest.submitPassword', e) }
   }, [sendToHost])
@@ -1690,7 +1636,8 @@ export function useCollabGuest(roomId: string) {
   // Send message
   const sendMessage = useCallback(async (text: string, image?: { bytes: Uint8Array; mime: string; duration?: number } | string, replyTo?: ChatMessage['replyTo']): Promise<void> => {
     if (!text && !image) return
-    if (!decryptKeyRef.current) return
+    const hostSess = hostSessionRef.current
+    if (!hostSess?.encryptKey) return
     const now = Date.now()
     if (now - lastMsgTime.current < 100) return
     lastMsgTime.current = now
@@ -1707,12 +1654,11 @@ export function useCollabGuest(roomId: string) {
       imageBlobUrlsRef.current.push(localUrl)
       setMessages(prev => [...prev, { id, text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }].slice(-500))
 
-      imageSendQueueRef.current = imageSendQueueRef.current
+      hostSess.imageSendQueue = hostSess.imageSendQueue
         .then(() => {
-          const conn = hostConnRef.current
-          const key = decryptKeyRef.current
-          if (!conn || !key) return
-          return streamImageToHost(conn, key, bytes, mime, text || '', replyTo ?? null, nickname, time, duration, id)
+          const sess = hostSessionRef.current
+          if (!sess || !sess.encryptKey) return
+          return streamImageToHost(sess.conn, sess.encryptKey, bytes, mime, text || '', replyTo ?? null, nickname, time, duration, id)
         })
         .catch(err => { console.warn('image send failed:', err) })
       return
@@ -1723,7 +1669,7 @@ export function useCollabGuest(roomId: string) {
     setMessages(prev => [...prev, { id, text, image: imgStr, replyTo, from: 'You', time, self: true }].slice(-500))
     const payload = JSON.stringify({ id, text, image: imgStr, replyTo })
     try {
-      const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(payload))
+      const encrypted = await encryptChunk(hostSess.encryptKey, new TextEncoder().encode(payload))
       sendToHost({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), nickname, time } satisfies CollabUnencryptedMsg)
     } catch (e) { log.warn('useCollabGuest.sendMessage.chatEncrypt', e) }
   }, [sendToHost, nickname])
@@ -1779,6 +1725,11 @@ export function useCollabGuest(roomId: string) {
   // rename that never happened; one entry point is enough.
   const enableRelay = useCallback((): void => {
     destroyedRef.current = true
+    const hostSess = hostSessionRef.current
+    if (hostSess) {
+      hostSess.close('session-abort')
+      hostSessionRef.current = null
+    }
     if (peerRef.current) peerRef.current.destroy()
     setTimeout(() => startConnection(true), 100)
   }, [startConnection])
@@ -1797,17 +1748,17 @@ export function useCollabGuest(roomId: string) {
     // Same cleanup as unmount for mesh entries — any pending per-peer
     // StreamSaver writer would otherwise outlive the room.
     for (const entry of peerConnectionsRef.current.values()) {
-      if (entry.keyExchangeTimeout) clearTimeout(entry.keyExchangeTimeout)
-      if (entry.heartbeat) { try { entry.heartbeat.cleanup() } catch (e) { log.warn('useCollabGuest.leave.meshHeartbeat', e) } }
-      if (entry.inProgressFiles) {
-        for (const f of entry.inProgressFiles.values()) {
-          if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.leave.meshStreamAbort', e) } }
-        }
-        entry.inProgressFiles.clear()
+      for (const f of entry.meta.inProgressFiles.values()) {
+        if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.leave.meshStreamAbort', e) } }
       }
+      entry.meta.inProgressFiles.clear()
+      entry.session.close('session-abort')
     }
-    if (hostConnRef.current) {
-      try { hostConnRef.current.close() } catch (e) { log.warn('useCollabGuest.leave.hostClose', e) }
+    const hostSess = hostSessionRef.current
+    if (hostSess) {
+      hostSess.close('session-abort')
+      try { hostSess.conn.close() } catch (e) { log.warn('useCollabGuest.leave.hostClose', e) }
+      hostSessionRef.current = null
     }
     if (peerRef.current) peerRef.current.destroy()
     dispatchRoom({ type: 'SET_STATUS', payload: 'closed' })
@@ -1830,16 +1781,17 @@ export function useCollabGuest(roomId: string) {
     const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
     const owner = file?.owner
     const meshConn = owner ? peerConnectionsRef.current.get(owner) : undefined
-    if (meshConn?.conn && meshConn.encryptKey) {
+    if (meshConn?.session.conn && meshConn.session.encryptKey) {
       try {
-        const enc = await encryptJSON(meshConn.encryptKey, { type, fileId } satisfies CollabInnerMsg)
-        meshConn.conn.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
+        const enc = await encryptJSON(meshConn.session.encryptKey, { type, fileId } satisfies CollabInnerMsg)
+        meshConn.session.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
         return
       } catch (e) { log.warn(`useCollabGuest.${type}.mesh`, e) }
     }
-    if (!decryptKeyRef.current) return
+    const hostSess = hostSessionRef.current
+    if (!hostSess?.encryptKey) return
     try {
-      const enc = await encryptJSON(decryptKeyRef.current, { type, fileId } satisfies CollabInnerMsg)
+      const enc = await encryptJSON(hostSess.encryptKey, { type, fileId } satisfies CollabInnerMsg)
       sendToHost({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
     } catch (e) { log.warn(`useCollabGuest.${type}.viaHost`, e) }
   }, [sendToHost])
@@ -1869,11 +1821,11 @@ export function useCollabGuest(roomId: string) {
     // Abort a mesh download for the same fileId on the owner's mesh entry.
     const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
     const meshEntry = file?.owner ? peerConnectionsRef.current.get(file.owner) : undefined
-    const meshInFlight = meshEntry?.inProgressFiles?.get(fileId)
+    const meshInFlight = meshEntry?.meta.inProgressFiles.get(fileId)
     if (meshEntry && meshInFlight) {
       if (meshInFlight.stream) { try { meshInFlight.stream.abort() } catch (e) { log.warn('useCollabGuest.cancelFile.meshStreamAbort', e) } }
-      meshEntry.inProgressFiles!.delete(fileId)
-      if (meshEntry.currentDownloadFileId === fileId) meshEntry.currentDownloadFileId = null
+      meshEntry.meta.inProgressFiles.delete(fileId)
+      if (meshEntry.meta.currentDownloadFileId === fileId) meshEntry.meta.currentDownloadFileId = null
     }
 
     dispatchFiles({ type: 'REMOVE_DOWNLOAD', fileId })
@@ -1909,12 +1861,11 @@ export function useCollabGuest(roomId: string) {
 
     // Abort every in-progress stream on each mesh peer we were pulling from.
     peerConnectionsRef.current.forEach(entry => {
-      if (!entry.inProgressFiles) return
-      entry.inProgressFiles.forEach(f => {
+      entry.meta.inProgressFiles.forEach(f => {
         if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.cancelAll.meshStreamAbort', e) } }
       })
-      entry.inProgressFiles.clear()
-      entry.currentDownloadFileId = null
+      entry.meta.inProgressFiles.clear()
+      entry.meta.currentDownloadFileId = null
     })
 
     downloadTimeoutsRef.current.forEach(t => clearTimeout(t))

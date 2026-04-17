@@ -19,16 +19,20 @@ cross off.
   `src/net/protocol.ts` (P1.B) is now both-directions locked — all
   five hooks dispatch inbound against the discriminated unions and
   construct outbound literals with `satisfies`. `src/net/session.ts`
-  (P1.C) shipped with 38 unit tests; **useReceiver, useSender,
-  and useCollabHost are all migrated** onto it — the receiver
-  collapses ten per-connection refs into a single `sessionRef`;
-  the sender splits every ConnState into `ConnEntry = { session,
-  meta }` with pause/resume/cancel driven by `TransferHandle`;
-  the collab host replaces `GuestConnection` with
-  `GuestEntry = { session, meta }` keyed by `session.peerId`
-  and preserves M12/M19/host-origin-rewrite invariants. `tsc`
-  clean; 309/309 tests pass. Next commit migrates the collab
-  guest host-conn (step 5).
+  (P1.C) shipped with 38 unit tests; **all five hooks are now on
+  Session**: useReceiver collapses ten per-connection refs into a
+  single `sessionRef`; useSender splits every ConnState into
+  `ConnEntry = { session, meta }` with pause/resume/cancel driven
+  by `TransferHandle`; useCollabHost replaces `GuestConnection`
+  with `GuestEntry = { session, meta }` keyed by `session.peerId`
+  and preserves M12/M19/host-origin-rewrite invariants;
+  useCollabGuest carries a `hostSessionRef` plus a
+  `Map<peerId, MeshEntry>` for mesh peers, with a routing table
+  (`activeTransferRoutesRef`) that keeps the P0 fix #3 origin
+  check intact. `ConnState`, `GuestConnection`, `PeerConnection`,
+  and `ActiveTransfer` are all deleted. `tsc` clean; 309/309
+  tests pass. P1.C is complete; P1.D (`transferEngine.ts`) is
+  the next optional milestone.
 - **P2.1 done.** All ~200 silent `catch {}` in the four hooks migrated to
   `log.warn()` — 191 log sites across useSender/useReceiver/useCollabHost/
   useCollabGuest. Diagnostics buffer captures everything. "Copy diagnostics"
@@ -342,6 +346,35 @@ every role).
   `finalizeKeyExchange`.
 - Full suite: **308/308** (271 prior + 37 new). `tsc --noEmit` clean.
 
+- **Step 5 [DONE]** — useCollabGuest migrated onto `Session`
+  (host-conn + mesh peers in one commit — they share too many code
+  paths to split cleanly). Two sessions per hook:
+  `hostSessionRef: Session | null` (role `'collab-guest-host'`)
+  replaces the 10 per-host refs (`hostConnRef`, `decryptKeyRef`,
+  `keyPairRef`, `heartbeatRef`, `rttPollerRef`,
+  `keyExchangeTimeoutRef`, `chunkQueueRef`, `imageSendQueueRef`,
+  `inProgressImageRef`, `hostUploadQueueRef`), and
+  `peerConnectionsRef: Map<peerId, MeshEntry>` with
+  `MeshEntry = { session, meta: MeshMeta }` replaces
+  `PeerConnection`. `MeshMeta` keeps two fields:
+  `inProgressFiles` + `currentDownloadFileId` (per-mesh-peer
+  inbound-download bookkeeping that doesn't belong on Session).
+  Mesh sessions use role `'collab-guest-mesh'`.
+  `activeTransfersRef` became
+  `activeTransferRoutesRef: Map<fileId, { targetPeerId, session }>`
+  — a router whose actual `TransferHandle` lives inside
+  `session.activeTransfers`. A host-relayed `collab-pause-file` /
+  `resume-file` / `cancel-file` looks up the route, enforces the
+  P0 fix #3 origin check (`route.targetPeerId === requesterPeerId`),
+  then dispatches `session.pauseTransfer` / `resumeTransfer` /
+  `cancelTransfer`. Mesh-side control messages skip the origin
+  check (the mesh conn is authenticated end-to-end via ECDH) and
+  go straight to `session.pauseTransfer` etc. Host-session
+  teardown on disconnect closes every mesh session and clears
+  router entries; M22 `leave()` mirrors the unmount teardown.
+  Guest line count: **2023 -> 1974** (-49 lines) — the
+  `PeerConnection` interface and every per-mesh-peer field
+  block are gone, replaced by Session + MeshMeta.
 - **Step 4 [DONE]** — useCollabHost migrated onto `Session`.
   `GuestConnection` replaced by `GuestEntry = { session, meta }`
   where `GuestMeta` is two fields: `chunker` + `progressThrottler`.
@@ -422,11 +455,12 @@ every role).
 1. ~~Migrate useReceiver.~~ Done (step 2).
 2. ~~Migrate useSender.~~ Done (step 3).
 3. ~~Migrate useCollabHost guests.~~ Done (step 4).
-4. Migrate useCollabGuest host-conn.
-5. Migrate useCollabGuest mesh peers.
-6. Delete `PeerConnection` type declaration once the mesh
-   migration lands. (`ConnState`, `GuestConnection`, and
-   `ActiveTransfer` are already gone as of steps 3 and 4.)
+4. ~~Migrate useCollabGuest host-conn.~~ Done (step 5).
+5. ~~Migrate useCollabGuest mesh peers.~~ Done (step 5 — same
+   commit; the two paths share enough code that splitting them
+   would have needed a throwaway intermediate state).
+6. ~~Delete `ConnState`, `GuestConnection`, `PeerConnection`.~~
+   All three done as of steps 3-5. P1.C is complete.
 
 ### P1.C — historical note (kept for reference)
 
