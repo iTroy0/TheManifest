@@ -1708,32 +1708,70 @@ export function useCollabGuest(roomId: string) {
   }, [])
 
   // Pause/Resume/Cancel functions
+  // Send a control message (pause / resume / cancel) to the peer that is
+  // actually serving this file. The earlier implementation sent plaintext
+  // `{ type: 'collab-pause-file', fileId }` directly over the host data
+  // channel, but the host only reads control messages inside the encrypted
+  // `collab-msg-enc` envelope — the plain messages were silently dropped,
+  // which is why the UI buttons did nothing.
+  //
+  // Route selection mirrors requestFile: prefer the mesh connection to the
+  // file owner when available, otherwise relay through the host.
+  const sendFileControl = useCallback(async (
+    fileId: string,
+    type: 'collab-pause-file' | 'collab-resume-file' | 'collab-cancel-file',
+  ): Promise<void> => {
+    const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
+    const owner = file?.owner
+    const meshConn = owner ? peerConnectionsRef.current.get(owner) : undefined
+    if (meshConn?.conn && meshConn.encryptKey) {
+      try {
+        const enc = await encryptJSON(meshConn.encryptKey, { type, fileId })
+        meshConn.conn.send({ type: 'collab-msg-enc', data: enc })
+        return
+      } catch (e) { log.warn(`useCollabGuest.${type}.mesh`, e) }
+    }
+    if (!decryptKeyRef.current) return
+    try {
+      const enc = await encryptJSON(decryptKeyRef.current, { type, fileId })
+      sendToHost({ type: 'collab-msg-enc', data: enc })
+    } catch (e) { log.warn(`useCollabGuest.${type}.viaHost`, e) }
+  }, [sendToHost])
+
   const pauseFile = useCallback((fileId: string): void => {
-    const conn = hostConnRef.current
-    if (!conn) return
-    conn.send({ type: 'collab-pause-file', fileId })
+    void sendFileControl(fileId, 'collab-pause-file')
     dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'paused' } })
-  }, [])
+  }, [sendFileControl])
 
   const resumeFile = useCallback((fileId: string): void => {
-    const conn = hostConnRef.current
-    if (!conn) return
-    conn.send({ type: 'collab-resume-file', fileId })
+    void sendFileControl(fileId, 'collab-resume-file')
     dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'downloading' } })
-  }, [])
+  }, [sendFileControl])
 
   const cancelFile = useCallback((fileId: string): void => {
-    sendToHost({ type: 'collab-cancel-file', fileId })
+    void sendFileControl(fileId, 'collab-cancel-file')
     clearDownloadTimeout(fileId)
-    // Clear the in-progress state if it matches.
+
+    // Abort a host-relayed download if that's the active path for this fileId.
     const cur = inProgressFilesRef.current.get(fileId)
     if (cur) {
       if (cur.stream) { try { cur.stream.abort() } catch (e) { log.warn('useCollabGuest.cancelFile.streamAbort', e) } }
       inProgressFilesRef.current.delete(fileId)
       if (currentDownloadFileIdRef.current === fileId) currentDownloadFileIdRef.current = null
     }
+
+    // Abort a mesh download for the same fileId on the owner's mesh entry.
+    const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
+    const meshEntry = file?.owner ? peerConnectionsRef.current.get(file.owner) : undefined
+    const meshInFlight = meshEntry?.inProgressFiles?.get(fileId)
+    if (meshEntry && meshInFlight) {
+      if (meshInFlight.stream) { try { meshInFlight.stream.abort() } catch (e) { log.warn('useCollabGuest.cancelFile.meshStreamAbort', e) } }
+      meshEntry.inProgressFiles!.delete(fileId)
+      if (meshEntry.currentDownloadFileId === fileId) meshEntry.currentDownloadFileId = null
+    }
+
     dispatchFiles({ type: 'REMOVE_DOWNLOAD', fileId })
-  }, [sendToHost, clearDownloadTimeout])
+  }, [sendFileControl, clearDownloadTimeout])
 
   // Clear a download entry (e.g. dismiss an error chip)
   const clearDownload = useCallback((fileId: string): void => {
