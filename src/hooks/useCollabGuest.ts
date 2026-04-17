@@ -61,6 +61,13 @@ interface PeerConnection {
   currentDownloadFileId?: string | null
   // In-flight downloads arriving over this mesh connection.
   inProgressFiles?: Map<string, InProgressFile>
+  // Serializes outbound file transfers on this conn so two concurrent
+  // sendFileToRequester calls can't interleave packets. PeerJS's binary
+  // chunked serializer reassembles by order on a single data channel,
+  // and two simultaneous loops write overlapping sends that corrupt into
+  // AES-GCM auth-tag failures on the receiver (seen as
+  // `handleMeshChunk.decrypt` warns after "Download all").
+  uploadQueue?: Promise<void>
 }
 
 interface InProgressFile {
@@ -159,6 +166,13 @@ export function useCollabGuest(roomId: string) {
   // P2P connections to other guests (mesh). H7 uses these for guest→guest
   // uploads when a direct mesh connection exists.
   const peerConnectionsRef = useRef<Map<string, PeerConnection>>(new Map())
+
+  // Serializes outbound file transfers routed through the host data channel
+  // (mirror of PeerConnection.uploadQueue for the mesh path). When the user
+  // hits "Download all", the host fan-outs N concurrent requests to this
+  // guest, and this queue is what keeps their send loops from interleaving
+  // on the single host data channel.
+  const hostUploadQueueRef = useRef<Promise<void>>(Promise.resolve())
 
   // For calls
   const [peerInstance, setPeerInstance] = useState<InstanceType<typeof Peer> | null>(null)
@@ -313,6 +327,7 @@ export function useCollabGuest(roomId: string) {
     let conn: DataConnection | null = null
     let key: CryptoKey | null = null
     let targetPeerId: string | null = null
+    let meshEntry: PeerConnection | null = null
 
     if (requesterPeerId) {
       const mesh = peerConnectionsRef.current.get(requesterPeerId)
@@ -320,6 +335,7 @@ export function useCollabGuest(roomId: string) {
         conn = mesh.conn
         key = mesh.encryptKey
         targetPeerId = requesterPeerId
+        meshEntry = mesh
       } else {
         // H7 — no direct mesh. Tell the requester we can't send (through host).
         if (decryptKeyRef.current && hostConnRef.current) {
@@ -343,81 +359,101 @@ export function useCollabGuest(roomId: string) {
 
     if (!conn || !key) return
 
+    // Hold locals in typed constants so the closure below doesn't need
+    // non-null assertions every line.
+    const sendConn = conn
+    const sendKey = key
+
     // Create transfer state for this file, tagged with its target so
     // teardownMesh can abort only the uploads that were going to a dead conn.
     const transfer = { fileId, targetPeerId, aborted: false, paused: false, pauseResolver: undefined as (() => void) | undefined }
     activeTransfersRef.current.set(fileId, transfer)
 
-    const chunker = new AdaptiveChunker()
-    const throttler = new ProgressThrottler(80)
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+    // Actual transfer loop. Runs inside an uploadQueue so concurrent
+    // requests on the same data channel can't interleave packets — peerjs
+    // reassembles by order on a single channel, and interleaved sends
+    // corrupt into AES-GCM auth-tag failures on the receiver (the
+    // `handleMeshChunk.decrypt` warn seen after "Download all").
+    const runTransfer = async (): Promise<void> => {
+      const chunker = new AdaptiveChunker()
+      const throttler = new ProgressThrottler(80)
+      const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
 
-    dispatchTransfer({ type: 'START_UPLOAD', fileId, fileName: file.name })
+      dispatchTransfer({ type: 'START_UPLOAD', fileId, fileName: file.name })
 
-    // Send file start
-    try {
-      const startMsg = await encryptJSON(key, {
-        type: 'collab-file-start',
-        fileId,
-        name: file.name,
-        size: file.size,
-        totalChunks,
-      })
-      conn.send({ type: 'collab-msg-enc', data: startMsg })
-    } catch {
+      try {
+        const startMsg = await encryptJSON(sendKey, {
+          type: 'collab-file-start',
+          fileId,
+          name: file.name,
+          size: file.size,
+          totalChunks,
+        })
+        sendConn.send({ type: 'collab-msg-enc', data: startMsg })
+      } catch {
+        activeTransfersRef.current.delete(fileId)
+        dispatchTransfer({ type: 'END_UPLOAD', fileId })
+        return
+      }
+
+      let chunkIndex = 0
+      let fileSent = 0
+      const startTime = Date.now()
+
+      for await (const { buffer: chunkData } of chunkFileAdaptive(file, chunker)) {
+        if (transfer.aborted) {
+          activeTransfersRef.current.delete(fileId)
+          dispatchTransfer({ type: 'END_UPLOAD', fileId })
+          return
+        }
+
+        while (transfer.paused && !transfer.aborted) {
+          await new Promise<void>(resolve => {
+            transfer.pauseResolver = resolve
+          })
+        }
+        if (transfer.aborted) {
+          activeTransfersRef.current.delete(fileId)
+          dispatchTransfer({ type: 'END_UPLOAD', fileId })
+          return
+        }
+
+        const dataToSend = await encryptChunk(sendKey, new Uint8Array(chunkData))
+        const packet = buildChunkPacket(0xFFFE, chunkIndex, dataToSend)
+        sendConn.send(packet)
+        await waitForBufferDrain(sendConn)
+
+        chunkIndex++
+        fileSent += chunkData.byteLength
+
+        if (throttler.shouldUpdate()) {
+          const elapsed = (Date.now() - startTime) / 1000
+          const speed = elapsed > 0.5 ? fileSent / elapsed : 0
+          const progress = file.size > 0 ? Math.min(100, Math.round((fileSent / file.size) * 100)) : 0
+          dispatchTransfer({ type: 'UPDATE_UPLOAD', fileId, progress, speed })
+        }
+      }
+
+      if (!transfer.aborted) {
+        try {
+          const endMsg = await encryptJSON(sendKey, { type: 'collab-file-end', fileId })
+          sendConn.send({ type: 'collab-msg-enc', data: endMsg })
+        } catch (e) { log.warn('useCollabGuest.mesh.sendFileEnd', e) }
+      }
+
       activeTransfersRef.current.delete(fileId)
       dispatchTransfer({ type: 'END_UPLOAD', fileId })
-      return
     }
 
-    let chunkIndex = 0
-    let fileSent = 0
-    const startTime = Date.now()
-
-    for await (const { buffer: chunkData } of chunkFileAdaptive(file, chunker)) {
-      if (transfer.aborted) {
-        activeTransfersRef.current.delete(fileId)
-        dispatchTransfer({ type: 'END_UPLOAD', fileId })
-        return
-      }
-
-      while (transfer.paused && !transfer.aborted) {
-        await new Promise<void>(resolve => {
-          transfer.pauseResolver = resolve
-        })
-      }
-      if (transfer.aborted) {
-        activeTransfersRef.current.delete(fileId)
-        dispatchTransfer({ type: 'END_UPLOAD', fileId })
-        return
-      }
-
-      const dataToSend = await encryptChunk(key, new Uint8Array(chunkData))
-      const packet = buildChunkPacket(0xFFFE, chunkIndex, dataToSend)
-      conn.send(packet)
-      await waitForBufferDrain(conn)
-
-      chunkIndex++
-      fileSent += chunkData.byteLength
-
-      if (throttler.shouldUpdate()) {
-        const elapsed = (Date.now() - startTime) / 1000
-        const speed = elapsed > 0.5 ? fileSent / elapsed : 0
-        const progress = file.size > 0 ? Math.min(100, Math.round((fileSent / file.size) * 100)) : 0
-        dispatchTransfer({ type: 'UPDATE_UPLOAD', fileId, progress, speed })
-      }
-    }
-
-    // Send file end
-    if (!transfer.aborted) {
-      try {
-        const endMsg = await encryptJSON(key, { type: 'collab-file-end', fileId })
-        conn.send({ type: 'collab-msg-enc', data: endMsg })
-      } catch (e) { log.warn('useCollabGuest.mesh.sendFileEnd', e) }
-    }
-
-    activeTransfersRef.current.delete(fileId)
-    dispatchTransfer({ type: 'END_UPLOAD', fileId })
+    const prevQueue = meshEntry
+      ? (meshEntry.uploadQueue ?? Promise.resolve())
+      : hostUploadQueueRef.current
+    const next = prevQueue
+      .then(runTransfer)
+      .catch(e => log.warn('useCollabGuest.sendFileToRequester.queue', e))
+    if (meshEntry) meshEntry.uploadQueue = next
+    else hostUploadQueueRef.current = next
+    await next
   }, [sendToHost])
 
   // ── Mesh (guest ↔ guest) ─────────────────────────────────────────────
@@ -474,6 +510,7 @@ export function useCollabGuest(roomId: string) {
       pendingRemoteKey: null,
       heartbeat: null,
       chunkQueue: Promise.resolve(),
+      uploadQueue: Promise.resolve(),
       currentDownloadFileId: null,
       inProgressFiles: new Map(),
     }

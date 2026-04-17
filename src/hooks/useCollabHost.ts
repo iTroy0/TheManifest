@@ -85,6 +85,11 @@ interface GuestConnection {
   }
   chunkQueue: Promise<void>
   imageSendQueue: Promise<void>
+  // Serializes outbound file transfers on this conn so two concurrent
+  // sendFileToRequester calls can't interleave packets. Guarding against
+  // the "Download all" fan-out that previously corrupted ciphertext
+  // framing and produced AES-GCM auth-tag failures on the downloader.
+  uploadQueue: Promise<void>
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────
@@ -417,77 +422,89 @@ export function useCollabHost() {
     if (!gs.chunker) gs.chunker = new AdaptiveChunker()
     if (!gs.progressThrottler) gs.progressThrottler = new ProgressThrottler(80)
 
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+    // Hoist the key so the inner closure doesn't re-check nullability on
+    // every send — we already refused above if encryptKey was missing.
+    const encryptKey = gs.encryptKey
 
-    dispatchTransfer({ type: 'START_UPLOAD', fileId, fileName: file.name })
+    const runTransfer = async (): Promise<void> => {
+      const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
 
-    // Send file start
-    try {
-      const startMsg = await encryptJSON(gs.encryptKey, {
-        type: 'collab-file-start',
-        fileId,
-        name: file.name,
-        size: file.size,
-        totalChunks,
-      })
-      gs.conn.send({ type: 'collab-msg-enc', data: startMsg })
-    } catch (e) {
-      log.warn('useCollabHost.sendFileToRequester.start', e)
+      dispatchTransfer({ type: 'START_UPLOAD', fileId, fileName: file.name })
+
+      try {
+        const startMsg = await encryptJSON(encryptKey, {
+          type: 'collab-file-start',
+          fileId,
+          name: file.name,
+          size: file.size,
+          totalChunks,
+        })
+        gs.conn.send({ type: 'collab-msg-enc', data: startMsg })
+      } catch (e) {
+        log.warn('useCollabHost.sendFileToRequester.start', e)
+        gs.activeTransfers.delete(fileId)
+        dispatchTransfer({ type: 'END_UPLOAD', fileId })
+        return
+      }
+
+      let chunkIndex = 0
+      let fileSent = 0
+      const startTime = Date.now()
+
+      for await (const { buffer: chunkData } of chunkFileAdaptive(file, gs.chunker!)) {
+        if (transfer.aborted) {
+          gs.activeTransfers.delete(fileId)
+          dispatchTransfer({ type: 'END_UPLOAD', fileId })
+          return
+        }
+
+        while (transfer.paused && !transfer.aborted) {
+          await new Promise<void>(resolve => {
+            transfer.pauseResolver = resolve
+          })
+        }
+        if (transfer.aborted) {
+          gs.activeTransfers.delete(fileId)
+          dispatchTransfer({ type: 'END_UPLOAD', fileId })
+          return
+        }
+
+        const dataToSend = await encryptChunk(encryptKey, new Uint8Array(chunkData))
+        const packet = buildChunkPacket(0xFFFE, chunkIndex, dataToSend) // 0xFFFE for collab file
+        gs.conn.send(packet)
+        await waitForBufferDrain(gs.conn)
+
+        chunkIndex++
+        fileSent += chunkData.byteLength
+
+        if (gs.progressThrottler!.shouldUpdate()) {
+          const elapsed = (Date.now() - startTime) / 1000
+          const speed = elapsed > 0.5 ? fileSent / elapsed : 0
+          const progress = file.size > 0 ? Math.min(100, Math.round((fileSent / file.size) * 100)) : 0
+          dispatchTransfer({ type: 'UPDATE_UPLOAD', fileId, progress, speed })
+        }
+      }
+
+      if (!transfer.aborted) {
+        try {
+          const endMsg = await encryptJSON(encryptKey, { type: 'collab-file-end', fileId })
+          gs.conn.send({ type: 'collab-msg-enc', data: endMsg })
+        } catch (e) { log.warn('useCollabHost.sendFileToRequester.end', e) }
+      }
+
       gs.activeTransfers.delete(fileId)
       dispatchTransfer({ type: 'END_UPLOAD', fileId })
-      return
     }
 
-    let chunkIndex = 0
-    let fileSent = 0
-    const startTime = Date.now()
-
-    for await (const { buffer: chunkData } of chunkFileAdaptive(file, gs.chunker)) {
-      // Check if transfer was cancelled
-      if (transfer.aborted) {
-        gs.activeTransfers.delete(fileId)
-        dispatchTransfer({ type: 'END_UPLOAD', fileId })
-        return
-      }
-
-      // Handle pause
-      while (transfer.paused && !transfer.aborted) {
-        await new Promise<void>(resolve => {
-          transfer.pauseResolver = resolve
-        })
-      }
-      if (transfer.aborted) {
-        gs.activeTransfers.delete(fileId)
-        dispatchTransfer({ type: 'END_UPLOAD', fileId })
-        return
-      }
-
-      const dataToSend = await encryptChunk(gs.encryptKey!, new Uint8Array(chunkData))
-      const packet = buildChunkPacket(0xFFFE, chunkIndex, dataToSend) // 0xFFFE for collab file
-      gs.conn.send(packet)
-      await waitForBufferDrain(gs.conn)
-
-      chunkIndex++
-      fileSent += chunkData.byteLength
-
-      if (gs.progressThrottler!.shouldUpdate()) {
-        const elapsed = (Date.now() - startTime) / 1000
-        const speed = elapsed > 0.5 ? fileSent / elapsed : 0
-        const progress = file.size > 0 ? Math.min(100, Math.round((fileSent / file.size) * 100)) : 0
-        dispatchTransfer({ type: 'UPDATE_UPLOAD', fileId, progress, speed })
-      }
-    }
-
-    // Send file end
-    if (!transfer.aborted) {
-      try {
-        const endMsg = await encryptJSON(gs.encryptKey, { type: 'collab-file-end', fileId })
-        gs.conn.send({ type: 'collab-msg-enc', data: endMsg })
-      } catch (e) { log.warn('useCollabHost.sendFileToRequester.end', e) }
-    }
-
-    gs.activeTransfers.delete(fileId)
-    dispatchTransfer({ type: 'END_UPLOAD', fileId })
+    // Serialize concurrent transfers on this guest's conn. Without this,
+    // peerjs's binary framing interleaves packets from parallel loops and
+    // the downloader sees AES-GCM auth-tag failures — the trigger for the
+    // "Download all" decrypt warns.
+    const next = gs.uploadQueue
+      .then(runTransfer)
+      .catch(e => log.warn('useCollabHost.sendFileToRequester.queue', e))
+    gs.uploadQueue = next
+    await next
   }, [])
 
   // Initialize peer connection
@@ -534,6 +551,7 @@ export function useCollabHost() {
         activeTransfers: new Map(),
         chunkQueue: Promise.resolve(),
         imageSendQueue: Promise.resolve(),
+        uploadQueue: Promise.resolve(),
       }
       connectionsRef.current.set(gs.peerId, gs)
 
