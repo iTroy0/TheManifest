@@ -169,9 +169,9 @@ export function useSender() {
         setMessages(prev => [...prev, { text: `${name} joined`, from: 'system', time: Date.now(), self: false }].slice(-500))
         const count = connectionsRef.current.size + 1
         connectionsRef.current.forEach((other, id) => {
-          try { other.conn.send({ type: 'online-count', count }) } catch (e) { log.warn('useSender.announceJoin.onlineCount', e) }
+          try { other.conn.send({ type: 'online-count', count } satisfies PortalMsg) } catch (e) { log.warn('useSender.announceJoin.onlineCount', e) }
           if (id !== cId) {
-            try { other.conn.send({ type: 'system-msg', text: `${name} joined`, time: Date.now() }) } catch (e) { log.warn('useSender.announceJoin.systemMsg', e) }
+            try { other.conn.send({ type: 'system-msg', text: `${name} joined`, time: Date.now() } satisfies PortalMsg) } catch (e) { log.warn('useSender.announceJoin.systemMsg', e) }
           }
         })
       }
@@ -235,7 +235,7 @@ export function useSender() {
         // inject attacker-controlled filenames/sizes before trust is established.
         try {
           const encrypted = await encryptJSON(key, manifest)
-          c.send({ type: 'manifest-enc', data: encrypted })
+          c.send({ type: 'manifest-enc', data: encrypted } satisfies PortalMsg)
         } catch (e) {
           console.warn('Failed to encrypt manifest:', e)
         }
@@ -271,8 +271,8 @@ export function useSender() {
           const newCount = connectionsRef.current.size + 1
           connectionsRef.current.forEach(cs => {
             try {
-              cs.conn.send({ type: 'online-count', count: newCount })
-              cs.conn.send({ type: 'system-msg', text: `${name} ${reason}`, time: Date.now() })
+              cs.conn.send({ type: 'online-count', count: newCount } satisfies PortalMsg)
+              cs.conn.send({ type: 'system-msg', text: `${name} ${reason}`, time: Date.now() } satisfies PortalMsg)
             } catch (e) { log.warn('useSender.handlePeerDisconnect.broadcast', e) }
           })
           if (connectionsRef.current.size === 0) {
@@ -299,7 +299,7 @@ export function useSender() {
 
         connState.keyPair = await generateKeyPair()
         const pubKeyBytes = await exportPublicKey(connState.keyPair.publicKey)
-        conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
+        conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies PortalMsg)
 
         // ECDH key exchange timeout
         connState.keyExchangeTimeout = setTimeout(() => {
@@ -323,7 +323,7 @@ export function useSender() {
             dispatchConn({ type: 'SET', payload: { fingerprint } })
             connState.pendingRemoteKey = null
             if (passwordRef.current) {
-              conn.send({ type: 'password-required' })
+              conn.send({ type: 'password-required' } satisfies PortalMsg)
             } else {
               await sendManifest(conn, connState.encryptKey)
             }
@@ -369,7 +369,7 @@ export function useSender() {
 
         if (msg.type === 'pong') return
         if (msg.type === 'ping') {
-          try { conn.send({ type: 'pong', ts: msg.ts }) } catch (e) { log.warn('useSender.sendPong', e) }
+          try { conn.send({ type: 'pong', ts: msg.ts } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendPong', e) }
           return
         }
 
@@ -393,7 +393,7 @@ export function useSender() {
             dispatchConn({ type: 'SET', payload: { fingerprint } })
 
             if (passwordRef.current) {
-              conn.send({ type: 'password-required' })
+              conn.send({ type: 'password-required' } satisfies PortalMsg)
             } else {
               await sendManifest(conn, connState.encryptKey)
             }
@@ -409,14 +409,14 @@ export function useSender() {
           // Exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 30s
           const backoffMs = Math.min(30_000, 1000 * Math.pow(2, Math.max(0, globalPasswordAttempts.current - 1)))
           if (now - lastPasswordAttemptTime.current < backoffMs) {
-            try { conn.send({ type: 'password-rate-limited' }) } catch (e) { log.warn('useSender.passwordRateLimited.send', e) }
+            try { conn.send({ type: 'password-rate-limited' } satisfies PortalMsg) } catch (e) { log.warn('useSender.passwordRateLimited.send', e) }
             return
           }
           lastPasswordAttemptTime.current = now
           globalPasswordAttempts.current += 1
           connState.passwordAttempts = (connState.passwordAttempts || 0) + 1
           if (globalPasswordAttempts.current > 8 || connState.passwordAttempts > 5) {
-            conn.send({ type: 'password-locked' })
+            conn.send({ type: 'password-locked' } satisfies PortalMsg)
             conn.close()
             return
           }
@@ -425,7 +425,7 @@ export function useSender() {
             try {
               const decrypted = await decryptChunk(connState.encryptKey, base64ToUint8(msg.data as string))
               password = new TextDecoder().decode(decrypted)
-            } catch (e) { log.warn('useSender.passwordDecrypt', e); conn.send({ type: 'password-wrong' }); return }
+            } catch (e) { log.warn('useSender.passwordDecrypt', e); conn.send({ type: 'password-wrong' } satisfies PortalMsg); return }
           }
           const expected = passwordRef.current || ''
           const matched = password.length > 0 && timingSafeEqual(password, expected)
@@ -439,14 +439,14 @@ export function useSender() {
             globalPasswordAttempts.current = 0
             lastPasswordAttemptTime.current = 0
             connState.passwordAttempts = 0
-            conn.send({ type: 'password-accepted' })
+            conn.send({ type: 'password-accepted' } satisfies PortalMsg)
             if (connState.pendingJoinAnnounce) {
               connState.pendingJoinAnnounce = false
               announceJoin(connState, connId)
             }
             if (connState.encryptKey) await sendManifest(conn, connState.encryptKey)
           } else {
-            conn.send({ type: 'password-wrong' })
+            conn.send({ type: 'password-wrong' } satisfies PortalMsg)
           }
           return
         }
@@ -454,7 +454,7 @@ export function useSender() {
         if (msg.type === 'typing') {
           handleTypingMessage(msg.nickname as string, setTypingUsers, typingTimeouts.current)
           connectionsRef.current.forEach((cs, id) => {
-            if (id !== connId) { try { cs.conn.send({ type: 'typing', nickname: msg.nickname }) } catch (e) { log.warn('useSender.relayTyping', e) } }
+            if (id !== connId) { try { cs.conn.send({ type: 'typing', nickname: msg.nickname } satisfies PortalMsg) } catch (e) { log.warn('useSender.relayTyping', e) } }
           })
           return
         }
@@ -490,7 +490,7 @@ export function useSender() {
             if (id !== connId && cs.encryptKey) {
               try {
                 const encrypted = await encryptChunk(cs.encryptKey, new TextEncoder().encode(relayPayload))
-                cs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: msg.nickname || 'Anon', time: msg.time })
+                cs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: msg.nickname || 'Anon', time: msg.time } satisfies PortalMsg)
               } catch (e) { log.warn('useSender.chatEncrypted.relay', e) }
             }
           }
@@ -592,7 +592,7 @@ export function useSender() {
           setMessages(prev => [...prev, { text: changeMsg, from: 'system', time: Date.now(), self: false }].slice(-500))
           connectionsRef.current.forEach((cs, id) => {
             if (id !== connId) {
-              try { cs.conn.send({ type: 'system-msg', text: changeMsg, time: Date.now() }) } catch (e) { log.warn('useSender.nicknameChange.broadcast', e) }
+              try { cs.conn.send({ type: 'system-msg', text: changeMsg, time: Date.now() } satisfies PortalMsg) } catch (e) { log.warn('useSender.nicknameChange.broadcast', e) }
             }
           })
           return
@@ -669,12 +669,12 @@ export function useSender() {
               // Tell the receiver why the file is missing from the batch so
               // it can surface the failure instead of silently completing
               // with fewer files than requested.
-              try { conn.send({ type: 'file-skipped', index: idx, reason: (e as Error)?.message || 'send-failed' }) }
+              try { conn.send({ type: 'file-skipped', index: idx, reason: (e as Error)?.message || 'send-failed' } satisfies PortalMsg) }
               catch (sendErr) { log.warn('useSender.requestAll.skipNotify', sendErr) }
             }
           }
           if (!connState.abort.aborted) {
-            conn.send({ type: 'batch-done' })
+            conn.send({ type: 'batch-done' } satisfies PortalMsg)
             endTransfer()
           }
         }
@@ -687,12 +687,12 @@ export function useSender() {
             try { await sendSingleFile(conn, filesRef.current, i, 0, connState, connState.encryptKey, aggregateUI) }
             catch (e) {
               log.warn('useSender.ready.skip', e)
-              try { conn.send({ type: 'file-skipped', index: i, reason: (e as Error)?.message || 'send-failed' }) }
+              try { conn.send({ type: 'file-skipped', index: i, reason: (e as Error)?.message || 'send-failed' } satisfies PortalMsg) }
               catch (sendErr) { log.warn('useSender.ready.skipNotify', sendErr) }
             }
           }
           if (!connState.abort.aborted) {
-            conn.send({ type: 'done' })
+            conn.send({ type: 'done' } satisfies PortalMsg)
             connState.transferring = false
             dispatchConn({ type: 'SET_STATUS', payload: 'done' })
           }
@@ -729,8 +729,8 @@ export function useSender() {
         const count = connectionsRef.current.size + 1
         connectionsRef.current.forEach(cs => {
           try {
-            cs.conn.send({ type: 'online-count', count })
-            cs.conn.send({ type: 'system-msg', text: `${name} left`, time: Date.now() })
+            cs.conn.send({ type: 'online-count', count } satisfies PortalMsg)
+            cs.conn.send({ type: 'system-msg', text: `${name} left`, time: Date.now() } satisfies PortalMsg)
           } catch (e) { log.warn('useSender.close.broadcastLeft', e) }
         })
         if (connectionsRef.current.size === 0) {
@@ -790,7 +790,7 @@ export function useSender() {
 
     function handleBeforeUnload(): void {
       connectionsRef.current.forEach(cs => {
-        try { cs.conn.send({ type: 'closing' }) } catch (e) { log.warn('useSender.beforeUnload.sendClosing', e) }
+        try { cs.conn.send({ type: 'closing' } satisfies PortalMsg) } catch (e) { log.warn('useSender.beforeUnload.sendClosing', e) }
       })
     }
     window.addEventListener('beforeunload', handleBeforeUnload)
@@ -849,7 +849,7 @@ export function useSender() {
       try {
         if (cs.encryptKey) {
           const encrypted = await encryptChunk(cs.encryptKey, new TextEncoder().encode(payload))
-          cs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: senderName, time })
+          cs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: senderName, time } satisfies PortalMsg)
         }
       } catch (e) { log.warn('useSender.sendMessage.chatEncrypt', e) }
     }
@@ -857,7 +857,7 @@ export function useSender() {
 
   const sendTyping = useCallback((): void => {
     connectionsRef.current.forEach(cs => {
-      try { cs.conn.send({ type: 'typing', nickname: senderName }) } catch (e) { log.warn('useSender.sendTyping', e) }
+      try { cs.conn.send({ type: 'typing', nickname: senderName } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendTyping', e) }
     })
   }, [senderName])
 
@@ -877,7 +877,7 @@ export function useSender() {
       return m
     }))
     connectionsRef.current.forEach(cs => {
-      try { cs.conn.send({ type: 'reaction', msgId, emoji, nickname: senderName }) } catch (e) { log.warn('useSender.sendReaction', e) }
+      try { cs.conn.send({ type: 'reaction', msgId, emoji, nickname: senderName } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendReaction', e) }
     })
   }, [senderName])
 
@@ -888,7 +888,7 @@ export function useSender() {
     const msg = `${oldName} is now ${newName.trim()}`
     setMessages(prev => [...prev, { text: msg, from: 'system', time: Date.now(), self: false }].slice(-500))
     connectionsRef.current.forEach(cs => {
-      try { cs.conn.send({ type: 'system-msg', text: msg, time: Date.now() }) } catch (e) { log.warn('useSender.changeSenderName.broadcast', e) }
+      try { cs.conn.send({ type: 'system-msg', text: msg, time: Date.now() } satisfies PortalMsg) } catch (e) { log.warn('useSender.changeSenderName.broadcast', e) }
     })
   }, [senderName])
 
@@ -899,7 +899,7 @@ export function useSender() {
       if (!cs.encryptKey) continue
       try {
         const encrypted = await encryptJSON(cs.encryptKey, manifest)
-        cs.conn.send({ type: 'manifest-enc', data: encrypted })
+        cs.conn.send({ type: 'manifest-enc', data: encrypted } satisfies PortalMsg)
       } catch (e) { console.warn('Failed to broadcast manifest:', e) }
     }
   }, [])
@@ -956,7 +956,7 @@ async function sendSingleFile(
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
 
   connState.currentFileIndex = index
-  conn.send({ type: 'file-start', name: file.name, size: file.size, index, totalChunks, resumeFrom: startChunk })
+  conn.send({ type: 'file-start', name: file.name, size: file.size, index, totalChunks, resumeFrom: startChunk } satisfies PortalMsg)
 
   let chunkIndex = 0
   let fileSent = startChunk * CHUNK_SIZE
@@ -965,7 +965,7 @@ async function sendSingleFile(
   for await (const { buffer: chunkData } of chunkFileAdaptive(file, connState.chunker)) {
     if (connState.abort.aborted) return
     if (connState.cancelledFiles?.has(index)) {
-      conn.send({ type: 'file-cancelled', index })
+      conn.send({ type: 'file-cancelled', index } satisfies PortalMsg)
       connState.cancelledFiles.delete(index)
       return
     }
@@ -975,7 +975,7 @@ async function sendSingleFile(
       delete connState.pauseResolvers![index]
       if (connState.abort.aborted) return
       if (connState.cancelledFiles?.has(index)) {
-        conn.send({ type: 'file-cancelled', index })
+        conn.send({ type: 'file-cancelled', index } satisfies PortalMsg)
         connState.cancelledFiles.delete(index)
         return
       }
@@ -1013,7 +1013,7 @@ async function sendSingleFile(
   }
 
   if (!connState.abort.aborted) {
-    conn.send({ type: 'file-end', index })
+    conn.send({ type: 'file-end', index } satisfies PortalMsg)
     connState.progress[file.name] = 100
     connState.progressThrottler!.forceUpdate()
     aggregateUI()
@@ -1064,7 +1064,7 @@ async function handleHostChunk(connState: ConnState, rawData: ArrayBuffer | Arra
 // image slot. Without this, a mid-stream failure left `inProgressImage`
 // holding accumulated bytes until the next chat-image-start cleared it.
 function notifyAbort(conn: DataConnection): void {
-  try { conn.send({ type: 'chat-image-abort' }) } catch (e) { log.warn('streamImageToConn.notifyAbort', e) }
+  try { conn.send({ type: 'chat-image-abort' } satisfies PortalMsg) } catch (e) { log.warn('streamImageToConn.notifyAbort', e) }
 }
 
 async function streamImageToConn(
@@ -1082,7 +1082,7 @@ async function streamImageToConn(
   try {
     const startPayload = JSON.stringify({ mime, size: bytes.byteLength, text, replyTo, time, duration })
     const encStart = await encryptChunk(key, new TextEncoder().encode(startPayload))
-    conn.send({ type: 'chat-image-start-enc', data: uint8ToBase64(new Uint8Array(encStart)), from, time })
+    conn.send({ type: 'chat-image-start-enc', data: uint8ToBase64(new Uint8Array(encStart)), from, time } satisfies PortalMsg)
   } catch (e) { log.warn('streamImageToConn.start', e); return }
 
   const chunker = new AdaptiveChunker()
@@ -1105,7 +1105,7 @@ async function streamImageToConn(
 
   try {
     const encEnd = await encryptChunk(key, new TextEncoder().encode('{}'))
-    conn.send({ type: 'chat-image-end-enc', data: uint8ToBase64(new Uint8Array(encEnd)) })
+    conn.send({ type: 'chat-image-end-enc', data: uint8ToBase64(new Uint8Array(encEnd)) } satisfies PortalMsg)
   } catch (e) {
     // Receiver will see incomplete image; the next start clears it
     log.warn('streamImageToConn.end', e)
