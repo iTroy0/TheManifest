@@ -395,6 +395,7 @@ export function useCollabGuest(roomId: string) {
             name: file.name,
             size: file.size,
             totalChunks,
+            packetIndex: 0, // TODO(task-10/11): wire from collabWire.packetIndexFor
           } satisfies CollabInnerMsg)
           sendSession.send({ type: 'collab-msg-enc', data: startMsg } satisfies CollabUnencryptedMsg)
         } catch {

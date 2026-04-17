@@ -442,6 +442,7 @@ export function useCollabHost() {
           name: file.name,
           size: file.size,
           totalChunks,
+          packetIndex: 0, // TODO(task-10/11): wire from collabWire.packetIndexFor
         } satisfies CollabInnerMsg)
         session.send({ type: 'collab-msg-enc', data: startMsg } satisfies CollabUnencryptedMsg)
       } catch (e) {

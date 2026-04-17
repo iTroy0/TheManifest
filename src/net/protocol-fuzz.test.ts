@@ -155,6 +155,7 @@ function genCollabInnerMsg(): CollabInnerMsg {
       name: randomString(randInt(1, 64)),
       size: randInt(0, 1_000_000),
       totalChunks: randInt(1, 1000),
+      packetIndex: Math.floor(Math.random() * 0xFFFE),
     }
     case 2: return { type: 'collab-file-end', fileId: randomFileId() }
     case 3: return { type: 'collab-file-shared', file: null, from: randomPeerId() }

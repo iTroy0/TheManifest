@@ -44,6 +44,7 @@ describe('encodeEnc / decodeEnc', () => {
       name: 'doc.pdf',
       size: 123,
       totalChunks: 4,
+      packetIndex: 0, // TODO(task-10/11): wire from collabWire.packetIndexFor
     }
     const envelope = await encodeEnc<CollabInnerMsg>(key, original)
     const decoded = await decodeEnc<CollabInnerMsg>(key, envelope)

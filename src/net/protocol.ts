@@ -145,7 +145,7 @@ export interface CollabEnvelope { type: 'collab-msg-enc'; data: string }
 // runtime validator.
 export type CollabInnerMsg =
   | { type: 'collab-request-file'; fileId: string; owner?: string; requesterPeerId?: string }
-  | { type: 'collab-file-start'; fileId: string; name: string; size: number; totalChunks: number }
+  | { type: 'collab-file-start'; fileId: string; name: string; size: number; totalChunks: number; packetIndex: number }
   | { type: 'collab-file-end'; fileId: string }
   | { type: 'collab-file-shared'; file: unknown; from?: string }
   | { type: 'collab-file-removed'; fileId: string; from?: string }
