@@ -2,6 +2,7 @@ import Peer, { DataConnection } from 'peerjs'
 import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
 import { generateKeyPair, exportPublicKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, uint8ToBase64, base64ToUint8, timingSafeEqual } from '../utils/crypto'
 import { finalizeKeyExchange } from '../net/keyExchange'
+import { createSession, type Session, type TransferHandle } from '../net/session'
 import { STUN_ONLY } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
@@ -36,13 +37,6 @@ import { log } from '../utils/logger'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
-interface ActiveTransfer {
-  fileId: string
-  aborted: boolean
-  paused: boolean
-  pauseResolver?: () => void
-}
-
 interface InProgressDownload {
   fileId: string
   name: string
@@ -54,54 +48,18 @@ interface InProgressDownload {
   startTime: number
 }
 
-interface GuestConnection {
-  conn: DataConnection
-  peerId: string
-  name: string
-  encryptKey: CryptoKey | null
-  keyPair: CryptoKeyPair | null
-  heartbeat?: ReturnType<typeof setupHeartbeat>
-  rttPoller?: ReturnType<typeof setupRTTPolling>
-  disconnectHandled?: boolean
-  pendingRemoteKey?: Uint8Array | null
-  keyExchangeTimeout?: ReturnType<typeof setTimeout>
-  fingerprint?: string
-  passwordVerified: boolean
-  passwordAttempts: number
+// Host-side per-guest accounting that doesn't belong on Session. Every
+// other per-guest field (handshake, liveness, lanes, inProgressImage,
+// passwordVerified/Attempts, activeTransfers, requestedFileIds,
+// recentFileShares, nickname) lives on the Session.
+interface GuestMeta {
   chunker?: InstanceType<typeof AdaptiveChunker>
   progressThrottler?: InstanceType<typeof ProgressThrottler>
-  // Active file transfers TO this guest (supports concurrent)
-  activeTransfers: Map<string, ActiveTransfer>
-  // For chat image receiving
-  inProgressImage?: {
-    id?: string
-    mime: string
-    size: number
-    text: string
-    replyTo: { text: string; from: string; time: number } | null
-    time: number
-    from: string
-    duration?: number
-    chunks: Uint8Array[]
-    receivedBytes: number
-  }
-  chunkQueue: Promise<void>
-  imageSendQueue: Promise<void>
-  // Serializes outbound file transfers on this conn so two concurrent
-  // sendFileToRequester calls can't interleave packets. Guarding against
-  // the "Download all" fan-out that previously corrupted ciphertext
-  // framing and produced AES-GCM auth-tag failures on the downloader.
-  uploadQueue: Promise<void>
-  // M12 — fileIds this guest has actually requested, used as a
-  // defense-in-depth check before forwarding pause/resume/cancel control
-  // messages to the file owner. The guest-side owner check (P0 fix #3) is
-  // the primary gate; this closes the amplification-DoS angle where a
-  // guest forges pause/cancel for a file it never requested.
-  requestedFileIds: Set<string>
-  // M19 — per-peer rate-limit for collab-file-shared broadcasts. Holds
-  // the timestamps of the last N shares; new shares beyond the cap in
-  // the window are dropped with a log line.
-  recentFileShares: number[]
+}
+
+interface GuestEntry {
+  session: Session
+  meta: GuestMeta
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────
@@ -121,7 +79,7 @@ export function useCollabHost() {
   const lastMsgTime = useRef<number>(0)
   const peerRef = useRef<InstanceType<typeof Peer> | null>(null)
   // M10 — keyed by peerId so reconnects cleanly overwrite the old entry.
-  const connectionsRef = useRef<Map<string, GuestConnection>>(new Map())
+  const connectionsRef = useRef<Map<string, GuestEntry>>(new Map())
   const passwordRef = useRef<string | null>(null)
   const myFilesRef = useRef<Map<string, File>>(new Map()) // fileId -> File object
   const imageBlobUrlsRef = useRef<string[]>([])
@@ -164,50 +122,52 @@ export function useCollabHost() {
 
   const refreshParticipantsList = useCallback((): void => {
     const list: Array<{ peerId: string; name: string }> = []
-    connectionsRef.current.forEach(gs => {
-      if (gs.passwordVerified || !passwordRef.current) {
-        list.push({ peerId: gs.peerId, name: gs.name || 'Anon' })
+    connectionsRef.current.forEach(entry => {
+      const { session } = entry
+      if (session.passwordVerified || !passwordRef.current) {
+        list.push({ peerId: session.peerId, name: session.nickname || 'Anon' })
       }
     })
     setParticipantsList(list)
 
     // Update participants state (include fingerprint for C1 verification panel).
     const collabParticipants: CollabParticipant[] = Array.from(connectionsRef.current.values())
-      .filter(gs => gs.passwordVerified || !passwordRef.current)
-      .map(gs => ({
-        peerId: gs.peerId,
-        name: gs.name || 'Anon',
+      .filter(e => e.session.passwordVerified || !passwordRef.current)
+      .map(e => ({
+        peerId: e.session.peerId,
+        name: e.session.nickname || 'Anon',
         isHost: false,
         connectionStatus: 'connected',
         directConnection: true,
-        fingerprint: gs.fingerprint,
+        fingerprint: e.session.fingerprint ?? undefined,
       }))
     dispatchParticipants({ type: 'SET_PARTICIPANTS', payload: collabParticipants })
   }, [])
 
   // Broadcast a message to all connected guests
   const broadcast = useCallback((msg: Record<string, unknown>, exceptPeerId?: string): void => {
-    connectionsRef.current.forEach(gs => {
-      if (exceptPeerId && gs.peerId === exceptPeerId) return
-      if (!gs.passwordVerified && passwordRef.current) return
-      try { gs.conn.send(msg) } catch (e) { log.warn('useCollabHost.broadcast', e) }
+    connectionsRef.current.forEach(entry => {
+      const { session } = entry
+      if (exceptPeerId && session.peerId === exceptPeerId) return
+      if (!session.passwordVerified && passwordRef.current) return
+      try { session.send(msg) } catch (e) { log.warn('useCollabHost.broadcast', e) }
     })
   }, [])
 
   // Send to specific peer
   const sendToPeer = useCallback((peerId: string, msg: Record<string, unknown>): void => {
-    const gs = connectionsRef.current.get(peerId)
-    if (gs) {
-      try { gs.conn.send(msg) } catch (e) { log.warn('useCollabHost.sendToPeer', e) }
+    const entry = connectionsRef.current.get(peerId)
+    if (entry) {
+      try { entry.session.send(msg) } catch (e) { log.warn('useCollabHost.sendToPeer', e) }
     }
   }, [])
 
   // Relay signaling between guests for mesh P2P
   const relaySignal = useCallback((fromPeerId: string, targetPeerId: string, signal: unknown): void => {
-    const targetGs = connectionsRef.current.get(targetPeerId)
-    if (targetGs) {
+    const target = connectionsRef.current.get(targetPeerId)
+    if (target) {
       try {
-        targetGs.conn.send({ type: 'collab-signal', from: fromPeerId, signal } satisfies CollabUnencryptedMsg)
+        target.session.send({ type: 'collab-signal', from: fromPeerId, signal } satisfies CollabUnencryptedMsg)
       } catch (e) { log.warn('useCollabHost.relaySignal', e) }
     }
   }, [])
@@ -226,15 +186,16 @@ export function useCollabHost() {
 
   // Kick a user from the room (H13 — remove from list synchronously).
   const kickUser = useCallback((peerId: string): void => {
-    const gs = connectionsRef.current.get(peerId)
-    if (!gs) return
+    const entry = connectionsRef.current.get(peerId)
+    if (!entry) return
     // Remove from map immediately so it disappears from participant lists
     // during the 100ms grace period between notifying the peer and closing.
     connectionsRef.current.delete(peerId)
     refreshParticipantsList()
-    try { gs.conn.send({ type: 'kicked' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.kickUser.send', e) }
+    try { entry.session.send({ type: 'kicked' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.kickUser.send', e) }
     setTimeout(() => {
-      try { gs.conn.close() } catch (e) { log.warn('useCollabHost.kickUser.close', e) }
+      entry.session.close('kicked')
+      try { entry.session.conn.close() } catch (e) { log.warn('useCollabHost.kickUser.close', e) }
     }, 100)
   }, [refreshParticipantsList])
 
@@ -251,11 +212,12 @@ export function useCollabHost() {
     dispatchFiles({ type: 'REMOVE_SHARED_FILE', fileId })
 
     // Broadcast removal to all guests (include `from` so peers can verify origin).
-    for (const gs of connectionsRef.current.values()) {
-      if (!gs.encryptKey || (!gs.passwordVerified && passwordRef.current)) continue
+    for (const entry of connectionsRef.current.values()) {
+      const { session } = entry
+      if (!session.encryptKey || (!session.passwordVerified && passwordRef.current)) continue
       try {
-        const encrypted = await encryptJSON(gs.encryptKey, { type: 'collab-file-removed', fileId, from: room.myPeerId || '' } satisfies CollabInnerMsg)
-        gs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+        const encrypted = await encryptJSON(session.encryptKey, { type: 'collab-file-removed', fileId, from: room.myPeerId || '' } satisfies CollabInnerMsg)
+        session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
       } catch (e) { log.warn('useCollabHost.removeFile.broadcast', e) }
     }
   }, [room.myPeerId])
@@ -282,8 +244,8 @@ export function useCollabHost() {
 
   // Request a file from a guest
   const requestFile = useCallback(async (fileId: string, ownerId: string): Promise<void> => {
-    const ownerGs = connectionsRef.current.get(ownerId)
-    if (!ownerGs?.encryptKey) return
+    const ownerEntry = connectionsRef.current.get(ownerId)
+    if (!ownerEntry?.session.encryptKey) return
 
     // If another download from this same guest is still in flight, the
     // guest's uploadQueue will serve us sequentially — surface that as
@@ -309,8 +271,8 @@ export function useCollabHost() {
     scheduleDownloadTimeout(fileId)
 
     try {
-      const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-request-file', fileId } satisfies CollabInnerMsg)
-      ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+      const encrypted = await encryptJSON(ownerEntry.session.encryptKey, { type: 'collab-request-file', fileId } satisfies CollabInnerMsg)
+      ownerEntry.session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
     } catch (e) { log.warn('useCollabHost.requestFile', e) }
   }, [scheduleDownloadTimeout])
 
@@ -319,12 +281,12 @@ export function useCollabHost() {
     const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
     if (!file) return
 
-    const ownerGs = connectionsRef.current.get(file.owner)
-    if (!ownerGs?.encryptKey) return
+    const ownerEntry = connectionsRef.current.get(file.owner)
+    if (!ownerEntry?.session.encryptKey) return
 
     try {
-      const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-pause-file', fileId } satisfies CollabInnerMsg)
-      ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+      const encrypted = await encryptJSON(ownerEntry.session.encryptKey, { type: 'collab-pause-file', fileId } satisfies CollabInnerMsg)
+      ownerEntry.session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
       dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'paused' } })
     } catch (e) { log.warn('useCollabHost.pauseFile', e) }
   }, [])
@@ -334,12 +296,12 @@ export function useCollabHost() {
     const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
     if (!file) return
 
-    const ownerGs = connectionsRef.current.get(file.owner)
-    if (!ownerGs?.encryptKey) return
+    const ownerEntry = connectionsRef.current.get(file.owner)
+    if (!ownerEntry?.session.encryptKey) return
 
     try {
-      const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-resume-file', fileId } satisfies CollabInnerMsg)
-      ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+      const encrypted = await encryptJSON(ownerEntry.session.encryptKey, { type: 'collab-resume-file', fileId } satisfies CollabInnerMsg)
+      ownerEntry.session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
       dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'downloading' } })
     } catch (e) { log.warn('useCollabHost.resumeFile', e) }
   }, [])
@@ -349,11 +311,11 @@ export function useCollabHost() {
     const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
     if (!file) return
 
-    const ownerGs = connectionsRef.current.get(file.owner)
-    if (ownerGs?.encryptKey) {
+    const ownerEntry = connectionsRef.current.get(file.owner)
+    if (ownerEntry?.session.encryptKey) {
       try {
-        const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-cancel-file', fileId } satisfies CollabInnerMsg)
-        ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+        const encrypted = await encryptJSON(ownerEntry.session.encryptKey, { type: 'collab-cancel-file', fileId } satisfies CollabInnerMsg)
+        ownerEntry.session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
       } catch (e) { log.warn('useCollabHost.cancelFile.send', e) }
     }
 
@@ -376,8 +338,9 @@ export function useCollabHost() {
   const closeRoom = useCallback((): void => {
     broadcast({ type: 'room-closed' } satisfies CollabUnencryptedMsg)
     setTimeout(() => {
-      connectionsRef.current.forEach(gs => {
-        try { gs.conn.close() } catch (e) { log.warn('useCollabHost.closeRoom.closeConn', e) }
+      connectionsRef.current.forEach(entry => {
+        entry.session.close('session-abort')
+        try { entry.session.conn.close() } catch (e) { log.warn('useCollabHost.closeRoom.closeConn', e) }
       })
       if (peerRef.current) {
         peerRef.current.destroy()
@@ -433,30 +396,39 @@ export function useCollabHost() {
       file: sharedFile,
     } satisfies CollabInnerMsg
 
-    for (const gs of connectionsRef.current.values()) {
-      if (!gs.encryptKey || (!gs.passwordVerified && passwordRef.current)) continue
+    for (const entry of connectionsRef.current.values()) {
+      const { session } = entry
+      if (!session.encryptKey || (!session.passwordVerified && passwordRef.current)) continue
       try {
-        const encrypted = await encryptJSON(gs.encryptKey, msg)
-        gs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+        const encrypted = await encryptJSON(session.encryptKey, msg)
+        session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
       } catch (e) { log.warn('useCollabHost.shareFile.broadcast', e) }
     }
   }, [room.myPeerId, room.myName])
 
-  // Send file to a specific requester - supports pause/resume/cancel and concurrent transfers
-  const sendFileToRequester = useCallback(async (gs: GuestConnection, fileId: string): Promise<void> => {
+  // Send file to a specific requester — supports pause/resume/cancel and
+  // concurrent transfers via session.activeTransfers + TransferHandle.
+  const sendFileToRequester = useCallback(async (entry: GuestEntry, fileId: string): Promise<void> => {
+    const { session, meta } = entry
     const file = myFilesRef.current.get(fileId)
-    if (!file || !gs.encryptKey) return
+    if (!file || !session.encryptKey) return
 
-    // Create transfer state for this specific file+requester combo
-    const transfer: ActiveTransfer = { fileId, aborted: false, paused: false }
-    gs.activeTransfers.set(fileId, transfer)
+    // Register the transfer on the session so inbound pause/resume/cancel
+    // route to this handle via session.pauseTransfer / etc.
+    const handle: TransferHandle = {
+      transferId: fileId,
+      direction: 'outbound',
+      aborted: false,
+      paused: false,
+    }
+    session.beginTransfer(handle)
 
-    if (!gs.chunker) gs.chunker = new AdaptiveChunker()
-    if (!gs.progressThrottler) gs.progressThrottler = new ProgressThrottler(80)
+    if (!meta.chunker) meta.chunker = new AdaptiveChunker()
+    if (!meta.progressThrottler) meta.progressThrottler = new ProgressThrottler(80)
 
     // Hoist the key so the inner closure doesn't re-check nullability on
     // every send — we already refused above if encryptKey was missing.
-    const encryptKey = gs.encryptKey
+    const encryptKey = session.encryptKey
 
     const runTransfer = async (): Promise<void> => {
       const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
@@ -471,10 +443,10 @@ export function useCollabHost() {
           size: file.size,
           totalChunks,
         } satisfies CollabInnerMsg)
-        gs.conn.send({ type: 'collab-msg-enc', data: startMsg } satisfies CollabUnencryptedMsg)
+        session.send({ type: 'collab-msg-enc', data: startMsg } satisfies CollabUnencryptedMsg)
       } catch (e) {
         log.warn('useCollabHost.sendFileToRequester.start', e)
-        gs.activeTransfers.delete(fileId)
+        session.endTransfer(fileId, 'error')
         dispatchTransfer({ type: 'END_UPLOAD', fileId })
         return
       }
@@ -483,59 +455,60 @@ export function useCollabHost() {
       let fileSent = 0
       const startTime = Date.now()
 
-      for await (const { buffer: chunkData } of chunkFileAdaptive(file, gs.chunker!)) {
-        if (transfer.aborted) {
-          gs.activeTransfers.delete(fileId)
-          dispatchTransfer({ type: 'END_UPLOAD', fileId })
-          return
+      try {
+        for await (const { buffer: chunkData } of chunkFileAdaptive(file, meta.chunker!)) {
+          if (handle.aborted) {
+            dispatchTransfer({ type: 'END_UPLOAD', fileId })
+            return
+          }
+
+          while (handle.paused && !handle.aborted) {
+            await new Promise<void>(resolve => {
+              handle.pauseResolver = resolve
+            })
+            handle.pauseResolver = undefined
+          }
+          if (handle.aborted) {
+            dispatchTransfer({ type: 'END_UPLOAD', fileId })
+            return
+          }
+
+          const dataToSend = await encryptChunk(encryptKey, new Uint8Array(chunkData))
+          const packet = buildChunkPacket(0xFFFE, chunkIndex, dataToSend) // 0xFFFE for collab file
+          session.sendBinary(packet)
+          await waitForBufferDrain(session.conn)
+
+          chunkIndex++
+          fileSent += chunkData.byteLength
+
+          if (meta.progressThrottler!.shouldUpdate()) {
+            const elapsed = (Date.now() - startTime) / 1000
+            const speed = elapsed > 0.5 ? fileSent / elapsed : 0
+            const progress = file.size > 0 ? Math.min(100, Math.round((fileSent / file.size) * 100)) : 0
+            dispatchTransfer({ type: 'UPDATE_UPLOAD', fileId, progress, speed })
+          }
         }
 
-        while (transfer.paused && !transfer.aborted) {
-          await new Promise<void>(resolve => {
-            transfer.pauseResolver = resolve
-          })
+        if (!handle.aborted) {
+          try {
+            const endMsg = await encryptJSON(encryptKey, { type: 'collab-file-end', fileId } satisfies CollabInnerMsg)
+            session.send({ type: 'collab-msg-enc', data: endMsg } satisfies CollabUnencryptedMsg)
+          } catch (e) { log.warn('useCollabHost.sendFileToRequester.end', e) }
         }
-        if (transfer.aborted) {
-          gs.activeTransfers.delete(fileId)
-          dispatchTransfer({ type: 'END_UPLOAD', fileId })
-          return
-        }
-
-        const dataToSend = await encryptChunk(encryptKey, new Uint8Array(chunkData))
-        const packet = buildChunkPacket(0xFFFE, chunkIndex, dataToSend) // 0xFFFE for collab file
-        gs.conn.send(packet)
-        await waitForBufferDrain(gs.conn)
-
-        chunkIndex++
-        fileSent += chunkData.byteLength
-
-        if (gs.progressThrottler!.shouldUpdate()) {
-          const elapsed = (Date.now() - startTime) / 1000
-          const speed = elapsed > 0.5 ? fileSent / elapsed : 0
-          const progress = file.size > 0 ? Math.min(100, Math.round((fileSent / file.size) * 100)) : 0
-          dispatchTransfer({ type: 'UPDATE_UPLOAD', fileId, progress, speed })
-        }
+      } finally {
+        session.endTransfer(fileId, handle.aborted ? 'cancelled' : 'complete')
+        dispatchTransfer({ type: 'END_UPLOAD', fileId })
       }
-
-      if (!transfer.aborted) {
-        try {
-          const endMsg = await encryptJSON(encryptKey, { type: 'collab-file-end', fileId } satisfies CollabInnerMsg)
-          gs.conn.send({ type: 'collab-msg-enc', data: endMsg } satisfies CollabUnencryptedMsg)
-        } catch (e) { log.warn('useCollabHost.sendFileToRequester.end', e) }
-      }
-
-      gs.activeTransfers.delete(fileId)
-      dispatchTransfer({ type: 'END_UPLOAD', fileId })
     }
 
     // Serialize concurrent transfers on this guest's conn. Without this,
     // peerjs's binary framing interleaves packets from parallel loops and
     // the downloader sees AES-GCM auth-tag failures — the trigger for the
     // "Download all" decrypt warns.
-    const next = gs.uploadQueue
+    const next = session.uploadQueue
       .then(runTransfer)
       .catch(e => log.warn('useCollabHost.sendFileToRequester.queue', e))
-    gs.uploadQueue = next
+    session.uploadQueue = next
     await next
   }, [])
 
@@ -568,45 +541,42 @@ export function useCollabHost() {
       // replace the old entry (closing its conn first).
       const existing = connectionsRef.current.get(conn.peer)
       if (existing) {
-        try { existing.conn.close() } catch (e) { log.warn('useCollabHost.connection.closeExisting', e) }
+        existing.session.close('session-abort')
+        try { existing.session.conn.close() } catch (e) { log.warn('useCollabHost.connection.closeExisting', e) }
         connectionsRef.current.delete(conn.peer)
       }
 
-      const gs: GuestConnection = {
+      const session = createSession({
         conn,
-        peerId: conn.peer,
-        name: 'Anon',
-        encryptKey: null,
-        keyPair: null,
-        passwordVerified: false,
-        passwordAttempts: 0,
-        activeTransfers: new Map(),
-        chunkQueue: Promise.resolve(),
-        imageSendQueue: Promise.resolve(),
-        uploadQueue: Promise.resolve(),
-        requestedFileIds: new Set<string>(),
-        recentFileShares: [],
-      }
-      connectionsRef.current.set(gs.peerId, gs)
+        role: 'collab-host',
+        passwordRequired: !!passwordRef.current,
+      })
+      session.setNickname('Anon')
+      // Inbound peer connection — we didn't initiate, but the transition
+      // table expects connect-start before conn-open.
+      session.dispatch({ type: 'connect-start' })
+      const entry: GuestEntry = { session, meta: {} }
+      connectionsRef.current.set(session.peerId, entry)
 
       function announceJoin(): void {
         dispatchRoom({ type: 'SET_STATUS', payload: 'connected' })
         refreshParticipantsList()
-        // Nit — emit the join message with the final chosen name, not pre-join.
-        setMessages(prev => [...prev, { text: `${gs.name} joined the room`, from: 'system', time: Date.now(), self: false }].slice(-500))
+        const name = session.nickname || 'Anon'
+        setMessages(prev => [...prev, { text: `${name} joined the room`, from: 'system', time: Date.now(), self: false }].slice(-500))
 
         // Notify all other guests. Count + 1 to include host.
         const count = connectionsRef.current.size + 1
-        broadcast({ type: 'online-count', count } satisfies CollabUnencryptedMsg, gs.peerId)
-        broadcast({ type: 'collab-peer-joined', peerId: gs.peerId, name: gs.name } satisfies CollabUnencryptedMsg, gs.peerId)
+        broadcast({ type: 'online-count', count } satisfies CollabUnencryptedMsg, session.peerId)
+        broadcast({ type: 'collab-peer-joined', peerId: session.peerId, name } satisfies CollabUnencryptedMsg, session.peerId)
 
         // Send current file list and participant list to new guest.
-        sendFileListToGuest(gs)
-        sendParticipantListToGuest(gs)
+        sendFileListToGuest(entry)
+        sendParticipantListToGuest(entry)
       }
 
-      async function sendFileListToGuest(guest: GuestConnection): Promise<void> {
-        if (!guest.encryptKey) return
+      async function sendFileListToGuest(guest: GuestEntry): Promise<void> {
+        const { session: gSess } = guest
+        if (!gSess.encryptKey) return
         // H5 — always read through filesRef.current, never captured `files`.
         const fileList = filesRef.current.sharedFiles.map(f => ({
           id: f.id,
@@ -620,58 +590,53 @@ export function useCollabHost() {
           addedAt: f.addedAt,
         }))
         try {
-          const encrypted = await encryptJSON(guest.encryptKey, { type: 'collab-file-list', files: fileList } satisfies CollabInnerMsg)
-          guest.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+          const encrypted = await encryptJSON(gSess.encryptKey, { type: 'collab-file-list', files: fileList } satisfies CollabInnerMsg)
+          gSess.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
         } catch (e) { log.warn('useCollabHost.sendFileListToGuest', e) }
       }
 
-      async function sendParticipantListToGuest(guest: GuestConnection): Promise<void> {
-        if (!guest.encryptKey) return
+      async function sendParticipantListToGuest(guest: GuestEntry): Promise<void> {
+        const { session: gSess } = guest
+        if (!gSess.encryptKey) return
         // H4 — read peerId from peerRef (fresh) and name from myNameRef.
         const pList = [
           { peerId: peerRef.current?.id || '', name: myNameRef.current, isHost: true },
           ...Array.from(connectionsRef.current.values())
-            .filter(g => g.peerId !== guest.peerId && (g.passwordVerified || !passwordRef.current))
-            .map(g => ({ peerId: g.peerId, name: g.name, isHost: false })),
+            .filter(e => e.session.peerId !== gSess.peerId && (e.session.passwordVerified || !passwordRef.current))
+            .map(e => ({ peerId: e.session.peerId, name: e.session.nickname || 'Anon', isHost: false })),
         ]
         try {
-          const encrypted = await encryptJSON(guest.encryptKey, { type: 'collab-participant-list', participants: pList } satisfies CollabInnerMsg)
-          guest.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+          const encrypted = await encryptJSON(gSess.encryptKey, { type: 'collab-participant-list', participants: pList } satisfies CollabInnerMsg)
+          gSess.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
         } catch (e) { log.warn('useCollabHost.sendParticipantListToGuest', e) }
       }
 
       conn.on('open', async () => {
         if (destroyed) return
+        session.dispatch({ type: 'conn-open' })
 
-        gs.rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
+        session.rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
 
         function handleDisconnect(reason: string): void {
-          if (gs.disconnectHandled || destroyed) return
-          gs.disconnectHandled = true
-          if (gs.heartbeat) gs.heartbeat.cleanup()
-          if (gs.rttPoller) gs.rttPoller.cleanup()
-          if (gs.keyExchangeTimeout) clearTimeout(gs.keyExchangeTimeout)
+          if (destroyed) return
+          if (session.state === 'closed' || session.state === 'error' || session.state === 'kicked') return
           try { conn.removeAllListeners() } catch (e) { log.warn('useCollabHost.handleDisconnect.removeListeners', e) }
+          // Session-level cleanup — heartbeat, rttPoller, keyExchangeTimeout,
+          // every active transfer aborted + pauseResolved.
+          session.close('peer-disconnect')
 
-          // H10 — unblock any paused transfers so their while-loop exits.
-          gs.activeTransfers.forEach(t => {
-            t.aborted = true
-            if (t.pauseResolver) { t.pauseResolver(); t.pauseResolver = undefined }
-          })
-          gs.activeTransfers.clear()
-
-          const name = gs.name || 'A guest'
-          connectionsRef.current.delete(gs.peerId)
+          const name = session.nickname || 'A guest'
+          connectionsRef.current.delete(session.peerId)
 
           // M1 — drop files owned by this guest.
-          dispatchFiles({ type: 'REMOVE_FILES_BY_OWNER', ownerId: gs.peerId })
+          dispatchFiles({ type: 'REMOVE_FILES_BY_OWNER', ownerId: session.peerId })
 
           refreshParticipantsList()
           setMessages(prev => [...prev, { text: `${name} ${reason}`, from: 'system', time: Date.now(), self: false }].slice(-500))
 
           const count = connectionsRef.current.size + 1
           broadcast({ type: 'online-count', count } satisfies CollabUnencryptedMsg)
-          broadcast({ type: 'collab-peer-left', peerId: gs.peerId, name } satisfies CollabUnencryptedMsg)
+          broadcast({ type: 'collab-peer-left', peerId: session.peerId, name } satisfies CollabUnencryptedMsg)
 
           if (connectionsRef.current.size === 0) {
             setRtt(null)
@@ -679,7 +644,7 @@ export function useCollabHost() {
           }
         }
 
-        gs.heartbeat = setupHeartbeat(conn, {
+        session.heartbeat = setupHeartbeat(conn, {
           onDead: () => handleDisconnect('connection lost'),
         })
 
@@ -696,33 +661,32 @@ export function useCollabHost() {
         }
 
         // Start key exchange
-        gs.keyPair = await generateKeyPair()
-        const pubKeyBytes = await exportPublicKey(gs.keyPair.publicKey)
-        conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies CollabUnencryptedMsg)
+        session.setKeyPair(await generateKeyPair())
+        const pubKeyBytes = await exportPublicKey(session.keyPair!.publicKey)
+        try { session.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.sendPublicKey', e) }
 
-        gs.keyExchangeTimeout = setTimeout(() => {
-          if (!gs.encryptKey) {
-            console.warn('Key exchange timed out for', gs.peerId)
+        // Handshake watchdog. Session auto-clears on keys-derived and close.
+        session.keyExchangeTimeout = setTimeout(() => {
+          if (!session.encryptKey) {
+            console.warn('Key exchange timed out for', session.peerId)
             conn.close()
           }
         }, 10_000)
 
         // Handle deferred key
-        if (gs.pendingRemoteKey) {
+        if (session.pendingRemoteKey) {
           try {
             const { encryptKey, fingerprint } = await finalizeKeyExchange({
-              localPrivate: gs.keyPair.privateKey,
+              localPrivate: session.keyPair!.privateKey,
               localPublic: pubKeyBytes,
-              remotePublic: gs.pendingRemoteKey,
+              remotePublic: session.pendingRemoteKey,
             })
-            gs.encryptKey = encryptKey
-            if (gs.keyExchangeTimeout) { clearTimeout(gs.keyExchangeTimeout); gs.keyExchangeTimeout = undefined }
-            gs.fingerprint = fingerprint
-            gs.pendingRemoteKey = null
+            session.dispatch({ type: 'keys-derived', encryptKey, fingerprint, requiresPassword: !!passwordRef.current })
+            session.pendingRemoteKey = null
             if (passwordRef.current) {
-              conn.send({ type: 'password-required' } satisfies CollabUnencryptedMsg)
+              try { session.send({ type: 'password-required' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.sendPasswordRequired', e) }
             } else {
-              gs.passwordVerified = true
+              session.setPasswordVerified()
               announceJoin()
             }
           } catch (e) {
@@ -734,7 +698,7 @@ export function useCollabHost() {
 
       conn.on('data', async (data: unknown) => {
         if (destroyed) return
-        if (gs.heartbeat) gs.heartbeat.markAlive()
+        if (session.heartbeat) session.heartbeat.markAlive()
 
         // Nit — tighter binary detection: an ArrayBuffer/Uint8Array, or a
         // plain object with a numeric byteLength and no `type` field.
@@ -743,8 +707,8 @@ export function useCollabHost() {
           data instanceof Uint8Array ||
           (data && typeof data === 'object' && typeof (data as { byteLength?: unknown }).byteLength === 'number' && !(data as { type?: unknown }).type)
         ) {
-          gs.chunkQueue = gs.chunkQueue
-            .then(() => handleGuestChunk(gs, data as ArrayBuffer))
+          session.chunkQueue = session.chunkQueue
+            .then(() => handleGuestChunk(entry, data as ArrayBuffer))
             .catch(e => log.warn('useCollabHost.chunkQueue', e))
           return
         }
@@ -767,32 +731,30 @@ export function useCollabHost() {
 
         if (msg.type === 'pong') return
         if (msg.type === 'ping') {
-          try { conn.send({ type: 'pong', ts: msg.ts } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.sendPong', e) }
+          try { session.send({ type: 'pong', ts: msg.ts } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.sendPong', e) }
           return
         }
 
         // Public key exchange
         if (msg.type === 'public-key') {
           const remoteKeyRaw = new Uint8Array(msg.key as number[])
-          if (!gs.keyPair) {
-            gs.pendingRemoteKey = remoteKeyRaw
+          if (!session.keyPair) {
+            session.pendingRemoteKey = remoteKeyRaw
             return
           }
           try {
-            const localPubBytes = await exportPublicKey(gs.keyPair.publicKey)
+            const localPubBytes = await exportPublicKey(session.keyPair.publicKey)
             const { encryptKey, fingerprint } = await finalizeKeyExchange({
-              localPrivate: gs.keyPair.privateKey,
+              localPrivate: session.keyPair.privateKey,
               localPublic: localPubBytes,
               remotePublic: remoteKeyRaw,
             })
-            gs.encryptKey = encryptKey
-            if (gs.keyExchangeTimeout) { clearTimeout(gs.keyExchangeTimeout); gs.keyExchangeTimeout = undefined }
-            gs.fingerprint = fingerprint
+            session.dispatch({ type: 'keys-derived', encryptKey, fingerprint, requiresPassword: !!passwordRef.current })
 
             if (passwordRef.current) {
-              conn.send({ type: 'password-required' } satisfies CollabUnencryptedMsg)
+              try { session.send({ type: 'password-required' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.sendPasswordRequired', e) }
             } else {
-              gs.passwordVerified = true
+              session.setPasswordVerified()
               announceJoin()
             }
           } catch (e) {
@@ -804,44 +766,45 @@ export function useCollabHost() {
 
         // Password verification (C4 — rate limit after 5 wrong attempts).
         if (msg.type === 'password-encrypted') {
-          if (!gs.encryptKey || !msg.data) return
+          if (!session.encryptKey || !msg.data) return
           let password = ''
           try {
-            const decrypted = await decryptChunk(gs.encryptKey, base64ToUint8(msg.data as string))
+            const decrypted = await decryptChunk(session.encryptKey, base64ToUint8(msg.data as string))
             password = new TextDecoder().decode(decrypted)
           } catch (e) {
             log.warn('useCollabHost.password.decrypt', e)
-            gs.passwordAttempts++
-            if (gs.passwordAttempts >= MAX_PASSWORD_ATTEMPTS) {
-              try { conn.send({ type: 'password-rate-limited' } satisfies CollabUnencryptedMsg) } catch (e2) { log.warn('useCollabHost.password.rateLimitSend', e2) }
+            const attempts = session.incrementPasswordAttempts()
+            if (attempts >= MAX_PASSWORD_ATTEMPTS) {
+              try { session.send({ type: 'password-rate-limited' } satisfies CollabUnencryptedMsg) } catch (e2) { log.warn('useCollabHost.password.rateLimitSend', e2) }
               setTimeout(() => { try { conn.close() } catch (e2) { log.warn('useCollabHost.password.lockClose', e2) } }, 1000)
               return
             }
-            conn.send({ type: 'password-wrong' } satisfies CollabUnencryptedMsg)
+            try { session.send({ type: 'password-wrong' } satisfies CollabUnencryptedMsg) } catch (e2) { log.warn('useCollabHost.password.wrongSend', e2) }
             return
           }
 
           if (timingSafeEqual(password, passwordRef.current ?? '')) {
-            conn.send({ type: 'password-accepted' } satisfies CollabUnencryptedMsg)
-            gs.passwordVerified = true
-            gs.passwordAttempts = 0
+            try { session.send({ type: 'password-accepted' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.password.acceptedSend', e) }
+            session.setPasswordVerified()
+            session.passwordAttempts = 0
+            session.dispatch({ type: 'password-accepted' })
             announceJoin()
           } else {
-            gs.passwordAttempts++
-            if (gs.passwordAttempts >= MAX_PASSWORD_ATTEMPTS) {
-              try { conn.send({ type: 'password-rate-limited' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.password.rateLimitSend', e) }
+            const attempts = session.incrementPasswordAttempts()
+            if (attempts >= MAX_PASSWORD_ATTEMPTS) {
+              try { session.send({ type: 'password-rate-limited' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.password.rateLimitSend', e) }
               setTimeout(() => { try { conn.close() } catch (e) { log.warn('useCollabHost.password.lockClose', e) } }, 1000)
               return
             }
-            conn.send({ type: 'password-wrong' } satisfies CollabUnencryptedMsg)
+            try { session.send({ type: 'password-wrong' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.password.wrongSend', e) }
           }
           return
         }
 
         // Join message
         if (msg.type === 'join') {
-          gs.name = ((msg.nickname as string) || 'Anon').slice(0, 32)
-          if (!passwordRef.current && gs.encryptKey) {
+          session.setNickname(((msg.nickname as string) || 'Anon').slice(0, 32))
+          if (!passwordRef.current && session.encryptKey) {
             announceJoin()
           }
           return
@@ -850,7 +813,7 @@ export function useCollabHost() {
         // Typing indicator
         if (msg.type === 'typing') {
           handleTypingMessage(msg.nickname as string, setTypingUsers, typingTimeouts.current)
-          broadcast({ type: 'typing', nickname: msg.nickname } satisfies CollabUnencryptedMsg, gs.peerId)
+          broadcast({ type: 'typing', nickname: msg.nickname } satisfies CollabUnencryptedMsg, session.peerId)
           return
         }
 
@@ -867,15 +830,15 @@ export function useCollabHost() {
             }
             return m
           }))
-          broadcast(data as Record<string, unknown>, gs.peerId)
+          broadcast(data as Record<string, unknown>, session.peerId)
           return
         }
 
         // Encrypted chat message
         if (msg.type === 'chat-encrypted') {
-          if (!gs.encryptKey || !msg.data) return
+          if (!session.encryptKey || !msg.data) return
           let payload: Record<string, unknown> = {}
-          try { payload = await decryptJSON(gs.encryptKey, msg.data as string) }
+          try { payload = await decryptJSON(session.encryptKey, msg.data as string) }
           catch (e) { log.warn('useCollabHost.chatEncrypted.decrypt', e); return }
 
           const chatMsg: ChatMessage = {
@@ -884,7 +847,7 @@ export function useCollabHost() {
             image: payload.image as string | undefined,
             mime: payload.mime as string | undefined,
             replyTo: payload.replyTo as ChatMessage['replyTo'],
-            from: gs.name,
+            from: session.nickname || 'Anon',
             time: msg.time as number || Date.now(),
             self: false,
           }
@@ -892,12 +855,12 @@ export function useCollabHost() {
 
           // Relay to other guests
           const relayPayload = JSON.stringify(payload)
-          for (const [otherId, otherGs] of connectionsRef.current) {
-            if (otherId === gs.peerId || !otherGs.encryptKey) continue
-            if (!otherGs.passwordVerified && passwordRef.current) continue
+          for (const [otherId, otherEntry] of connectionsRef.current) {
+            if (otherId === session.peerId || !otherEntry.session.encryptKey) continue
+            if (!otherEntry.session.passwordVerified && passwordRef.current) continue
             try {
-              const encrypted = await encryptChunk(otherGs.encryptKey, new TextEncoder().encode(relayPayload))
-              otherGs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: gs.name, time: msg.time } satisfies CollabUnencryptedMsg)
+              const encrypted = await encryptChunk(otherEntry.session.encryptKey, new TextEncoder().encode(relayPayload))
+              otherEntry.session.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: session.nickname || 'Anon', time: msg.time } satisfies CollabUnencryptedMsg)
             } catch (e) { log.warn('useCollabHost.chatEncrypted.relay', e) }
           }
           return
@@ -907,29 +870,30 @@ export function useCollabHost() {
         if (msg.type === 'nickname-change') {
           const newName = String(msg.newName || '').slice(0, 32)
           if (!newName) return
-          const oldName = gs.name
-          gs.name = newName
+          const oldName = session.nickname || 'Anon'
+          session.setNickname(newName)
           refreshParticipantsList()
           // Also update any files owned by this guest in our local file list.
-          dispatchFiles({ type: 'UPDATE_SHARED_FILE_OWNER_NAME', ownerId: gs.peerId, newName })
-          // Trust model: the broadcast uses `gs.peerId`, NOT the `peerId`
-          // in the inbound `nickname-change` payload. The host rewrites the
-          // peer identity to the authenticated connection owner so a guest
-          // cannot rename a different participant by forging `peerId`. Do
-          // not change this to echo `msg.peerId` without a new validation
-          // step — that would reopen the impersonation path.
-          broadcast({ type: 'collab-peer-renamed', peerId: gs.peerId, oldName, newName } satisfies CollabUnencryptedMsg, gs.peerId)
+          dispatchFiles({ type: 'UPDATE_SHARED_FILE_OWNER_NAME', ownerId: session.peerId, newName })
+          // Trust model: the broadcast uses `session.peerId`, NOT the
+          // `peerId` in the inbound `nickname-change` payload. The host
+          // rewrites the peer identity to the authenticated connection
+          // owner so a guest cannot rename a different participant by
+          // forging `peerId`. Do not change this to echo `msg.peerId`
+          // without a new validation step — that would reopen the
+          // impersonation path.
+          broadcast({ type: 'collab-peer-renamed', peerId: session.peerId, oldName, newName } satisfies CollabUnencryptedMsg, session.peerId)
           setMessages(prev => [...prev, { text: `${oldName} renamed to ${newName}`, from: 'system', time: Date.now(), self: false }].slice(-500))
           return
         }
 
         // Encrypted collab messages
         if (msg.type === 'collab-msg-enc') {
-          if (!gs.encryptKey || !msg.data) return
+          if (!session.encryptKey || !msg.data) return
           // Typed against CollabInnerMsg — each `payload.type === 'X'`
           // branch narrows to the matching variant.
           let payload: CollabInnerMsg
-          try { payload = await decryptJSON<CollabInnerMsg>(gs.encryptKey, msg.data as string) }
+          try { payload = await decryptJSON<CollabInnerMsg>(session.encryptKey, msg.data as string) }
           catch (e) { log.warn('useCollabHost.collabMsgEnc.decrypt', e); return }
 
           // Handle collab-specific messages
@@ -941,11 +905,11 @@ export function useCollabHost() {
             // so later pause/resume/cancel forwards can be checked against
             // the request set. Populated before the forwarding branch so
             // both host-served and guest-served downloads are covered.
-            gs.requestedFileIds.add(fileId)
+            session.requestedFileIds.add(fileId)
 
             // Check if host owns this file
             if (myFilesRef.current.has(fileId)) {
-              await sendFileToRequester(gs, fileId)
+              await sendFileToRequester(entry, fileId)
               return
             }
 
@@ -954,15 +918,15 @@ export function useCollabHost() {
             const sharedFile = filesRef.current.sharedFiles.find(f => f.id === fileId)
             const ownerPeerId = ownerId || sharedFile?.owner
             if (ownerPeerId) {
-              const ownerGs = connectionsRef.current.get(ownerPeerId)
-              if (ownerGs?.encryptKey) {
+              const ownerEntry = connectionsRef.current.get(ownerPeerId)
+              if (ownerEntry?.session.encryptKey) {
                 try {
-                  const encrypted = await encryptJSON(ownerGs.encryptKey, {
+                  const encrypted = await encryptJSON(ownerEntry.session.encryptKey, {
                     type: 'collab-request-file',
                     fileId,
-                    requesterPeerId: gs.peerId,
+                    requesterPeerId: session.peerId,
                   } satisfies CollabInnerMsg)
-                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+                  ownerEntry.session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
                 } catch (e) { log.warn('useCollabHost.relayRequestFile', e) }
               }
             }
@@ -974,7 +938,7 @@ export function useCollabHost() {
             const sanitized = sanitizeSharedFile(payload.file)
             if (!sanitized) {
               const reason = validateSharedFile(payload.file)
-              log.warn('useCollabHost.collabFileShared.invalid', `${reason} from ${gs.peerId}`)
+              log.warn('useCollabHost.collabFileShared.invalid', `${reason} from ${session.peerId}`)
               return
             }
             if (sanitized.droppedReasons.length > 0) {
@@ -988,28 +952,28 @@ export function useCollabHost() {
             const FILE_SHARE_WINDOW_MS = 1000
             const FILE_SHARE_MAX = 10
             const now = Date.now()
-            gs.recentFileShares = gs.recentFileShares.filter(t => now - t < FILE_SHARE_WINDOW_MS)
-            if (gs.recentFileShares.length >= FILE_SHARE_MAX) {
-              log.warn('useCollabHost.collabFileShared.rateLimited', gs.peerId)
+            session.recentFileShares = session.recentFileShares.filter(t => now - t < FILE_SHARE_WINDOW_MS)
+            if (session.recentFileShares.length >= FILE_SHARE_MAX) {
+              log.warn('useCollabHost.collabFileShared.rateLimited', session.peerId)
               return
             }
-            gs.recentFileShares.push(now)
+            session.recentFileShares.push(now)
             // C3 — force owner to match the guest that sent it; host cannot forge.
             // TODO: full origin auth requires per-guest signing keys; host can still forge if determined
-            const bound: SharedFile = { ...sanitized.file, owner: gs.peerId, ownerName: gs.name }
+            const bound: SharedFile = { ...sanitized.file, owner: session.peerId, ownerName: session.nickname || 'Anon' }
             dispatchFiles({ type: 'ADD_SHARED_FILE', payload: bound })
 
             // Relay to other guests (with bound owner).
-            for (const [otherId, otherGs] of connectionsRef.current) {
-              if (otherId === gs.peerId || !otherGs.encryptKey) continue
-              if (!otherGs.passwordVerified && passwordRef.current) continue
+            for (const [otherId, otherEntry] of connectionsRef.current) {
+              if (otherId === session.peerId || !otherEntry.session.encryptKey) continue
+              if (!otherEntry.session.passwordVerified && passwordRef.current) continue
               try {
-                const encrypted = await encryptJSON(otherGs.encryptKey, {
+                const encrypted = await encryptJSON(otherEntry.session.encryptKey, {
                   type: 'collab-file-shared',
                   file: bound,
-                  from: gs.peerId,
+                  from: session.peerId,
                 } satisfies CollabInnerMsg)
-                otherGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+                otherEntry.session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
               } catch (e) { log.warn('useCollabHost.relayFileShared', e) }
             }
             return
@@ -1019,16 +983,16 @@ export function useCollabHost() {
           if (payload.type === 'collab-file-removed') {
             const fileId = payload.fileId as string
             const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
-            if (file && file.owner === gs.peerId) {
+            if (file && file.owner === session.peerId) {
               dispatchFiles({ type: 'REMOVE_SHARED_FILE', fileId })
               // Relay to other guests, including `from` so they can verify origin.
               // TODO: full origin auth requires per-guest signing keys; host can still forge if determined
-              for (const [otherId, otherGs] of connectionsRef.current) {
-                if (otherId === gs.peerId || !otherGs.encryptKey) continue
-                if (!otherGs.passwordVerified && passwordRef.current) continue
+              for (const [otherId, otherEntry] of connectionsRef.current) {
+                if (otherId === session.peerId || !otherEntry.session.encryptKey) continue
+                if (!otherEntry.session.passwordVerified && passwordRef.current) continue
                 try {
-                  const encrypted = await encryptJSON(otherGs.encryptKey, { type: 'collab-file-removed', fileId, from: gs.peerId } satisfies CollabInnerMsg)
-                  otherGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+                  const encrypted = await encryptJSON(otherEntry.session.encryptKey, { type: 'collab-file-removed', fileId, from: session.peerId } satisfies CollabInnerMsg)
+                  otherEntry.session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
                 } catch (e) { log.warn('useCollabHost.relayFileRemoved', e) }
               }
             }
@@ -1038,31 +1002,31 @@ export function useCollabHost() {
           // Pause file transfer from guest
           if (payload.type === 'collab-pause-file') {
             const fileId = payload.fileId as string
-            const transfer = gs.activeTransfers.get(fileId)
-            if (transfer) {
-              transfer.paused = true
-            }
+            // If the host is the file owner, toggle the local outbound
+            // transfer's paused flag. The session routes pauseTransfer to
+            // the handle; runTransfer's while-loop picks up the flag.
+            session.pauseTransfer(fileId)
             // H5 — filesRef.current
             const sharedFile = filesRef.current.sharedFiles.find(f => f.id === fileId)
             if (sharedFile && sharedFile.owner !== room.myPeerId) {
               // M12 — defense-in-depth: the guest-side owner check rejects
               // forged requesterPeerId, but also refuse to forward from the
-              // host if this gs never actually requested the file. Stops a
-              // guest from replaying control messages for arbitrary fileIds
-              // to amplify the DoS surface against the owner.
-              if (!gs.requestedFileIds.has(fileId)) {
-                log.warn('useCollabHost.pauseFile.notRequested', `${gs.peerId}:${fileId}`)
+              // host if this guest never actually requested the file. Stops
+              // a guest from replaying control messages for arbitrary
+              // fileIds to amplify the DoS surface against the owner.
+              if (!session.requestedFileIds.has(fileId)) {
+                log.warn('useCollabHost.pauseFile.notRequested', `${session.peerId}:${fileId}`)
                 return
               }
-              const ownerGs = connectionsRef.current.get(sharedFile.owner)
-              if (ownerGs?.encryptKey) {
+              const ownerEntry = connectionsRef.current.get(sharedFile.owner)
+              if (ownerEntry?.session.encryptKey) {
                 try {
-                  const encrypted = await encryptJSON(ownerGs.encryptKey, {
+                  const encrypted = await encryptJSON(ownerEntry.session.encryptKey, {
                     type: 'collab-pause-file',
                     fileId,
-                    requesterPeerId: gs.peerId,
+                    requesterPeerId: session.peerId,
                   } satisfies CollabInnerMsg)
-                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+                  ownerEntry.session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
                 } catch (e) { log.warn('useCollabHost.relayPauseFile', e) }
               }
             }
@@ -1072,30 +1036,23 @@ export function useCollabHost() {
           // Resume file transfer from guest
           if (payload.type === 'collab-resume-file') {
             const fileId = payload.fileId as string
-            const transfer = gs.activeTransfers.get(fileId)
-            if (transfer) {
-              transfer.paused = false
-              if (transfer.pauseResolver) {
-                transfer.pauseResolver()
-                transfer.pauseResolver = undefined
-              }
-            }
+            session.resumeTransfer(fileId)
             // H5 — filesRef.current
             const sharedFile = filesRef.current.sharedFiles.find(f => f.id === fileId)
             if (sharedFile && sharedFile.owner !== room.myPeerId) {
-              if (!gs.requestedFileIds.has(fileId)) {
-                log.warn('useCollabHost.resumeFile.notRequested', `${gs.peerId}:${fileId}`)
+              if (!session.requestedFileIds.has(fileId)) {
+                log.warn('useCollabHost.resumeFile.notRequested', `${session.peerId}:${fileId}`)
                 return
               }
-              const ownerGs = connectionsRef.current.get(sharedFile.owner)
-              if (ownerGs?.encryptKey) {
+              const ownerEntry = connectionsRef.current.get(sharedFile.owner)
+              if (ownerEntry?.session.encryptKey) {
                 try {
-                  const encrypted = await encryptJSON(ownerGs.encryptKey, {
+                  const encrypted = await encryptJSON(ownerEntry.session.encryptKey, {
                     type: 'collab-resume-file',
                     fileId,
-                    requesterPeerId: gs.peerId,
+                    requesterPeerId: session.peerId,
                   } satisfies CollabInnerMsg)
-                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+                  ownerEntry.session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
                 } catch (e) { log.warn('useCollabHost.relayResumeFile', e) }
               }
             }
@@ -1105,32 +1062,24 @@ export function useCollabHost() {
           // Cancel file transfer from guest
           if (payload.type === 'collab-cancel-file') {
             const fileId = payload.fileId as string
-            const transfer = gs.activeTransfers.get(fileId)
-            if (transfer) {
-              transfer.aborted = true
-              transfer.paused = false
-              if (transfer.pauseResolver) {
-                transfer.pauseResolver()
-                transfer.pauseResolver = undefined
-              }
-            }
+            session.cancelTransfer(fileId)
             // M12 — clear the request tracker here (whether or not we
             // actually forward). The guest asked to cancel; future
             // pause/resume for the same fileId from this guest must come
             // through a new request-file first.
-            gs.requestedFileIds.delete(fileId)
+            session.requestedFileIds.delete(fileId)
             // H5 — filesRef.current
             const sharedFile = filesRef.current.sharedFiles.find(f => f.id === fileId)
             if (sharedFile && sharedFile.owner !== room.myPeerId) {
-              const ownerGs = connectionsRef.current.get(sharedFile.owner)
-              if (ownerGs?.encryptKey) {
+              const ownerEntry = connectionsRef.current.get(sharedFile.owner)
+              if (ownerEntry?.session.encryptKey) {
                 try {
-                  const encrypted = await encryptJSON(ownerGs.encryptKey, {
+                  const encrypted = await encryptJSON(ownerEntry.session.encryptKey, {
                     type: 'collab-cancel-file',
                     fileId,
-                    requesterPeerId: gs.peerId,
+                    requesterPeerId: session.peerId,
                   } satisfies CollabInnerMsg)
-                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
+                  ownerEntry.session.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
                 } catch (e) { log.warn('useCollabHost.relayCancelFile', e) }
               }
             }
@@ -1140,16 +1089,9 @@ export function useCollabHost() {
           // Cancel all transfers
           if (payload.type === 'collab-cancel-all') {
             // Cancel all active transfers to this guest
-            for (const transfer of gs.activeTransfers.values()) {
-              transfer.aborted = true
-              transfer.paused = false
-              if (transfer.pauseResolver) {
-                transfer.pauseResolver()
-                transfer.pauseResolver = undefined
-              }
-            }
+            session.cancelAllTransfers()
             // M12 — every pending request is now cancelled.
-            gs.requestedFileIds.clear()
+            session.requestedFileIds.clear()
             return
           }
 
@@ -1173,9 +1115,9 @@ export function useCollabHost() {
               receivedBytes: 0,
               stream,
               startTime: Date.now(),
-              fromPeerId: gs.peerId,
+              fromPeerId: session.peerId,
             })
-            peerCurrentFileRef.current.set(gs.peerId, fileId)
+            peerCurrentFileRef.current.set(session.peerId, fileId)
             dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download: { status: 'downloading', progress: 0, speed: 0 } })
             return
           }
@@ -1187,13 +1129,13 @@ export function useCollabHost() {
             // chunkQueueRef here was a dead await (nothing appended to it
             // after gs.chunkQueue landed) and let end-of-file processing
             // race against in-flight decrypts from OTHER guests' uploads.
-            await gs.chunkQueue
+            await session.chunkQueue
             const fileId = payload.fileId as string
             const inFlight = inProgressDownloadsRef.current.get(fileId)
             if (!inFlight) return
             inProgressDownloadsRef.current.delete(fileId)
-            if (peerCurrentFileRef.current.get(gs.peerId) === fileId) {
-              peerCurrentFileRef.current.delete(gs.peerId)
+            if (peerCurrentFileRef.current.get(session.peerId) === fileId) {
+              peerCurrentFileRef.current.delete(session.peerId)
             }
 
             if (inFlight.stream) {
@@ -1219,7 +1161,7 @@ export function useCollabHost() {
 
             dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: inFlight.fileId, payload: { status: 'complete', progress: 100 } })
             // M12 — request satisfied; future pause/resume needs a fresh request.
-            gs.requestedFileIds.delete(inFlight.fileId)
+            session.requestedFileIds.delete(inFlight.fileId)
             return
           }
 
@@ -1231,7 +1173,7 @@ export function useCollabHost() {
             clearDownloadTimeout(fileId)
             // M12 — request failed; clear the tracker so the guest has to
             // ask again (and get re-authorized) before any further control.
-            gs.requestedFileIds.delete(fileId)
+            session.requestedFileIds.delete(fileId)
             return
           }
 
@@ -1241,32 +1183,32 @@ export function useCollabHost() {
         // P2P signaling relay between guests
         if (msg.type === 'collab-signal') {
           const target = msg.target as string
-          relaySignal(gs.peerId, target, msg.signal)
+          relaySignal(session.peerId, target, msg.signal)
           return
         }
 
         // Mid-stream abort from guest — clear inProgressImage so the
         // next start doesn't see leftover bytes from the stalled stream.
         if (msg.type === 'chat-image-abort') {
-          gs.inProgressImage = undefined
+          session.inProgressImage = null
           return
         }
 
         // Chat image handling (same as sender)
         if (msg.type === 'chat-image-start-enc') {
-          if (!gs.encryptKey || !msg.data) return
-          let meta: Record<string, unknown>
-          try { meta = await decryptJSON(gs.encryptKey, msg.data as string) }
+          if (!session.encryptKey || !msg.data) return
+          let metaPayload: Record<string, unknown>
+          try { metaPayload = await decryptJSON(session.encryptKey, msg.data as string) }
           catch (e) { log.warn('useCollabHost.chatImageStart.decrypt', e); return }
-          gs.inProgressImage = {
-            id: meta.id as string | undefined,
-            mime: meta.mime as string || 'application/octet-stream',
-            size: meta.size as number || 0,
-            text: meta.text as string || '',
-            replyTo: meta.replyTo as { text: string; from: string; time: number } | null,
-            time: meta.time as number || Date.now(),
-            from: gs.name,
-            duration: meta.duration as number | undefined,
+          session.inProgressImage = {
+            id: metaPayload.id as string | undefined,
+            mime: metaPayload.mime as string || 'application/octet-stream',
+            size: metaPayload.size as number || 0,
+            text: metaPayload.text as string || '',
+            replyTo: metaPayload.replyTo as { text: string; from: string; time: number } | null,
+            time: metaPayload.time as number || Date.now(),
+            from: session.nickname || 'Anon',
+            duration: metaPayload.duration as number | undefined,
             chunks: [],
             receivedBytes: 0,
           }
@@ -1274,9 +1216,9 @@ export function useCollabHost() {
         }
 
         if (msg.type === 'chat-image-end-enc') {
-          await gs.chunkQueue
-          const inFlight = gs.inProgressImage
-          gs.inProgressImage = undefined
+          await session.chunkQueue
+          const inFlight = session.inProgressImage
+          session.inProgressImage = null
           if (!inFlight) return
 
           const totalLen = inFlight.chunks.reduce((s, c) => s + c.byteLength, 0)
@@ -1300,11 +1242,12 @@ export function useCollabHost() {
           }].slice(-500))
 
           // Relay to other guests
-          for (const [otherId, otherGs] of connectionsRef.current) {
-            if (otherId === gs.peerId || !otherGs.encryptKey) continue
-            if (!otherGs.passwordVerified && passwordRef.current) continue
-            otherGs.imageSendQueue = otherGs.imageSendQueue
-              .then(() => streamImageToConn(otherGs.conn, otherGs.encryptKey!, fullBytes, inFlight.mime, inFlight.text, inFlight.replyTo, gs.name, inFlight.time, inFlight.duration, inFlight.id))
+          for (const [otherId, otherEntry] of connectionsRef.current) {
+            if (otherId === session.peerId || !otherEntry.session.encryptKey) continue
+            if (!otherEntry.session.passwordVerified && passwordRef.current) continue
+            const otherKey = otherEntry.session.encryptKey
+            otherEntry.session.imageSendQueue = otherEntry.session.imageSendQueue
+              .then(() => streamImageToConn(otherEntry.session.conn, otherKey, fullBytes, inFlight.mime, inFlight.text, inFlight.replyTo, session.nickname || 'Anon', inFlight.time, inFlight.duration, inFlight.id))
               .catch(err => { console.warn('image relay failed:', err) })
           }
           return
@@ -1312,30 +1255,22 @@ export function useCollabHost() {
       })
 
       conn.on('close', () => {
-        if (destroyed || gs.disconnectHandled) return
-        gs.disconnectHandled = true
+        if (destroyed) return
+        if (session.state === 'closed' || session.state === 'error' || session.state === 'kicked') return
         try { conn.removeAllListeners() } catch (e) { log.warn('useCollabHost.close.removeListeners', e) }
-        if (gs.heartbeat) gs.heartbeat.cleanup()
-        if (gs.rttPoller) gs.rttPoller.cleanup()
+        session.close('peer-disconnect')
 
-        // H10 — unblock paused transfers
-        gs.activeTransfers.forEach(t => {
-          t.aborted = true
-          if (t.pauseResolver) { t.pauseResolver(); t.pauseResolver = undefined }
-        })
-        gs.activeTransfers.clear()
-
-        const name = gs.name || 'A guest'
-        connectionsRef.current.delete(gs.peerId)
+        const name = session.nickname || 'A guest'
+        connectionsRef.current.delete(session.peerId)
 
         // M1 — drop files owned by this guest.
-        dispatchFiles({ type: 'REMOVE_FILES_BY_OWNER', ownerId: gs.peerId })
+        dispatchFiles({ type: 'REMOVE_FILES_BY_OWNER', ownerId: session.peerId })
 
         refreshParticipantsList()
         setMessages(prev => [...prev, { text: `${name} left`, from: 'system', time: Date.now(), self: false }].slice(-500))
 
         broadcast({ type: 'online-count', count: connectionsRef.current.size + 1 } satisfies CollabUnencryptedMsg)
-        broadcast({ type: 'collab-peer-left', peerId: gs.peerId, name } satisfies CollabUnencryptedMsg)
+        broadcast({ type: 'collab-peer-left', peerId: session.peerId, name } satisfies CollabUnencryptedMsg)
 
         if (connectionsRef.current.size === 0) {
           setRtt(null)
@@ -1346,15 +1281,9 @@ export function useCollabHost() {
       conn.on('error', (err: unknown) => {
         if (destroyed) return
         console.warn('host conn.on("error"):', err)
-        if (gs.heartbeat) gs.heartbeat.cleanup()
-        if (gs.rttPoller) gs.rttPoller.cleanup()
-        gs.activeTransfers.forEach(t => {
-          t.aborted = true
-          if (t.pauseResolver) { t.pauseResolver(); t.pauseResolver = undefined }
-        })
-        gs.activeTransfers.clear()
-        connectionsRef.current.delete(gs.peerId)
-        dispatchFiles({ type: 'REMOVE_FILES_BY_OWNER', ownerId: gs.peerId })
+        session.close('error')
+        connectionsRef.current.delete(session.peerId)
+        dispatchFiles({ type: 'REMOVE_FILES_BY_OWNER', ownerId: session.peerId })
         refreshParticipantsList()
         if (connectionsRef.current.size === 0) {
           setRtt(null)
@@ -1389,7 +1318,7 @@ export function useCollabHost() {
       if (peer.disconnected && !peer.destroyed) peer.reconnect()
       // Tell every live heartbeat we just woke up — without this, a false-
       // positive 'dead' can fire 5s after wake because setInterval caught up.
-      connectionsRef.current.forEach(g => { if (g.heartbeat) g.heartbeat.markAlive() })
+      connectionsRef.current.forEach(e => { if (e.session.heartbeat) e.session.heartbeat.markAlive() })
     }
     document.addEventListener('visibilitychange', handleVisibility)
 
@@ -1406,10 +1335,9 @@ export function useCollabHost() {
       Object.values(typingTimeouts.current).forEach(clearTimeout)
       typingTimeouts.current = {}
       destroyed = true
-      connectionsRef.current.forEach(gs => {
-        if (gs.heartbeat) gs.heartbeat.cleanup()
-        if (gs.rttPoller) gs.rttPoller.cleanup()
-        try { gs.conn.removeAllListeners() } catch (e) { log.warn('useCollabHost.unmount.removeListeners', e) }
+      connectionsRef.current.forEach(entry => {
+        entry.session.close('session-abort')
+        try { entry.session.conn.removeAllListeners() } catch (e) { log.warn('useCollabHost.unmount.removeListeners', e) }
       })
       connectionsRef.current.clear()
       downloadTimeoutsRef.current.forEach(t => clearTimeout(t))
@@ -1421,8 +1349,9 @@ export function useCollabHost() {
   }, [sessionKey])
 
   // Handle chunk from guest (for files they're sharing)
-  async function handleGuestChunk(gs: GuestConnection, rawData: ArrayBuffer): Promise<void> {
-    if (!gs.encryptKey) return
+  async function handleGuestChunk(entry: GuestEntry, rawData: ArrayBuffer): Promise<void> {
+    const { session } = entry
+    if (!session.encryptKey) return
     const buffer = rawData instanceof ArrayBuffer ? rawData : (rawData as ArrayBufferView).buffer as ArrayBuffer
 
     let parsed: { fileIndex: number; chunkIndex: number; data: ArrayBuffer }
@@ -1432,24 +1361,24 @@ export function useCollabHost() {
 
     // Chat image chunk
     if (parsed.fileIndex === CHAT_IMAGE_FILE_INDEX) {
-      if (!gs.inProgressImage) return
+      if (!session.inProgressImage) return
       try {
-        const decrypted = await decryptChunk(gs.encryptKey, new Uint8Array(parsed.data))
-        gs.inProgressImage.chunks.push(new Uint8Array(decrypted))
-        gs.inProgressImage.receivedBytes += decrypted.byteLength
+        const decrypted = await decryptChunk(session.encryptKey, new Uint8Array(parsed.data))
+        session.inProgressImage.chunks.push(new Uint8Array(decrypted))
+        session.inProgressImage.receivedBytes += decrypted.byteLength
       } catch (e) { log.warn('handleGuestChunk.chatImageDecrypt', e) }
       return
     }
 
     // Collab file chunk (0xFFFE) — H2 per-fileId routing.
     if (parsed.fileIndex === 0xFFFE) {
-      const currentFileId = peerCurrentFileRef.current.get(gs.peerId)
+      const currentFileId = peerCurrentFileRef.current.get(session.peerId)
       if (!currentFileId) return
       const inFlight = inProgressDownloadsRef.current.get(currentFileId)
       if (!inFlight) return
 
       try {
-        const decrypted = await decryptChunk(gs.encryptKey, new Uint8Array(parsed.data))
+        const decrypted = await decryptChunk(session.encryptKey, new Uint8Array(parsed.data))
         const bytes = new Uint8Array(decrypted)
 
         if (inFlight.stream) {
@@ -1458,12 +1387,12 @@ export function useCollabHost() {
           // H9 — fallback cap: refuse if it would exceed 200 MB.
           if (inFlight.receivedBytes + bytes.byteLength > FALLBACK_MAX_BYTES) {
             inProgressDownloadsRef.current.delete(currentFileId)
-            peerCurrentFileRef.current.delete(gs.peerId)
+            peerCurrentFileRef.current.delete(session.peerId)
             dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: currentFileId, payload: { status: 'error', error: FALLBACK_TOO_LARGE_MSG } })
             // M7 — tell the sender to stop.
             try {
-              const enc = await encryptJSON(gs.encryptKey, { type: 'collab-cancel-file', fileId: currentFileId } satisfies CollabInnerMsg)
-              gs.conn.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
+              const enc = await encryptJSON(session.encryptKey, { type: 'collab-cancel-file', fileId: currentFileId } satisfies CollabInnerMsg)
+              session.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
             } catch (e) { log.warn('handleGuestChunk.cancelTooLarge', e) }
             return
           }
@@ -1480,11 +1409,11 @@ export function useCollabHost() {
         log.warn('handleGuestChunk.collabFileDecrypt', e)
         if (inFlight.stream) { try { await inFlight.stream.abort() } catch (e2) { log.warn('handleGuestChunk.streamAbort', e2) } }
         inProgressDownloadsRef.current.delete(currentFileId)
-        peerCurrentFileRef.current.delete(gs.peerId)
+        peerCurrentFileRef.current.delete(session.peerId)
         dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: currentFileId, payload: { status: 'error', error: 'decrypt failed' } })
         try {
-          const enc = await encryptJSON(gs.encryptKey, { type: 'collab-cancel-file', fileId: currentFileId } satisfies CollabInnerMsg)
-          gs.conn.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
+          const enc = await encryptJSON(session.encryptKey, { type: 'collab-cancel-file', fileId: currentFileId } satisfies CollabInnerMsg)
+          session.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
         } catch (e2) { log.warn('handleGuestChunk.cancelAfterDecryptFail', e2) }
       }
       return
@@ -1510,11 +1439,13 @@ export function useCollabHost() {
       imageBlobUrlsRef.current.push(localUrl)
       setMessages(prev => [...prev, { id, text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }].slice(-500))
 
-      for (const gs of connectionsRef.current.values()) {
-        if (!gs.encryptKey) continue
-        if (!gs.passwordVerified && passwordRef.current) continue
-        gs.imageSendQueue = gs.imageSendQueue
-          .then(() => streamImageToConn(gs.conn, gs.encryptKey!, bytes, mime, text || '', replyTo ?? null, room.myName, time, duration, id))
+      for (const entry of connectionsRef.current.values()) {
+        const { session } = entry
+        if (!session.encryptKey) continue
+        if (!session.passwordVerified && passwordRef.current) continue
+        const key = session.encryptKey
+        session.imageSendQueue = session.imageSendQueue
+          .then(() => streamImageToConn(session.conn, key, bytes, mime, text || '', replyTo ?? null, room.myName, time, duration, id))
           .catch(err => { console.warn('image send failed:', err) })
       }
       return
@@ -1524,12 +1455,13 @@ export function useCollabHost() {
     const id = crypto.randomUUID()
     setMessages(prev => [...prev, { id, text, image: imgStr, replyTo, from: 'You', time, self: true }].slice(-500))
     const payload = JSON.stringify({ id, text, image: imgStr, replyTo })
-    for (const gs of connectionsRef.current.values()) {
-      if (!gs.encryptKey) continue
-      if (!gs.passwordVerified && passwordRef.current) continue
+    for (const entry of connectionsRef.current.values()) {
+      const { session } = entry
+      if (!session.encryptKey) continue
+      if (!session.passwordVerified && passwordRef.current) continue
       try {
-        const encrypted = await encryptChunk(gs.encryptKey, new TextEncoder().encode(payload))
-        gs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: room.myName, time } satisfies CollabUnencryptedMsg)
+        const encrypted = await encryptChunk(session.encryptKey, new TextEncoder().encode(payload))
+        session.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: room.myName, time } satisfies CollabUnencryptedMsg)
       } catch (e) { log.warn('useCollabHost.sendMessage.chatEncrypt', e) }
     }
   }, [room.myName])
@@ -1567,7 +1499,7 @@ export function useCollabHost() {
       dispatchFiles({ type: 'UPDATE_SHARED_FILE_OWNER_NAME', ownerId: myId, newName })
     }
     // Announce locally — mirrors the system-msg the host appends for a
-    // guest's rename (L922), so the host's own rename shows up in chat too.
+    // guest's rename, so the host's own rename shows up in chat too.
     setMessages(prev => [...prev, { text: `${oldName} renamed to ${newName}`, from: 'system', time: Date.now(), self: false }].slice(-500))
     // Broadcast rename to all guests so they can update participant list
     // and append a matching system message in their own chat.
@@ -1583,10 +1515,9 @@ export function useCollabHost() {
   const reset = useCallback((): void => {
     Object.values(typingTimeouts.current).forEach(clearTimeout)
     typingTimeouts.current = {}
-    connectionsRef.current.forEach(gs => {
-      if (gs.heartbeat) gs.heartbeat.cleanup()
-      if (gs.rttPoller) gs.rttPoller.cleanup()
-      try { gs.conn.removeAllListeners() } catch (e) { log.warn('useCollabHost.reset.removeListeners', e) }
+    connectionsRef.current.forEach(entry => {
+      entry.session.close('session-abort')
+      try { entry.session.conn.removeAllListeners() } catch (e) { log.warn('useCollabHost.reset.removeListeners', e) }
     })
     connectionsRef.current.clear()
     if (peerRef.current) peerRef.current.destroy()
@@ -1694,7 +1625,7 @@ async function streamImageToConn(
     }
     conn.send({ type: 'chat-image-end-enc' } satisfies CollabUnencryptedMsg)
   } catch (e) {
-    // Emit abort so the receiver clears its gs.inProgressImage slot;
+    // Emit abort so the receiver clears its session.inProgressImage slot;
     // without this, a mid-stream drain timeout left accumulated bytes
     // parked until the next start message.
     log.warn('useCollabHost.streamImageToConn', e)

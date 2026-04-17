@@ -19,12 +19,16 @@ cross off.
   `src/net/protocol.ts` (P1.B) is now both-directions locked — all
   five hooks dispatch inbound against the discriminated unions and
   construct outbound literals with `satisfies`. `src/net/session.ts`
-  (P1.C) shipped with 38 unit tests; **useReceiver and useSender
-  have both been migrated** onto it — the receiver collapses ten
-  per-connection refs into a single `sessionRef`, and the sender
-  splits every ConnState into `ConnEntry = { session, meta }` with
-  pause/resume/cancel driven by `TransferHandle`. `tsc` clean;
-  309/309 tests pass. Next commit migrates useCollabHost.
+  (P1.C) shipped with 38 unit tests; **useReceiver, useSender,
+  and useCollabHost are all migrated** onto it — the receiver
+  collapses ten per-connection refs into a single `sessionRef`;
+  the sender splits every ConnState into `ConnEntry = { session,
+  meta }` with pause/resume/cancel driven by `TransferHandle`;
+  the collab host replaces `GuestConnection` with
+  `GuestEntry = { session, meta }` keyed by `session.peerId`
+  and preserves M12/M19/host-origin-rewrite invariants. `tsc`
+  clean; 309/309 tests pass. Next commit migrates the collab
+  guest host-conn (step 5).
 - **P2.1 done.** All ~200 silent `catch {}` in the four hooks migrated to
   `log.warn()` — 191 log sites across useSender/useReceiver/useCollabHost/
   useCollabGuest. Diagnostics buffer captures everything. "Copy diagnostics"
@@ -338,6 +342,31 @@ every role).
   `finalizeKeyExchange`.
 - Full suite: **308/308** (271 prior + 37 new). `tsc --noEmit` clean.
 
+- **Step 4 [DONE]** — useCollabHost migrated onto `Session`.
+  `GuestConnection` replaced by `GuestEntry = { session, meta }`
+  where `GuestMeta` is two fields: `chunker` + `progressThrottler`.
+  Every other per-guest field — handshake, liveness (heartbeat,
+  rttPoller, disconnectHandled), lanes (chunkQueue, imageSendQueue,
+  uploadQueue), password (verified, attempts), active transfers,
+  requestedFileIds (M12), recentFileShares (M19), nickname,
+  inProgressImage — now lives on the Session. The connection map
+  keys are `session.peerId`. Per-file uploads drive through
+  `session.beginTransfer(fileId)` + `session.endTransfer`;
+  inbound pause/resume/cancel from a guest route via
+  `session.pauseTransfer` / `resumeTransfer` / `cancelTransfer` /
+  `cancelAllTransfers` — the `ActiveTransfer` interface is gone.
+  Security invariants preserved: M12 requestedFileIds gate
+  on pause/resume forwards, M19 sliding-window rate limit on
+  collab-file-shared, host-origin rewrite on collab-peer-renamed
+  and collab-file-shared broadcasts (peer identity always bound
+  to `session.peerId`, never echoed from the payload). Password
+  attempts use `session.incrementPasswordAttempts` +
+  `session.setPasswordVerified`. The password-accepted branch
+  also dispatches `password-accepted` to flip state
+  `password-gate` -> `authenticated`. Host line count:
+  **1704 -> 1635** (-69 lines) — the `GuestConnection` +
+  `ActiveTransfer` interfaces plus every ad-hoc abort/pause
+  bookkeeping clump are gone.
 - **Step 3 [DONE]** — useSender migrated onto `Session`. The
   N-receiver room map now keys `Map<connId, ConnEntry>` where
   `ConnEntry = { session: Session, meta: SenderMeta }`. Session
@@ -392,12 +421,12 @@ every role).
 
 1. ~~Migrate useReceiver.~~ Done (step 2).
 2. ~~Migrate useSender.~~ Done (step 3).
-3. Migrate useCollabHost guests.
+3. ~~Migrate useCollabHost guests.~~ Done (step 4).
 4. Migrate useCollabGuest host-conn.
 5. Migrate useCollabGuest mesh peers.
-6. Delete `GuestConnection`, `PeerConnection` type declarations
-   once every call site is on `Session`. (`ConnState` is already
-   gone as of step 3.)
+6. Delete `PeerConnection` type declaration once the mesh
+   migration lands. (`ConnState`, `GuestConnection`, and
+   `ActiveTransfer` are already gone as of steps 3 and 4.)
 
 ### P1.C — historical note (kept for reference)
 
