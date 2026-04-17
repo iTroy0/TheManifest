@@ -1735,13 +1735,10 @@ export function useCollabGuest(roomId: string) {
     imageBlobUrlsRef.current = []
   }, [])
 
-  const retryWithRelay = useCallback((): void => {
-    destroyedRef.current = true
-    if (peerRef.current) peerRef.current.destroy()
-    setTimeout(() => startConnection(true), 100)
-  }, [startConnection])
-
-  // P1 — same as retryWithRelay, exposed as enableRelay for the UI banner.
+  // Tear the peer down and reconnect with TURN-only policy. Called when the
+  // UI offers a "Use relay" button after a direct connection has clearly
+  // failed. No separate `retryWithRelay` export — the prior split was a
+  // rename that never happened; one entry point is enough.
   const enableRelay = useCallback((): void => {
     destroyedRef.current = true
     if (peerRef.current) peerRef.current.destroy()
@@ -1750,6 +1747,27 @@ export function useCollabGuest(roomId: string) {
 
   const leave = useCallback((): void => {
     destroyedRef.current = true
+    // Abort any StreamSaver writers before destroying the peer. Without
+    // this, partial files keep bleeding to disk until GC runs.
+    inProgressFilesRef.current.forEach(f => {
+      if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.leave.streamAbort', e) } }
+    })
+    inProgressFilesRef.current.clear()
+    currentDownloadFileIdRef.current = null
+    downloadTimeoutsRef.current.forEach(t => clearTimeout(t))
+    downloadTimeoutsRef.current.clear()
+    // Same cleanup as unmount for mesh entries — any pending per-peer
+    // StreamSaver writer would otherwise outlive the room.
+    for (const entry of peerConnectionsRef.current.values()) {
+      if (entry.keyExchangeTimeout) clearTimeout(entry.keyExchangeTimeout)
+      if (entry.heartbeat) { try { entry.heartbeat.cleanup() } catch (e) { log.warn('useCollabGuest.leave.meshHeartbeat', e) } }
+      if (entry.inProgressFiles) {
+        for (const f of entry.inProgressFiles.values()) {
+          if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.leave.meshStreamAbort', e) } }
+        }
+        entry.inProgressFiles.clear()
+      }
+    }
     if (hostConnRef.current) {
       try { hostConnRef.current.close() } catch (e) { log.warn('useCollabGuest.leave.hostClose', e) }
     }
@@ -1918,7 +1936,6 @@ export function useCollabGuest(roomId: string) {
     sendReaction,
     clearMessages,
     changeNickname: setMyName,
-    retryWithRelay,
     enableRelay,
     leave,
 

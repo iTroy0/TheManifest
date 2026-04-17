@@ -74,7 +74,7 @@ verified each one in the tree. Fix them in whichever phase fits.
 | M6 | `api/turn-credentials.ts:44-55` | `TURN_SECRET` length not validated at startup. Fix: refuse to start if `secret.length < 32`. |
 | M7 | `useSender.ts:981-987` `handleHostChunk` | Decrypts chat-image chunks before checking `inProgressImage` exists. A peer sending stray chat-image chunks without a start still pays the decrypt cost. Fix: reorder — check first, decrypt second. |
 | M8 | `useSender.ts:580-597` `conn.on('data')` | `startTransfer` / `endTransfer` declared inside the handler → new closure per message. GC pressure on an active chat channel. Fix: hoist to `conn.on('open')` or module scope. |
-| M9 | `useSender.ts:439, 797` | Stale `senderName` closure in `conn.on('data')`. After `changeSenderName`, `chat-encrypted` relay still uses captured name. Fix: `senderNameRef` mirror. |
+| ~~M9~~ | ~~`useSender.ts:439, 797`~~ | **VERIFIED-NOT-A-BUG** — every outbound `senderName` read lives inside a `useCallback` whose deps include `senderName` (sendMessage 816, sendTyping 822, sendReaction 842, changeSenderName 853). Long-lived `conn.on('data')` handler only relays `msg.nickname` from the original sender, never our own name. Re-check after each refactor; current tree is clean. |
 | ~~M10~~ | ~~`useReceiver.ts:311-322`~~ | **DONE** (during P2.1) — `pendingManifestRef.current = null` now set in the key-exchange catch. |
 | M11 | `useReceiver.ts:856` | `lastChunkIndexRef = chunkIndex + 1` assumes in-order chunks. A malicious/buggy sender out-of-order corrupts reconnect resume. Fix: `max(lastChunkIndex, chunkIndex + 1)` or require monotonic sequence. |
 | M12 | `useCollabHost.ts:944-1025` | **Defense-in-depth follow-up to P0 fix #3.** Host-side should also track `gs.requestedFileIds` and refuse to forward pause/resume/cancel if gs hasn't requested the file. Guest-side check is currently sufficient; this closes the amplification-DoS angle. |
@@ -86,15 +86,15 @@ verified each one in the tree. Fix them in whichever phase fits.
 | M18 | `useCall.ts:752-790` | 150 ms duplicate-tab probe window is racy — sibling tab responding at 151 ms slips through. Fix: extend to 300 ms or require explicit ACK. |
 | M19 | `state/collabState.ts:84` `isValidSharedFile` | Allows `size: 0` and unbounded `addedAt`. Fix: cap `addedAt` to now ± 24h; rate-limit per-peer broadcasts at the host. |
 | M20 | `ChatPanel.tsx:75-83` + `FileList.tsx:64-66` | Blob-URL lifecycle owned by UI components (`chatBlobUrlsRef`) instead of the hook; can desync on Fast Refresh. Fix: hoist into `useChatPanelState`. |
-| M21 | `useCollabGuest.ts:1636-1647` | `retryWithRelay` / `enableRelay` are identical — delete one. |
-| M22 | `useCollabGuest.ts:1649-1656` `leave()` | Does not abort in-flight StreamSaver writers; partial file keeps streaming to disk until GC. Fix: `inProgressFilesRef.current.forEach(f => f.stream?.abort())` before destroy. |
+| ~~M21~~ | ~~`useCollabGuest.ts:1636-1647`~~ | **DONE** — `retryWithRelay` deleted, `enableRelay` is the sole entry point. All UI (Portal, CollabGuestView) already called `enableRelay`; no caller churn. |
+| ~~M22~~ | ~~`useCollabGuest.ts:1649-1656`~~ `leave()` | **DONE** — `leave()` now aborts `inProgressFilesRef` streams, clears download timeouts, and loops mesh `peerConnectionsRef` entries aborting each per-peer `inProgressFiles` writer before `peer.destroy()`. Mirrors the unmount teardown so nothing survives the room exit. |
 
 ### Low / nit
 
 L1 `iceServers.ts` — TURN fetch has no backoff between the 2 retries (500 ms jitter would help).
 L2 `api/turn-credentials.ts` — HMAC secret length not validated (see M6).
 L3 `useReceiver.ts:150` — inner `conn` shadows outer param; rename for readability.
-L4 `useSender.ts:624` — `request-all` silently skips failed files with `catch { /* skip */ }`. Emit `file-skipped` to receiver so the UI can tell the user.
+~~L4~~ `useSender.ts:624` — **DONE.** Both `request-all` and `ready` loops now emit `{ type: 'file-skipped', index, reason }` to the receiver on per-file send failure. `useReceiver.ts` handles the message: dispatches `CANCEL_FILE` so the pending row disappears from the UI and appends a system message `"<name> skipped: <reason>"`. Before this the pending row sat at 0% forever and `batch-done` arrived with completedFiles < requested.
 L5 `useSender.ts:159-170` `announceJoin` — uses `gs.name` which may still be `'Anon'` if join arrived pre-rename. Read latest with `|| 'Anon'`.
 L6 `useCollabHost.ts:844-855` — add comment documenting the `collab-peer-renamed` trust model (host rewrites `peerId` to the authenticated gs.peerId).
 L7 `useCollabGuest.ts:442` `teardownMesh` — dispatches `UPDATE_PARTICIPANT` even if participant already gone. Reducer is a no-op; still creates a new array. Micro-optimization.

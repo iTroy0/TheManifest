@@ -183,10 +183,16 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
     // Use `in` to check the prototype chain for the event instead, and
     // keep a low-rate poll as a safety net in case the event fires slowly
     // on a stalled channel (Chrome has had bugs here with very large buffers).
-    const useLowEvent = 'onbufferedamountlow' in dc
+    // Cast to `object` so the `in` check doesn't narrow `dc` to `never` in
+    // the else branch — lib-types claim the slot always exists, but we
+    // still want the runtime fallback for exotic environments.
+    const useLowEvent = 'onbufferedamountlow' in (dc as object)
     let pollTimer: ReturnType<typeof setTimeout> | null = null
     let drainTimeout: ReturnType<typeof setTimeout> | null = null
 
+    // `dc` is already narrowed to a non-null `RTCDataChannel` by the guard
+    // at the top of the function. Don't re-check — TS narrows it to `never`
+    // after `!dc` and the build fails.
     if (useLowEvent) {
       dc.bufferedAmountLowThreshold = BUFFER_THRESHOLD
       dc.addEventListener('bufferedamountlow', done, { once: true })
@@ -194,14 +200,14 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
       // never fires (readyState transitions can swallow it).
       const poll = (): void => {
         if (settled) return
-        if (!dc || dc.readyState === 'closed' || dc.bufferedAmount <= BUFFER_THRESHOLD) done()
+        if (dc.readyState === 'closed' || dc.bufferedAmount <= BUFFER_THRESHOLD) done()
         else pollTimer = setTimeout(poll, 500)
       }
       pollTimer = setTimeout(poll, 500)
     } else {
       const poll = (): void => {
         if (settled) return
-        if (!dc || dc.readyState === 'closed' || dc.bufferedAmount <= BUFFER_THRESHOLD) done()
+        if (dc.readyState === 'closed' || dc.bufferedAmount <= BUFFER_THRESHOLD) done()
         else pollTimer = setTimeout(poll, 50)
       }
       poll()

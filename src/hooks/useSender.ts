@@ -636,7 +636,15 @@ export function useSender() {
           startTransfer(transferSize)
           for (const idx of indices) {
             if (connState.abort.aborted) break
-            try { await sendSingleFile(conn, filesRef.current, idx, 0, connState, connState.encryptKey, aggregateUI) } catch (e) { log.warn('useSender.requestAll.skip', e) }
+            try { await sendSingleFile(conn, filesRef.current, idx, 0, connState, connState.encryptKey, aggregateUI) }
+            catch (e) {
+              log.warn('useSender.requestAll.skip', e)
+              // Tell the receiver why the file is missing from the batch so
+              // it can surface the failure instead of silently completing
+              // with fewer files than requested.
+              try { conn.send({ type: 'file-skipped', index: idx, reason: (e as Error)?.message || 'send-failed' }) }
+              catch (sendErr) { log.warn('useSender.requestAll.skipNotify', sendErr) }
+            }
           }
           if (!connState.abort.aborted) {
             conn.send({ type: 'batch-done' })
@@ -649,7 +657,12 @@ export function useSender() {
           startTransfer(transferSize)
           for (let i = 0; i < filesRef.current.length; i++) {
             if (connState.abort.aborted) break
-            try { await sendSingleFile(conn, filesRef.current, i, 0, connState, connState.encryptKey, aggregateUI) } catch (e) { log.warn('useSender.ready.skip', e) }
+            try { await sendSingleFile(conn, filesRef.current, i, 0, connState, connState.encryptKey, aggregateUI) }
+            catch (e) {
+              log.warn('useSender.ready.skip', e)
+              try { conn.send({ type: 'file-skipped', index: i, reason: (e as Error)?.message || 'send-failed' }) }
+              catch (sendErr) { log.warn('useSender.ready.skipNotify', sendErr) }
+            }
           }
           if (!connState.abort.aborted) {
             conn.send({ type: 'done' })

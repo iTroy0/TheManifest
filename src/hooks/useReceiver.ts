@@ -535,6 +535,22 @@ export function useReceiver(peerId: string) {
             }
           }
 
+          if (msg.type === 'file-skipped') {
+            // Sender hit an error partway through `request-all` / `ready`
+            // and gave up on this index. Before this message existed the
+            // sender just swallowed the error and the receiver UI kept
+            // showing the file as pending forever. Now surface it.
+            const idx = msg.index as number
+            const name = manifestRef.current?.files?.[idx]?.name
+            const reason = (msg.reason as string) || 'send-failed'
+            log.warn('useReceiver.fileSkipped', { idx, name, reason })
+            dispatchTransfer({ type: 'CANCEL_FILE', index: idx, name })
+            setMessages(prev => [...prev, {
+              text: `${name || `File #${idx}`} skipped: ${reason}`,
+              from: 'system', time: Date.now(), self: false,
+            }].slice(-500))
+          }
+
           if (msg.type === 'done' || msg.type === 'batch-done') {
             await chunkQueueRef.current
 
