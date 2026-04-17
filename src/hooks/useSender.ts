@@ -180,6 +180,11 @@ export function useSender() {
         setMessages(prev => [...prev, { text: `${name} joined`, from: 'system', time: Date.now(), self: false }].slice(-500))
         const count = connectionsRef.current.size + 1
         connectionsRef.current.forEach((other, id) => {
+          // Skip sessions in a terminal state — send() would throw and the
+          // warn-on-throw previously spammed diagnostics whenever a receiver
+          // reconnected while an older session still lingered in the map.
+          const s = other.session.state
+          if (s === 'closed' || s === 'error' || s === 'kicked') return
           try { other.session.send({ type: 'online-count', count } satisfies PortalMsg) } catch (e) { log.warn('useSender.announceJoin.onlineCount', e) }
           if (id !== cId) {
             try { other.session.send({ type: 'system-msg', text: `${name} joined`, time: Date.now() } satisfies PortalMsg) } catch (e) { log.warn('useSender.announceJoin.systemMsg', e) }
