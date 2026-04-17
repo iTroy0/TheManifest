@@ -16,7 +16,9 @@ import {
   DoorOpen,
   ChevronDown,
   Pencil,
+  QrCode,
 } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
 import { useCollabHost } from '../../hooks/useCollabHost'
 import { formatBytes } from '../../utils/formatBytes'
 import CollabFileList from '../../components/CollabFileList'
@@ -34,6 +36,7 @@ export default function CollabHostView() {
   const [passwordLockNotice, setPasswordLockNotice] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [roomExpanded, setRoomExpanded] = useState(true)
+  const [showQr, setShowQr] = useState(false)
   const [filesExpanded, setFilesExpanded] = useState(true)
   const [editingName, setEditingName] = useState(false)
   const [nameInput, setNameInput] = useState(host.myName)
@@ -196,7 +199,31 @@ export default function CollabHostView() {
                       {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                       {copied ? 'Copied' : 'Copy'}
                     </button>
+                    <button
+                      onClick={() => setShowQr(q => !q)}
+                      aria-label="QR code"
+                      title="QR code"
+                      className={`shrink-0 p-2 rounded-lg transition-all active:scale-95 ${showQr ? 'bg-accent/20 text-accent' : 'bg-surface text-muted-light hover:text-accent hover:bg-accent/10'}`}
+                    >
+                      <QrCode className="w-3.5 h-3.5" />
+                    </button>
                   </div>
+
+                  {/* QR — collapsible, mirrors PortalLink pattern */}
+                  {shareLink && (
+                    <div className={`grid transition-all duration-300 ease-in-out ${showQr ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                      <div className="overflow-hidden">
+                        <div className="flex flex-col items-center gap-2 pt-4 pb-2">
+                          <div className="bg-white p-3 rounded-xl shadow-xl shadow-black/40 ring-1 ring-white/20">
+                            <div role="img" aria-label={`QR code linking to ${shareLink}`}>
+                              <QRCodeSVG value={shareLink} size={120} level="M" bgColor="#ffffff" fgColor="#050505" />
+                            </div>
+                          </div>
+                          <p className="font-mono text-[10px] text-muted">Scan to join on mobile</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {(() => {
                     const hasGuests = host.onlineCount > 0
