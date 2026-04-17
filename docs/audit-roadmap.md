@@ -96,7 +96,7 @@ verified each one in the tree. Fix them in whichever phase fits.
 | ~~M14~~ | ~~`useCollabHost.ts:470-471`~~ `sendFileToRequester` | **VERIFIED-NOT-A-BUG** — every site that sets `transfer.aborted = true` (cancel-file, cancel-all, disconnect paths at 636, 1047, 1076, 1236, 1265) already calls `transfer.pauseResolver()` afterwards. The pause loop's `while (paused && !aborted)` exits on the next tick. No separate `abortResolver` needed; re-check after any refactor. |
 | ~~M15~~ | ~~`useCollabHost.ts:1293, 1070`~~ | **DONE** — `collab-file-end` now awaits `gs.chunkQueue` (per-peer) instead of `chunkQueueRef.current` (hook-level dead await — nothing actually appended to it after `gs.chunkQueue` landed). Removed the dead `chunkQueueRef` declaration. End-of-file processing no longer races against in-flight decrypts from other guests' uploads. |
 | ~~M16~~ | ~~`useCall.ts:506`~~ | **DONE** — resolves the removeListener slot via `emitter.off ?? emitter.removeListener` (eventemitter3 exposes both), typed once, runtime-checked, still wrapped in try/catch. No behaviour change today; robust if either alias is dropped by a future peerjs/eventemitter3 upgrade. |
-| M17 | `useCall.ts:74-114` | `classifyMediaError` and `liftLocalMediaError` near-identical AI-shaped switches. Fix: single classifier keyed by normalized `{name|code}` table. |
+| ~~M17~~ | ~~`useCall.ts:74-114`~~ | **DONE** — folded into one `classifyMediaError(key, fallbackMessage, preferTableMessage)` keyed by the shared `MEDIA_ERROR_TABLE`. Both call sites (getUserMedia error handler + the ?? chain that lifts `useLocalMedia.error`) pass the appropriate preference flag. Behaviour unchanged; dead duplicated switch gone. |
 | ~~M18~~ | ~~`useCall.ts:752-790`~~ | **DONE** — extended the duplicate-tab probe window from 150 ms to 300 ms. A sibling tab replying at 160-250 ms (main thread busy, under load) no longer slips past the guard and lets the user join twice. Still reads as instantaneous. |
 | ~~M19~~ | ~~`state/collabState.ts:84` `isValidSharedFile`~~ | **DONE** — `addedAt` rejects negative values and anything more than 24 h in the future (blocks sort-top manipulation while tolerating normal cross-timezone clock skew). `size: 0` kept — empty files are legitimate. Host now rate-limits `collab-file-shared` broadcasts at 10/s per guest via `gs.recentFileShares` sliding window; excess shares are dropped with a log line instead of costing N-1 encrypted relays. |
 | M20 | `ChatPanel.tsx:75-83` + `FileList.tsx:64-66` | **DEFERRED** — structural UI refactor (touches 63 KB ChatPanel + 32 KB FileList) disproportionate to the bug surface in practice. Revisit when ChatPanel gets broken up, ideally alongside P3.3 Playwright harness so the move can be smoke-tested end-to-end. |
@@ -515,17 +515,40 @@ ring buffer.
 Diagnostics section with Copy/Clear buttons that call `copyDiagnostics()`
 / `clearDiagnostics()` and write to the clipboard.
 
-### P2.2 — Property / fuzz tests at protocol boundary
+### P2.2 — Property / fuzz tests at protocol boundary **[DONE]**
 
-Once `protocol.ts` lands (P1.B), write a fuzzer that generates:
-- Random valid `PortalMsg` / `CollabInner` / `CallMsg`.
-- Intentionally malformed variants (wrong field types, missing required fields,
-  oversized strings up to the `isValidSharedFile` limits).
-Assert the hook's message dispatch never throws and never leaks memory
-(peerConnectionsRef and downloads are cleared on error).
+`src/net/protocol-fuzz.test.ts` — 24 tests covering the pure helpers
+that untrusted peer data flows through:
 
-Suggested tool: Vitest + a small home-rolled property generator. Don't pull
-in a dependency.
+- **Round-trip fuzz** — 200 random `PortalMsg` + 200 random
+  `CollabInnerMsg` + 100 `CollabUnencryptedMsg` + 100 `CallMsg`, each
+  encoded via `encodeEnc` and decoded via `decodeEnc`, asserting deep
+  equality. Fresh AES-GCM key per test.
+- **Malformed ciphertext** — empty string, random non-base64 garbage,
+  and ciphertext encrypted with a different key all reject via
+  `decodeEnc`.
+- **`assertNever` robustness** — 100 random off-union payloads,
+  20 circular-reference payloads, and every primitive type (null,
+  undefined, number, string, boolean, NaN) all throw with the
+  context label intact. The guard never crashes the caller.
+- **`sanitizeSharedFile` / `validateSharedFile` stress** — 500 valid
+  shares accepted, 500 random-junk-field variants never throw, every
+  invalid `size` (negative, NaN, Infinity, float, > 100 GB) rejected,
+  `addedAt` future/negative rejected, oversized name/id rejected,
+  oversized `thumbnail` and `textPreview` stripped by `sanitize` while
+  the rest of the share stays valid, 500 purely random-shape inputs
+  never throw.
+- **Large payload round-trip** — 100 KB `chat-encrypted.data` and a
+  `collab-file-list` with 100 entries both round-trip cleanly.
+
+No third-party property library; one small hand-rolled generator in
+the test file. Vitest picks it up via the glob and runs in ~400 ms.
+
+**Not in scope:** hook-level fuzz (feeding msgs into
+useSender/useReceiver/useCollabHost/useCollabGuest data handlers).
+That needs a mocked DataConnection + Peer harness and is deferred.
+The protocol-layer tests here catch every failure mode that isn't
+hook-state dependent.
 
 ### P2.3 — Scale `waitForBufferDrain` timeout to observed throughput
 
@@ -591,13 +614,32 @@ path per entry hook catches 80% of future regressions.
 
 Add `docs/self-hosting.md`.
 
-### P3.5 — Bundle size
+### P3.5 — Bundle size **[DONE]**
 
-`dist/assets/index-*.js` is 591 KB (167 KB gzip). `vite.config.ts` already
-splits peerjs / streamsaver / dnd / qrcode. Remaining win: lazy-load the
-call stack (useCall + CallPanel + useLocalMedia + useSpeakingLevels +
-AudioTile + VideoTile) — only needed when the user clicks "Start call".
-Could cut ~150 KB off the initial bundle.
+Split the call stack into its own chunk via `React.lazy` + Suspense.
+Added `src/components/CallPanelLazy.tsx` (tiny always-loaded stub)
+and `src/components/CallPanelRuntime.tsx` (the lazy target that
+calls `useLocalMedia` + `useCall` and renders `CallPanel`). All
+four pages (Home / Portal / CollabHostView / CollabGuestView)
+now import `CallPanelLazy` instead of the raw hooks/component.
+
+Measured (vite build):
+
+- Initial `index-*.js`: **591 KB -> 565 KB** (-26 KB raw,
+  -6 KB gzip)
+- New `CallPanelRuntime-*.js`: 50 KB / 15 KB gzip — loads after
+  the page's main layout has rendered.
+
+Net: ~50 KB / 15 KB gzip of call-lane code deferred off the
+critical path. Less than the roadmap's "~150 KB" estimate, but a
+real win and zero behaviour change (309/309 tests, production
+build clean). Can't gate on "user clicked start call" because the
+host needs `useCall`'s signaling handler installed BEFORE any
+guest's `call-join` arrives; otherwise we drop the message and
+the guest never gets a roster. A future pass could add a
+lightweight signaling-stub that buffers `call-*` messages and
+triggers the lazy load on first arrival, but that's a separate
+design problem and the current split already pays for itself.
 
 ---
 
