@@ -145,8 +145,9 @@ npm run dev
 Run the test suite:
 
 ```bash
-npm test                        # 209 tests
+npm test                        # 370 unit tests
 npm test -- --reporter=verbose  # see each test name
+npm run test:e2e                # Playwright E2E (local peerjs-server)
 ```
 
 ---
@@ -166,6 +167,8 @@ cp .env.example .env
 | `VITE_TURN_PASS` | TURN password | Optional |
 | `VITE_SIGNAL_HOST` | PeerJS signaling hostname | Optional |
 | `VITE_SIGNAL_PATH` | PeerJS signaling path | Optional |
+| `VITE_SIGNAL_PORT` | PeerJS signaling port (defaults to 443) | Optional |
+| `VITE_SIGNAL_SECURE` | `'false'` disables TLS (defaults to true) | Optional |
 
 > **Note:** The app works without any environment variables using public STUN servers. Configure TURN/signaling for better NAT traversal and full privacy (no third-party requests).
 
@@ -196,7 +199,7 @@ With self-hosted infrastructure, the only external connections during a session 
   <img src="https://img.shields.io/badge/Tailwind-4-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white" />
   <img src="https://img.shields.io/badge/WebRTC-P2P-333333?style=flat-square&logo=webrtc&logoColor=white" />
   <img src="https://img.shields.io/badge/Web%20Crypto-AES--256-000000?style=flat-square" />
-  <img src="https://img.shields.io/badge/Vitest-209%20tests-6E9F18?style=flat-square&logo=vitest&logoColor=white" />
+  <img src="https://img.shields.io/badge/Vitest-370%20tests-6E9F18?style=flat-square&logo=vitest&logoColor=white" />
 </p>
 
 - **Language:** TypeScript (strict mode)
@@ -204,7 +207,7 @@ With self-hosted infrastructure, the only external connections during a session 
 - **P2P:** PeerJS (WebRTC), Web Crypto API (ECDH + AES-256-GCM)
 - **Streaming:** StreamSaver.js, fflate (zip)
 - **Fonts:** Self-hosted Inter & JetBrains Mono via @fontsource
-- **Testing:** Vitest (209 tests — crypto, chunking, transfer pipeline, connection helpers, integration)
+- **Testing:** Vitest (370 unit tests — crypto, chunking, transfer engine, session lifecycle, protocol fuzzing, connection helpers, integration) + Playwright E2E against a local peerjs-server
 
 **No backend. No database. Deploy as a static site.**
 
