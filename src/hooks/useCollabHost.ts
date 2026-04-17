@@ -20,7 +20,8 @@ import {
   initialTransferState,
   CollabParticipant,
   SharedFile,
-  isValidSharedFile,
+  validateSharedFile,
+  sanitizeSharedFile,
 } from './state/collabState'
 import {
   FALLBACK_MAX_BYTES,
@@ -898,14 +899,18 @@ export function useCollabHost() {
 
           if (payload.type === 'collab-file-shared') {
             // C2/C3 — validate and bind the owner to the sending peer.
-            const fileData = payload.file as unknown
-            if (!isValidSharedFile(fileData)) {
-              console.warn('dropped invalid SharedFile from', gs.peerId)
+            const sanitized = sanitizeSharedFile(payload.file)
+            if (!sanitized) {
+              const reason = validateSharedFile(payload.file)
+              log.warn('useCollabHost.collabFileShared.invalid', `${reason} from ${gs.peerId}`)
               return
+            }
+            if (sanitized.droppedReasons.length > 0) {
+              log.info('useCollabHost.collabFileShared.sanitized', sanitized.droppedReasons.join(','))
             }
             // C3 — force owner to match the guest that sent it; host cannot forge.
             // TODO: full origin auth requires per-guest signing keys; host can still forge if determined
-            const bound: SharedFile = { ...(fileData as SharedFile), owner: gs.peerId, ownerName: gs.name }
+            const bound: SharedFile = { ...sanitized.file, owner: gs.peerId, ownerName: gs.name }
             dispatchFiles({ type: 'ADD_SHARED_FILE', payload: bound })
 
             // Relay to other guests (with bound owner).

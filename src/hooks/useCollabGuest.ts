@@ -20,7 +20,8 @@ import {
   initialTransferState,
   CollabParticipant,
   SharedFile,
-  isValidSharedFile,
+  validateSharedFile,
+  sanitizeSharedFile,
 } from './state/collabState'
 import {
   MAX_RETRIES,
@@ -1105,11 +1106,18 @@ export function useCollabGuest(roomId: string) {
                 console.warn('dropped invalid collab-file-list: not an array')
                 return
               }
-              const validated = raw.filter((f): f is SharedFile => {
-                const ok = isValidSharedFile(f)
-                if (!ok) console.warn('dropped invalid SharedFile in collab-file-list')
-                return ok
-              })
+              const validated: SharedFile[] = []
+              for (const f of raw) {
+                const sanitized = sanitizeSharedFile(f)
+                if (!sanitized) {
+                  log.warn('useCollabGuest.collabFileList.invalid', validateSharedFile(f) ?? 'unknown')
+                  continue
+                }
+                if (sanitized.droppedReasons.length > 0) {
+                  log.info('useCollabGuest.collabFileList.sanitized', sanitized.droppedReasons.join(','))
+                }
+                validated.push(sanitized.file)
+              }
               dispatchFiles({ type: 'SET_SHARED_FILES', payload: validated })
               return
             }
@@ -1135,11 +1143,15 @@ export function useCollabGuest(roomId: string) {
 
             // New file shared — C2 validate + C3 origin binding.
             if (payload.type === 'collab-file-shared') {
-              const fileData = payload.file as unknown
-              if (!isValidSharedFile(fileData)) {
-                console.warn('dropped invalid collab-file-shared')
+              const sanitized = sanitizeSharedFile(payload.file)
+              if (!sanitized) {
+                log.warn('useCollabGuest.collabFileShared.invalid', validateSharedFile(payload.file) ?? 'unknown')
                 return
               }
+              if (sanitized.droppedReasons.length > 0) {
+                log.info('useCollabGuest.collabFileShared.sanitized', sanitized.droppedReasons.join(','))
+              }
+              const fileData = sanitized.file
               const fromField = payload.from as string | undefined
               const f = fileData as SharedFile
               // C3 — the relayer must include `from`, and owner must match.

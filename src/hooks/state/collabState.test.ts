@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   isValidSharedFile,
+  validateSharedFile,
+  sanitizeSharedFile,
   roomReducer,
   participantsReducer,
   filesReducer,
@@ -89,6 +91,86 @@ describe('isValidSharedFile', () => {
   it('rejects missing addedAt', () => {
     expect(isValidSharedFile({ ...valid, addedAt: undefined })).toBe(false)
     expect(isValidSharedFile({ ...valid, addedAt: 'not-a-number' })).toBe(false)
+  })
+})
+
+describe('validateSharedFile (reason reporting)', () => {
+  const valid: SharedFile = {
+    id: 'f1',
+    name: 'doc.txt',
+    size: 1024,
+    type: 'text/plain',
+    owner: 'peer-1',
+    ownerName: 'Alice',
+    addedAt: Date.now(),
+  }
+
+  it('returns null for well-formed payload', () => {
+    expect(validateSharedFile(valid)).toBeNull()
+  })
+
+  it('reports the failing field for length overflows', () => {
+    expect(validateSharedFile({ ...valid, id: 'x'.repeat(65) })).toContain('id:len=')
+    expect(validateSharedFile({ ...valid, name: 'a'.repeat(256) })).toContain('name:len=')
+    expect(validateSharedFile({ ...valid, owner: '' })).toContain('owner:len=0')
+    expect(validateSharedFile({ ...valid, thumbnail: 'x'.repeat(200_001) })).toContain('thumbnail:len=')
+    expect(validateSharedFile({ ...valid, textPreview: 'y'.repeat(2001) })).toContain('textPreview:len=')
+  })
+
+  it('reports size issues distinctly', () => {
+    expect(validateSharedFile({ ...valid, size: -1 })).toContain('size:out-of-range')
+    expect(validateSharedFile({ ...valid, size: 1.5 })).toContain('size:not-integer')
+  })
+})
+
+describe('sanitizeSharedFile', () => {
+  const valid: SharedFile = {
+    id: 'f1',
+    name: 'doc.txt',
+    size: 1024,
+    type: 'text/plain',
+    owner: 'peer-1',
+    ownerName: 'Alice',
+    addedAt: Date.now(),
+  }
+
+  it('returns the file unchanged when everything is valid', () => {
+    const result = sanitizeSharedFile(valid)
+    expect(result).not.toBeNull()
+    expect(result!.file).toEqual(valid)
+    expect(result!.droppedReasons).toEqual([])
+  })
+
+  it('strips an oversized thumbnail and accepts the file', () => {
+    const over = { ...valid, thumbnail: 'x'.repeat(200_001) }
+    const result = sanitizeSharedFile(over)
+    expect(result).not.toBeNull()
+    expect(result!.file.thumbnail).toBeUndefined()
+    expect(result!.droppedReasons[0]).toContain('thumbnail:len=')
+  })
+
+  it('strips an oversized textPreview and accepts the file', () => {
+    const over = { ...valid, textPreview: 'y'.repeat(2001) }
+    const result = sanitizeSharedFile(over)
+    expect(result).not.toBeNull()
+    expect(result!.file.textPreview).toBeUndefined()
+    expect(result!.droppedReasons[0]).toContain('textPreview:len=')
+  })
+
+  it('strips both cosmetic fields when both overflow', () => {
+    const over = { ...valid, thumbnail: 'x'.repeat(200_001), textPreview: 'y'.repeat(2001) }
+    const result = sanitizeSharedFile(over)
+    expect(result).not.toBeNull()
+    expect(result!.file.thumbnail).toBeUndefined()
+    expect(result!.file.textPreview).toBeUndefined()
+    expect(result!.droppedReasons.length).toBe(2)
+  })
+
+  it('returns null when an essential field is invalid', () => {
+    expect(sanitizeSharedFile({ ...valid, id: '' })).toBeNull()
+    expect(sanitizeSharedFile({ ...valid, owner: '' })).toBeNull()
+    expect(sanitizeSharedFile({ ...valid, size: -1 })).toBeNull()
+    expect(sanitizeSharedFile(null)).toBeNull()
   })
 })
 

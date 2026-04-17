@@ -75,20 +75,79 @@ const MAX_TEXT_PREVIEW = 2000
 /**
  * Validate a SharedFile payload received from a peer/host. Used to drop
  * malformed or oversized entries instead of trusting the wire format.
+ *
+ * Returns null when valid; otherwise a short reason string so callers can
+ * log which field failed (the original boolean answer lost that signal and
+ * made field-level regressions invisible in production).
  */
-export function isValidSharedFile(obj: unknown): obj is SharedFile {
-  if (!obj || typeof obj !== 'object') return false
+export function validateSharedFile(obj: unknown): string | null {
+  if (!obj || typeof obj !== 'object') return 'not-object'
   const f = obj as Record<string, unknown>
-  if (typeof f.id !== 'string' || f.id.length === 0 || f.id.length > MAX_FILE_ID) return false
-  if (typeof f.name !== 'string' || f.name.length === 0 || f.name.length > MAX_FILE_NAME) return false
-  if (typeof f.size !== 'number' || !Number.isFinite(f.size) || !Number.isInteger(f.size) || f.size < 0 || f.size > MAX_FILE_SIZE) return false
-  if (typeof f.type !== 'string' || f.type.length > MAX_FILE_TYPE) return false
-  if (typeof f.owner !== 'string' || f.owner.length === 0 || f.owner.length > MAX_OWNER_ID) return false
-  if (typeof f.ownerName !== 'string' || f.ownerName.length === 0 || f.ownerName.length > MAX_OWNER_NAME) return false
-  if (f.thumbnail !== undefined && (typeof f.thumbnail !== 'string' || f.thumbnail.length > MAX_THUMB_LEN)) return false
-  if (f.textPreview !== undefined && (typeof f.textPreview !== 'string' || f.textPreview.length > MAX_TEXT_PREVIEW)) return false
-  if (typeof f.addedAt !== 'number' || !Number.isFinite(f.addedAt)) return false
-  return true
+  if (typeof f.id !== 'string') return 'id:not-string'
+  if (f.id.length === 0 || f.id.length > MAX_FILE_ID) return `id:len=${f.id.length}`
+  if (typeof f.name !== 'string') return 'name:not-string'
+  if (f.name.length === 0 || f.name.length > MAX_FILE_NAME) return `name:len=${f.name.length}`
+  if (typeof f.size !== 'number') return `size:type=${typeof f.size}`
+  if (!Number.isFinite(f.size)) return 'size:not-finite'
+  if (!Number.isInteger(f.size)) return `size:not-integer(${f.size})`
+  if (f.size < 0 || f.size > MAX_FILE_SIZE) return `size:out-of-range(${f.size})`
+  if (typeof f.type !== 'string') return `type:type=${typeof f.type}`
+  if (f.type.length > MAX_FILE_TYPE) return `type:len=${f.type.length}`
+  if (typeof f.owner !== 'string') return `owner:type=${typeof f.owner}`
+  if (f.owner.length === 0 || f.owner.length > MAX_OWNER_ID) return `owner:len=${f.owner.length}`
+  if (typeof f.ownerName !== 'string') return `ownerName:type=${typeof f.ownerName}`
+  if (f.ownerName.length === 0 || f.ownerName.length > MAX_OWNER_NAME) return `ownerName:len=${f.ownerName.length}`
+  if (f.thumbnail !== undefined) {
+    if (typeof f.thumbnail !== 'string') return `thumbnail:type=${typeof f.thumbnail}`
+    if (f.thumbnail.length > MAX_THUMB_LEN) return `thumbnail:len=${f.thumbnail.length}`
+  }
+  if (f.textPreview !== undefined) {
+    if (typeof f.textPreview !== 'string') return `textPreview:type=${typeof f.textPreview}`
+    if (f.textPreview.length > MAX_TEXT_PREVIEW) return `textPreview:len=${f.textPreview.length}`
+  }
+  if (typeof f.addedAt !== 'number') return `addedAt:type=${typeof f.addedAt}`
+  if (!Number.isFinite(f.addedAt)) return 'addedAt:not-finite'
+  return null
+}
+
+export function isValidSharedFile(obj: unknown): obj is SharedFile {
+  return validateSharedFile(obj) === null
+}
+
+/**
+ * Accept a SharedFile if the essential fields are valid, stripping cosmetic
+ * fields (`thumbnail`, `textPreview`) that exceed their size bounds.
+ *
+ * The C2 validator was rejecting whole file shares when an unexpectedly
+ * large thumbnail/preview pushed one optional field past its cap, which
+ * was the failure path seen in practice (the file would never appear on
+ * the host or other guests). Cosmetic overage is not a security issue —
+ * drop it and keep the share.
+ *
+ * Returns `{ file, droppedReasons[] }` on success, or `null` if an
+ * essential field is still invalid.
+ */
+export function sanitizeSharedFile(obj: unknown): { file: SharedFile; droppedReasons: string[] } | null {
+  if (!obj || typeof obj !== 'object') return null
+  const copy: Record<string, unknown> = { ...(obj as Record<string, unknown>) }
+  const droppedReasons: string[] = []
+  for (let i = 0; i < 2; i++) {
+    const reason = validateSharedFile(copy)
+    if (reason === null) break
+    if (reason.startsWith('thumbnail:') && 'thumbnail' in copy) {
+      delete copy.thumbnail
+      droppedReasons.push(reason)
+      continue
+    }
+    if (reason.startsWith('textPreview:') && 'textPreview' in copy) {
+      delete copy.textPreview
+      droppedReasons.push(reason)
+      continue
+    }
+    return null
+  }
+  if (validateSharedFile(copy) !== null) return null
+  return { file: copy as unknown as SharedFile, droppedReasons }
 }
 
 // ── Room State ───────────────────────────────────────────────────────────
