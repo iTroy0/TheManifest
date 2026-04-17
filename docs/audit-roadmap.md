@@ -127,7 +127,36 @@ Migrated call sites (all 7):
 Hooks no longer import `importPublicKey` / `deriveSharedKey` /
 `getKeyFingerprint` directly. 256/256 existing tests still pass.
 
-### P1.B — `src/net/protocol.ts`  (~3–4 h, Medium risk)
+### P1.B — `src/net/protocol.ts` **[INBOUND DONE]**
+
+Typed discriminated unions for every wire message landed as five commits:
+
+1. `6d5f8b5` — `src/net/protocol.ts` + round-trip tests. `PortalMsg`,
+   `CollabEnvelope` + `CollabInnerMsg`, `CollabUnencryptedMsg`,
+   `CallMsg`, `encodeEnc`/`decodeEnc`/`assertNever` helpers.
+2. `a96fecf` — useSender inbound: `msg = data as PortalMsg`, call-*
+   hoist, `NicknameChangeMsg` added to union.
+3. `9a6239b` — useReceiver + useCollabHost + useCollabGuest inbound.
+   Added `ManifestMsg`/`FileStartMsg`/`FileEndMsg` to PortalMsg,
+   `ClosingMsg`/`JoinMsg`/`TypingMsg`/`ReactionMsg` to
+   CollabUnencryptedMsg, `collab-peer-renamed` to CollabInnerMsg.
+   Encrypted inner payloads go through
+   `decryptJSON<CollabInnerMsg>`.
+4. `9161bd3` — useCall: `call = msg as CallMsg`, `call-rejected`
+   added to the union.
+
+**Still open** (follow-up): outbound construction sites in all five
+hooks still use inline object literals. A `satisfies PortalMsg`
+(or `satisfies CallMsg` / `CollabInnerMsg`) pass — or a typed
+`send<M>(conn, m: M)` helper — would lock the other direction too.
+~35 call sites in useSender alone. Low risk, mechanical; defer to
+its own PR to keep bisect useful.
+
+tsc: clean across all five commits. vitest: 271/271.
+
+---
+
+### P1.B — notes from the original plan (kept for reference)
 
 Typed discriminated union for every wire message. Replace inline object
 literals.
