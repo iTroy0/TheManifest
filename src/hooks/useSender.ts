@@ -1,9 +1,10 @@
 import Peer, { DataConnection } from 'peerjs'
 import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
-import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
+import { parseChunkPacket, buildChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
+import { sendFile, portalWire } from '../net/transferEngine'
 import { generateKeyPair, exportPublicKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, uint8ToBase64, base64ToUint8, timingSafeEqual } from '../utils/crypto'
 import { finalizeKeyExchange } from '../net/keyExchange'
-import { createSession, type Session, type TransferHandle } from '../net/session'
+import { createSession, type Session } from '../net/session'
 import { STUN_ONLY } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { buildManifestData } from '../utils/manifest'
@@ -644,10 +645,31 @@ export function useSender() {
           const resumeChunk = Math.min(Math.max(0, (msg.resumeChunk as number) || 0), Math.max(0, totalChunks - 1))
           startTransfer(file.size)
           try {
-            await sendSingleFile(conn, filesRef.current, msg.index as number, resumeChunk, entry, session.encryptKey, aggregateUI)
+            const fileIndex = msg.index as number
+            const fileToSend = filesRef.current[fileIndex]
+            if (!fileToSend) {
+              log.warn('useSender.sendFile.missingFile', { index: fileIndex })
+            } else {
+              if (!meta.chunker) meta.chunker = new AdaptiveChunker()
+              const result = await sendFile(entry.session, fileToSend, portalWire, {
+                fileId: `file-${fileIndex}`,
+                startChunk: resumeChunk,
+                chunker: meta.chunker,
+                signal: undefined,
+                onProgress: (sent, total) => {
+                  meta.totalSent = sent
+                  meta.progress[fileToSend.name] = total > 0 ? Math.round(sent / total * 100) : 0
+                  meta.currentFileIndex = fileIndex
+                  aggregateUI()
+                },
+              })
+              if (result !== 'complete') {
+                log.warn('useSender.sendFile.result', { result, index: fileIndex })
+              }
+            }
             if (!meta.abort.aborted) endTransfer()
           } catch (e) {
-            console.warn('sendSingleFile failed:', e)
+            log.warn('useSender.requestFile.failed', e)
             meta.abort.aborted = true
             endTransfer()
             try { conn.close() } catch (err) { log.warn('useSender.requestFile.closeAfterFail', err) }
@@ -660,8 +682,31 @@ export function useSender() {
           startTransfer(transferSize)
           for (const idx of indices) {
             if (meta.abort.aborted) break
-            try { await sendSingleFile(conn, filesRef.current, idx, 0, entry, session.encryptKey, aggregateUI) }
-            catch (e) {
+            const idxFile = filesRef.current[idx]
+            if (!idxFile) {
+              log.warn('useSender.sendFile.missingFile', { index: idx })
+              try { session.send({ type: 'file-skipped', index: idx, reason: 'missing-file' } satisfies PortalMsg) }
+              catch (sendErr) { log.warn('useSender.requestAll.skipNotify', sendErr) }
+              continue
+            }
+            try {
+              if (!meta.chunker) meta.chunker = new AdaptiveChunker()
+              const result = await sendFile(entry.session, idxFile, portalWire, {
+                fileId: `file-${idx}`,
+                startChunk: 0,
+                chunker: meta.chunker,
+                signal: undefined,
+                onProgress: (sent, total) => {
+                  meta.totalSent = sent
+                  meta.progress[idxFile.name] = total > 0 ? Math.round(sent / total * 100) : 0
+                  meta.currentFileIndex = idx
+                  aggregateUI()
+                },
+              })
+              if (result !== 'complete') {
+                log.warn('useSender.sendFile.result', { result, index: idx })
+              }
+            } catch (e) {
               log.warn('useSender.requestAll.skip', e)
               // Tell the receiver why the file is missing from the batch so
               // it can surface the failure instead of silently completing
@@ -681,8 +726,31 @@ export function useSender() {
           startTransfer(transferSize)
           for (let i = 0; i < filesRef.current.length; i++) {
             if (meta.abort.aborted) break
-            try { await sendSingleFile(conn, filesRef.current, i, 0, entry, session.encryptKey, aggregateUI) }
-            catch (e) {
+            const readyFile = filesRef.current[i]
+            if (!readyFile) {
+              log.warn('useSender.sendFile.missingFile', { index: i })
+              try { session.send({ type: 'file-skipped', index: i, reason: 'missing-file' } satisfies PortalMsg) }
+              catch (sendErr) { log.warn('useSender.ready.skipNotify', sendErr) }
+              continue
+            }
+            try {
+              if (!meta.chunker) meta.chunker = new AdaptiveChunker()
+              const result = await sendFile(entry.session, readyFile, portalWire, {
+                fileId: `file-${i}`,
+                startChunk: 0,
+                chunker: meta.chunker,
+                signal: undefined,
+                onProgress: (sent, total) => {
+                  meta.totalSent = sent
+                  meta.progress[readyFile.name] = total > 0 ? Math.round(sent / total * 100) : 0
+                  meta.currentFileIndex = i
+                  aggregateUI()
+                },
+              })
+              if (result !== 'complete') {
+                log.warn('useSender.sendFile.result', { result, index: i })
+              }
+            } catch (e) {
               log.warn('useSender.ready.skip', e)
               try { session.send({ type: 'file-skipped', index: i, reason: (e as Error)?.message || 'send-failed' } satisfies PortalMsg) }
               catch (sendErr) { log.warn('useSender.ready.skipNotify', sendErr) }
@@ -696,9 +764,30 @@ export function useSender() {
         }
 
         if (msg.type === 'resume') {
-          const transferSize = filesRef.current[msg.fileIndex as number]?.size || 0
+          const resumeIndex = msg.fileIndex as number
+          const resumeFile = filesRef.current[resumeIndex]
+          const transferSize = resumeFile?.size || 0
           startTransfer(transferSize)
-          await sendSingleFile(conn, filesRef.current, msg.fileIndex as number, msg.chunkIndex as number, entry, session.encryptKey, aggregateUI)
+          if (!resumeFile) {
+            log.warn('useSender.sendFile.missingFile', { index: resumeIndex })
+          } else {
+            if (!meta.chunker) meta.chunker = new AdaptiveChunker()
+            const result = await sendFile(entry.session, resumeFile, portalWire, {
+              fileId: `file-${resumeIndex}`,
+              startChunk: msg.chunkIndex as number,
+              chunker: meta.chunker,
+              signal: undefined,
+              onProgress: (sent, total) => {
+                meta.totalSent = sent
+                meta.progress[resumeFile.name] = total > 0 ? Math.round(sent / total * 100) : 0
+                meta.currentFileIndex = resumeIndex
+                aggregateUI()
+              },
+            })
+            if (result !== 'complete') {
+              log.warn('useSender.sendFile.result', { result, index: resumeIndex })
+            }
+          }
           if (!meta.abort.aborted) endTransfer()
         }
       })
@@ -933,104 +1022,6 @@ export function useSender() {
   return { peerId: conn.peerId, status: conn.status, progress: transfer.progress, overallProgress: transfer.overallProgress, speed: transfer.speed, eta: transfer.eta, setFiles, reset, currentFileIndex: transfer.currentFileIndex, totalSent: transfer.totalSent, fingerprint: conn.fingerprint, recipientCount: conn.recipientCount, setPassword, setChatOnly, peer: peerInstance, participants, sendCallMessage, broadcastCallMessage, setCallMessageHandler, broadcastManifest, messages, sendMessage, clearMessages, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction }
 }
 
-// ── sendSingleFile ────────────────────────────────────────────────────────
-
-async function sendSingleFile(
-  conn: DataConnection,
-  files: File[],
-  index: number,
-  startChunk: number,
-  entry: ConnEntry,
-  encryptKey: CryptoKey | null,
-  aggregateUI: () => void
-): Promise<void> {
-  const file = files[index]
-  if (!file) return
-
-  const { session, meta } = entry
-
-  if (!meta.chunker) meta.chunker = new AdaptiveChunker()
-  if (!meta.progressThrottler) meta.progressThrottler = new ProgressThrottler(80)
-
-  const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
-
-  meta.currentFileIndex = index
-  // Register the transfer on the session so inbound pause/resume/cancel
-  // messages route to this handle via session.pauseTransfer / etc.
-  const transferId = `file-${index}`
-  const handle: TransferHandle = {
-    transferId,
-    direction: 'outbound',
-    aborted: false,
-    paused: false,
-  }
-  session.beginTransfer(handle)
-
-  try {
-    conn.send({ type: 'file-start', name: file.name, size: file.size, index, totalChunks, resumeFrom: startChunk } satisfies PortalMsg)
-
-    let chunkIndex = 0
-    let fileSent = startChunk * CHUNK_SIZE
-    let chunkStartTime = 0
-
-    for await (const { buffer: chunkData } of chunkFileAdaptive(file, meta.chunker)) {
-      if (meta.abort.aborted) return
-      if (handle.aborted) {
-        try { conn.send({ type: 'file-cancelled', index } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendSingleFile.cancelled.send', e) }
-        return
-      }
-      if (handle.paused) {
-        await new Promise<void>(r => { handle.pauseResolver = r })
-        handle.pauseResolver = undefined
-        if (meta.abort.aborted) return
-        if (handle.aborted) {
-          try { conn.send({ type: 'file-cancelled', index } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendSingleFile.cancelled.send', e) }
-          return
-        }
-      }
-
-      if (chunkIndex < startChunk) {
-        chunkIndex++
-        continue
-      }
-
-      chunkStartTime = Date.now()
-
-      const dataToSend: ArrayBuffer = encryptKey
-        ? await encryptChunk(encryptKey, chunkData)
-        : chunkData
-
-      const packet = buildChunkPacket(index, chunkIndex, dataToSend)
-      conn.send(packet)
-      await waitForBufferDrain(conn)
-
-      const transferTime = Date.now() - chunkStartTime
-      meta.chunker.recordTransfer(chunkData.byteLength, transferTime)
-
-      chunkIndex++
-      fileSent += chunkData.byteLength
-      meta.totalSent += chunkData.byteLength
-      meta.progress[file.name] = Math.round((fileSent / file.size) * 100)
-
-      if (meta.progressThrottler.shouldUpdate()) {
-        const now = Date.now()
-        const elapsed = (now - meta.startTime!) / 1000
-        if (elapsed > 0.5) meta.speed = meta.totalSent / elapsed
-        aggregateUI()
-      }
-    }
-
-    if (!meta.abort.aborted && !handle.aborted) {
-      conn.send({ type: 'file-end', index } satisfies PortalMsg)
-      meta.progress[file.name] = 100
-      meta.progressThrottler!.forceUpdate()
-      aggregateUI()
-    }
-  } finally {
-    const reason = handle.aborted ? 'cancelled' : (meta.abort.aborted ? 'error' : 'complete')
-    session.endTransfer(transferId, reason)
-  }
-}
 
 // ── handleHostChunk ───────────────────────────────────────────────────────
 

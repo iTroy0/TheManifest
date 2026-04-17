@@ -41,6 +41,7 @@ export async function sendFile(
         name: file.name,
         size: file.size,
         totalChunks,
+        startChunk: opts.startChunk,
       })) as Record<string, unknown>,
     )
   } catch {

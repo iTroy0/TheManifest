@@ -20,6 +20,7 @@ export const portalWire: WireAdapter = {
       name: m.name,
       size: m.size,
       totalChunks: m.totalChunks,
+      ...(m.startChunk ? { resumeFrom: m.startChunk } : {}),
     } satisfies PortalMsg
   },
   async buildFileEnd(_s, fileId) {

@@ -37,7 +37,7 @@ export interface FileReceiver {
 export interface WireAdapter {
   buildFileStart(
     session: Session,
-    m: { fileId: string; name: string; size: number; totalChunks: number },
+    m: { fileId: string; name: string; size: number; totalChunks: number; startChunk?: number },
   ): Promise<unknown>
   buildFileEnd(session: Session, fileId: string): Promise<unknown>
   buildFileCancelled(session: Session, fileId: string): Promise<unknown>
