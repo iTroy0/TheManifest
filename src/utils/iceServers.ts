@@ -65,8 +65,16 @@ async function fetchTurnCredentials(signal: AbortSignal): Promise<{ username: st
 export async function getWithTurn(): Promise<PeerConfig> {
   if (!TURN_URL) return STUN_ONLY
 
-  // Try twice with a 3-second timeout each attempt (max 6s total vs 10s)
+  // Try twice with a 3-second timeout each attempt (max 6s total vs 10s).
+  // Between attempts, wait ~500 ms + jitter so a transient TURN API blip
+  // isn't hit with a second request 0 ms later (which very often rides the
+  // same failing connection). Jitter avoids thundering-herd if multiple
+  // tabs recover simultaneously.
   for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      const backoff = 500 + Math.floor(Math.random() * 500)
+      await new Promise<void>(resolve => setTimeout(resolve, backoff))
+    }
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 3000)
     try {

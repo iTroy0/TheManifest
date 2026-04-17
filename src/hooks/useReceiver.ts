@@ -885,7 +885,11 @@ export function useReceiver(peerId: string) {
     if (!manifestFiles || fileIndex >= manifestFiles.length) return
 
     lastFileIndexRef.current = fileIndex
-    lastChunkIndexRef.current = chunkIndex + 1
+    // Take the max so out-of-order chunk arrival (slow or malicious sender)
+    // can't roll the resume cursor backwards. The assignment-form used to
+    // let a tail chunk followed by a head chunk silently reset resume to
+    // the low index, which corrupted reconnect continuation.
+    lastChunkIndexRef.current = Math.max(lastChunkIndexRef.current, chunkIndex + 1)
     totalReceivedRef.current += (plainData as { byteLength: number }).byteLength
     const metaForBytes = fileMetaRef.current[fileIndex]
     if (metaForBytes) metaForBytes.received = (metaForBytes.received || 0) + (plainData as { byteLength: number }).byteLength

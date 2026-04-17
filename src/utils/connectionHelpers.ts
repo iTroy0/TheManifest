@@ -35,6 +35,11 @@ export function setupHeartbeat(conn: DataConnection, { onDead, interval = 5000, 
   const pingTimer = setInterval(() => {
     try {
       conn.send({ type: 'ping', ts: Date.now() })
+      // Successful send means the data channel is at least half-alive right
+      // now. Reset so a short network blip in the middle of an otherwise
+      // healthy session can't rack up 3 failures across 15 s and kill a
+      // connection that recovered between pings.
+      consecutivePingFailures = 0
     } catch {
       consecutivePingFailures++
       if (consecutivePingFailures >= 3) {

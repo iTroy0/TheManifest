@@ -884,6 +884,12 @@ export function useCollabHost() {
           refreshParticipantsList()
           // Also update any files owned by this guest in our local file list.
           dispatchFiles({ type: 'UPDATE_SHARED_FILE_OWNER_NAME', ownerId: gs.peerId, newName })
+          // Trust model: the broadcast uses `gs.peerId`, NOT the `peerId`
+          // in the inbound `nickname-change` payload. The host rewrites the
+          // peer identity to the authenticated connection owner so a guest
+          // cannot rename a different participant by forging `peerId`. Do
+          // not change this to echo `msg.peerId` without a new validation
+          // step — that would reopen the impersonation path.
           broadcast({ type: 'collab-peer-renamed', peerId: gs.peerId, oldName, newName }, gs.peerId)
           setMessages(prev => [...prev, { text: `${oldName} renamed to ${newName}`, from: 'system', time: Date.now(), self: false }].slice(-500))
           return

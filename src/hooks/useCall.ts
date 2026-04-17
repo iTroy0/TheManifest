@@ -502,8 +502,13 @@ export function useCall(options: UseCallOptions) {
       // 'call' is owned by us — no other consumer subscribes to it.
       try { peer.removeAllListeners('call') } catch {}
       // 'error' is shared with useReceiver/useSender — only remove our own
-      // handler. eventemitter3's removeListener is the canonical method.
-      try { (peer as unknown as { removeListener: (e: string, h: (...a: unknown[]) => void) => void }).removeListener('error', errHandler) } catch {}
+      // handler. eventemitter3 exposes both `off` (modern alias) and
+      // `removeListener`; prefer `off` and fall back to `removeListener`
+      // so we don't break if the underlying emitter ever drops one alias.
+      type OffFn = (event: string, handler: (...args: unknown[]) => void) => void
+      const emitter = peer as unknown as { off?: OffFn; removeListener?: OffFn }
+      const off = emitter.off ?? emitter.removeListener
+      if (off) { try { off.call(peer, 'error', errHandler) } catch {} }
     }
   }, [peer, upsertRoster, closeMediaConn, removeFromRoster])
 
@@ -745,10 +750,14 @@ export function useCall(options: UseCallOptions) {
     setEndReason(null)
 
     // Duplicate-tab guard: ask any sibling tabs whether they're already in
-    // this room. If anyone responds within 150ms, refuse the join. The
+    // this room. If anyone responds within 300 ms, refuse the join. The
     // "room" is the host's peerId for non-hosts, which is shared across
     // tabs of the same browser. Hosts have a unique peerId per tab, so
     // they can't accidentally double-join the same room.
+    // 150 ms was too tight — a sibling tab on a busy main thread or
+    // under load could reply at 160-200 ms and slip through, letting
+    // the user join twice. 300 ms still reads as instantaneous to the
+    // user and covers realistic BroadcastChannel latencies.
     if (!isHost && hostPeerId && typeof BroadcastChannel !== 'undefined') {
       let conflict = false
       let probe: BroadcastChannel | null = null
@@ -762,7 +771,7 @@ export function useCall(options: UseCallOptions) {
         }
         probe.addEventListener('message', probeHandler)
         probe.postMessage({ type: 'who', tabId: TAB_ID })
-        await new Promise<void>(resolve => setTimeout(resolve, 150))
+        await new Promise<void>(resolve => setTimeout(resolve, 300))
         probe.removeEventListener('message', probeHandler)
       } catch {
         // BroadcastChannel unavailable / blocked — skip the guard.

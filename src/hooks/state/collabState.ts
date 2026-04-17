@@ -117,6 +117,13 @@ export function validateSharedFile(obj: unknown): string | null {
   }
   if (typeof f.addedAt !== 'number') return `addedAt:type=${typeof f.addedAt}`
   if (!Number.isFinite(f.addedAt)) return 'addedAt:not-finite'
+  // Reject negative (pre-epoch) or suspiciously future-dated timestamps.
+  // `Number.isFinite` still admits 10^18 — which would let a malicious peer
+  // sort their entry to the top of the list forever. Real clocks skew by
+  // minutes to a few hours across time zones, so +24 h is a generous cap
+  // without being useful for ordering manipulation.
+  if (f.addedAt < 0) return `addedAt:negative(${f.addedAt})`
+  if (f.addedAt > Date.now() + 24 * 60 * 60 * 1000) return `addedAt:future(${f.addedAt})`
   return null
 }
 
