@@ -70,9 +70,16 @@ describe('isValidSharedFile', () => {
     expect(isValidSharedFile({ ...valid, size: NaN })).toBe(false)
   })
 
-  it('rejects size over 5 GB cap', () => {
-    const over = 5 * 1024 * 1024 * 1024 + 1
+  it('rejects size over 100 GB cap', () => {
+    const over = 100 * 1024 * 1024 * 1024 + 1
     expect(isValidSharedFile({ ...valid, size: over })).toBe(false)
+  })
+
+  it('accepts a multi-GB file below the cap', () => {
+    // Regression: users with 6–10 GB files were being silently dropped under
+    // the old 5 GB cap. This guards against quiet regressions of that cap.
+    const tenGB = 10 * 1024 * 1024 * 1024
+    expect(isValidSharedFile({ ...valid, size: tenGB })).toBe(true)
   })
 
   it('rejects oversized thumbnail (>200KB)', () => {

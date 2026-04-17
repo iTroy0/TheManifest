@@ -65,7 +65,13 @@ export interface CollabFileEntry {
 // Maximum allowed values for incoming file metadata.
 const MAX_FILE_ID = 64
 const MAX_FILE_NAME = 255
-const MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024 // 5 GB
+// Upper bound exists purely as a sanity gate against a peer sending a
+// garbage size (e.g. Number.MAX_SAFE_INTEGER) that downstream code would
+// divide by, allocate against, or pass to progress math. Legitimate shares
+// stream over chunked WebRTC + StreamSaver so there is no intrinsic
+// transfer-size limit; 100 GB is well above any realistic single-file use
+// case while still rejecting obviously malformed values.
+const MAX_FILE_SIZE = 100 * 1024 * 1024 * 1024 // 100 GB
 const MAX_FILE_TYPE = 128
 const MAX_OWNER_ID = 64
 const MAX_OWNER_NAME = 32
