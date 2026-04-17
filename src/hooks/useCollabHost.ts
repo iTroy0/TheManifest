@@ -307,6 +307,12 @@ export function useCollabHost() {
     if (ownerEntry) {
       try { await ownerEntry.meta.uploadReceiver.abort(fileId, 'cancelled') } catch (e) { log.warn('useCollabHost.cancelFile.receiverAbort', e) }
     }
+
+    // Clear the host's local download entry so the UI chip disappears.
+    // useCollabGuest.cancelFile does the analogous dispatch; the host path
+    // was missing it, leaving the entry visible after the network-level
+    // cancel succeeded.
+    dispatchFiles({ type: 'REMOVE_DOWNLOAD', fileId })
   }, [clearDownloadTimeout])
 
   // Clear a download entry (e.g. dismiss an error chip)

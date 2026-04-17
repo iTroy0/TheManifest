@@ -4,7 +4,7 @@ import { parseChunkPacket, buildChunkPacket, waitForBufferDrain, CHAT_IMAGE_FILE
 import { generateKeyPair, exportPublicKey, encryptChunk, decryptChunk, decryptJSON, uint8ToBase64 } from '../utils/crypto'
 import { finalizeKeyExchange } from '../net/keyExchange'
 import { createSession, type Session } from '../net/session'
-import { createFileStream } from '../utils/streamWriter'
+import { createFileWritableStream } from '../utils/streamWriter'
 import { createStreamingZip } from '../utils/zipBuilder'
 import { createFileReceiver, portalWire } from '../net/transferEngine'
 import type { FileReceiver } from '../net/transferEngine'
@@ -512,22 +512,18 @@ export function useReceiver(peerId: string) {
             if (!zipModeRef.current || !zipWriterRef.current) {
               // Attempt StreamSaver path — createFileStream returns null when
               // the browser doesn't support WritableStream (mobile, Firefox).
-              // On success, hand the native WritableStream to the engine so it
-              // owns decrypt + write.  On failure fall back to in-memory buffer.
-              const streamHandle = createFileStream(sanitizeFileName(msg.name as string), msg.size as number)
-              if (streamHandle && receiverRef.current) {
-                // Wrap the FileStreamHandle in a native WritableStream so the
-                // engine can call .getWriter() on it.
-                const nativeSink = new WritableStream<Uint8Array>({
-                  write(chunk) { return streamHandle.write(chunk) },
-                  close() { return streamHandle.close() },
-                  abort(_reason) { return streamHandle.abort() },
-                })
+              // On success, hand the StreamSaver WritableStream to the engine
+              // so it owns decrypt + write.  On failure fall back to in-memory
+              // buffer.  Pass the stream through directly (no wrapper) — an
+              // extra WritableStream layer was swallowing the final flush and
+              // the browser never produced a `download` event.
+              const streamSink = createFileWritableStream(sanitizeFileName(msg.name as string), msg.size as number)
+              if (streamSink && receiverRef.current) {
                 await receiverRef.current.onFileStart({
                   fileId: `file-${idx}`,
                   totalBytes: msg.size as number,
                   totalChunks: msg.totalChunks as number,
-                  sink: nativeSink,
+                  sink: streamSink,
                   onProgress: (written, total) => {
                     const meta = fileMetaRef.current[idx]
                     if (meta) meta.received = written
