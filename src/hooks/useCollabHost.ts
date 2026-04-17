@@ -1558,14 +1558,20 @@ export function useCollabHost() {
 
   const setMyName = useCallback((name: string): void => {
     const newName = name.trim() || 'Host'
+    const oldName = room.myName
+    if (oldName === newName) return
     dispatchRoom({ type: 'SET', payload: { myName: newName } })
     // Also update the file entries owned by the host locally.
     const myId = peerRef.current?.id
     if (myId) {
       dispatchFiles({ type: 'UPDATE_SHARED_FILE_OWNER_NAME', ownerId: myId, newName })
     }
-    // Broadcast rename to all guests so they can update their participant list.
-    broadcast({ type: 'collab-peer-renamed', peerId: myId || '', oldName: room.myName, newName } satisfies CollabUnencryptedMsg)
+    // Announce locally — mirrors the system-msg the host appends for a
+    // guest's rename (L922), so the host's own rename shows up in chat too.
+    setMessages(prev => [...prev, { text: `${oldName} renamed to ${newName}`, from: 'system', time: Date.now(), self: false }].slice(-500))
+    // Broadcast rename to all guests so they can update participant list
+    // and append a matching system message in their own chat.
+    broadcast({ type: 'collab-peer-renamed', peerId: myId || '', oldName, newName } satisfies CollabUnencryptedMsg)
   }, [broadcast, room.myName])
 
   const clearMessages = useCallback((): void => {

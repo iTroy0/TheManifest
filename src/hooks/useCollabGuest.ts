@@ -1250,10 +1250,14 @@ export function useCollabGuest(roomId: string) {
             if (payload.type === 'collab-peer-renamed') {
               const peerId = payload.peerId as string
               const newName = String(payload.newName || '').slice(0, 32)
+              const oldName = String(payload.oldName || '').slice(0, 32)
               if (!peerId || !newName) return
               dispatchParticipants({ type: 'UPDATE_PARTICIPANT', peerId, payload: { name: newName } })
               // M5 — update any shared files owned by that peer.
               dispatchFiles({ type: 'UPDATE_SHARED_FILE_OWNER_NAME', ownerId: peerId, newName })
+              if (oldName && oldName !== newName) {
+                setMessages(prev => [...prev, { text: `${oldName} renamed to ${newName}`, from: 'system', time: Date.now(), self: false }].slice(-500))
+              }
               return
             }
 
@@ -1421,9 +1425,13 @@ export function useCollabGuest(roomId: string) {
           if (msg.type === 'collab-peer-renamed') {
             const peerId = msg.peerId as string
             const newName = String(msg.newName || '').slice(0, 32)
+            const oldName = String(msg.oldName || '').slice(0, 32)
             if (!peerId || !newName) return
             dispatchParticipants({ type: 'UPDATE_PARTICIPANT', peerId, payload: { name: newName } })
             dispatchFiles({ type: 'UPDATE_SHARED_FILE_OWNER_NAME', ownerId: peerId, newName })
+            if (oldName && oldName !== newName) {
+              setMessages(prev => [...prev, { text: `${oldName} renamed to ${newName}`, from: 'system', time: Date.now(), self: false }].slice(-500))
+            }
             return
           }
 
@@ -1745,12 +1753,17 @@ export function useCollabGuest(roomId: string) {
   const setMyName = useCallback((name: string): void => {
     const newName = (name.trim() || generateNickname()).slice(0, 32)
     const oldName = nickname
+    if (oldName === newName) return
     setNickname(newName)
     dispatchRoom({ type: 'SET', payload: { myName: newName } })
     // Also update locally shown ownerName for my own files.
     if (room.myPeerId) {
       dispatchFiles({ type: 'UPDATE_SHARED_FILE_OWNER_NAME', ownerId: room.myPeerId, newName })
     }
+    // Announce locally — other participants get the system msg via the
+    // host's `collab-peer-renamed` re-broadcast (handled above). The
+    // renamer appends optimistically so their own chat matches.
+    setMessages(prev => [...prev, { text: `${oldName} renamed to ${newName}`, from: 'system', time: Date.now(), self: false }].slice(-500))
     sendToHost({ type: 'nickname-change', oldName, newName } satisfies CollabUnencryptedMsg)
   }, [sendToHost, nickname, room.myPeerId])
 
