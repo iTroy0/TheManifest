@@ -34,11 +34,12 @@ const signalConfig: SignalConfig | Record<string, never> = SIGNAL_HOST ? {
 // STUN servers — self-hosted coturn first (same host as TURN, port 3478),
 // Google's public STUN as fallback if our box is unreachable. ICE will try
 // each in order during candidate gathering.
-const stunServers: RTCIceServer[] = [
-  ...(TURN_URL ? [{ urls: `stun:${TURN_URL}:3478` }] : []),
+const selfHostedStun: RTCIceServer[] = TURN_URL ? [{ urls: `stun:${TURN_URL}:3478` }] : []
+const googleStun: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
 ]
+const stunServers: RTCIceServer[] = [...selfHostedStun, ...googleStun]
 
 // Direct P2P only — no relay
 export const STUN_ONLY: PeerConfig = {
@@ -80,8 +81,13 @@ export async function getWithTurn(): Promise<PeerConfig> {
             // host/srflx candidates and may leak the user's IP despite the
             // explicit relay request.
             iceTransportPolicy: 'relay' as RTCIceTransportPolicy,
+            // Under relay-only we deliberately omit Google STUN. The ICE
+            // agent still probes STUN during gathering even though only
+            // relay candidates are used — probing Google would reveal the
+            // user's public IP to a third party despite the privacy opt-in.
+            // Self-hosted STUN is kept (same trust domain as TURN).
             iceServers: [
-              ...stunServers,
+              ...selfHostedStun,
               ...((creds.urls as string[]) || []).map((url: string) => ({ urls: url, username: creds.username, credential: creds.credential })),
             ],
           },

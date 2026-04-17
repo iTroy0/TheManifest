@@ -176,16 +176,30 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
     let settled = false
     const done = () => { if (!settled) { settled = true; cleanup(); resolve() } }
 
-    // Race 1: buffer drains normally
-    const useLowEvent = typeof dc.onbufferedamountlow !== 'undefined'
+    // Race 1: buffer drains normally.
+    // `typeof dc.onbufferedamountlow !== 'undefined'` is always true on
+    // modern browsers (the event handler slot exists but defaults to null,
+    // and `typeof null === 'object'`), which left the polling path dead.
+    // Use `in` to check the prototype chain for the event instead, and
+    // keep a low-rate poll as a safety net in case the event fires slowly
+    // on a stalled channel (Chrome has had bugs here with very large buffers).
+    const useLowEvent = 'onbufferedamountlow' in dc
     let pollTimer: ReturnType<typeof setTimeout> | null = null
     let drainTimeout: ReturnType<typeof setTimeout> | null = null
 
     if (useLowEvent) {
       dc.bufferedAmountLowThreshold = BUFFER_THRESHOLD
       dc.addEventListener('bufferedamountlow', done, { once: true })
+      // Belt-and-braces: also poll at a low rate so we notice if the event
+      // never fires (readyState transitions can swallow it).
+      const poll = (): void => {
+        if (settled) return
+        if (!dc || dc.readyState === 'closed' || dc.bufferedAmount <= BUFFER_THRESHOLD) done()
+        else pollTimer = setTimeout(poll, 500)
+      }
+      pollTimer = setTimeout(poll, 500)
     } else {
-      const poll = () => {
+      const poll = (): void => {
         if (settled) return
         if (!dc || dc.readyState === 'closed' || dc.bufferedAmount <= BUFFER_THRESHOLD) done()
         else pollTimer = setTimeout(poll, 50)

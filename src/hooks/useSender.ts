@@ -1,7 +1,7 @@
 import Peer, { DataConnection } from 'peerjs'
 import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
 import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
-import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8 } from '../utils/crypto'
+import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, getKeyFingerprint, uint8ToBase64, base64ToUint8, timingSafeEqual } from '../utils/crypto'
 import { STUN_ONLY } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { buildManifestData } from '../utils/manifest'
@@ -378,13 +378,18 @@ export function useSender() {
               password = new TextDecoder().decode(decrypted)
             } catch { conn.send({ type: 'password-wrong' }); return }
           }
-          const a = new TextEncoder().encode(password)
-          const b = new TextEncoder().encode(passwordRef.current || '')
-          const maxLen = Math.max(a.length, b.length)
-          let match = a.length === b.length ? 0 : 1
-          for (let i = 0; i < maxLen; i++) match |= (a[i] ?? 0) ^ (b[i] ?? 0)
+          const expected = passwordRef.current || ''
+          const matched = password.length > 0 && timingSafeEqual(password, expected)
 
-          if (match === 0 && a.length > 0) {
+          if (matched) {
+            // Reset the global attempt counter on success so one legitimate
+            // unlock clears any backoff accumulated from prior typos.
+            // Without this, the global counter grew monotonically and any
+            // room that hit 8 lifetime wrong guesses would reject every
+            // future guest regardless of whether they had the password.
+            globalPasswordAttempts.current = 0
+            lastPasswordAttemptTime.current = 0
+            connState.passwordAttempts = 0
             conn.send({ type: 'password-accepted' })
             if (connState.pendingJoinAnnounce) {
               connState.pendingJoinAnnounce = false

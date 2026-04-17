@@ -145,7 +145,12 @@ describe('iceServers – getWithTurn with API response', () => {
     expect(tcpTurn?.credential).toBe('ephemeral-cred')
   })
 
-  it('getWithTurn still includes Google STUN fallbacks', async () => {
+  it('getWithTurn omits Google STUN under relay-only policy to prevent IP leak', async () => {
+    // Under iceTransportPolicy: 'relay' the ICE agent still probes STUN
+    // during candidate gathering even though only relay candidates will be
+    // used. Keeping Google STUN in the list would leak the user's public
+    // IP to a third party despite the privacy opt-in — self-hosted STUN
+    // is the only third-party trust the user opted into.
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({
@@ -156,8 +161,9 @@ describe('iceServers – getWithTurn with API response', () => {
     const { getWithTurn } = await loadModule()
     const result = await getWithTurn()
     const urls = result.config.iceServers.map((s: RTCIceServer) => s.urls)
-    expect(urls).toContain('stun:stun.l.google.com:19302')
-    expect(urls).toContain('stun:stun1.l.google.com:19302')
+    expect(urls).not.toContain('stun:stun.l.google.com:19302')
+    expect(urls).not.toContain('stun:stun1.l.google.com:19302')
+    expect(result.config.iceTransportPolicy).toBe('relay')
   })
 
   it('getWithTurn includes self-hosted STUN entry from VITE_TURN_URL', async () => {

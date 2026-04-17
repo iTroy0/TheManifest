@@ -139,6 +139,12 @@ export function useCollabGuest(roomId: string) {
   const filesRef = useRef(files)
   filesRef.current = files
 
+  // Fresh participants list for closures (e.g. the mesh `connection`
+  // handler set up inside connect()) so admission checks aren't running
+  // against a stale snapshot from when the Peer was created.
+  const participantsRef = useRef(participants)
+  participantsRef.current = participants
+
   // H4 — keep fresh nickname in ref for closures inside startConnection.
   const myNameRef = useRef(nickname)
   useEffect(() => { myNameRef.current = nickname }, [nickname])
@@ -489,8 +495,15 @@ export function useCollabGuest(roomId: string) {
           }
         }, 10_000)
 
-        // If we received the remote key before our keyPair was ready, finish now.
-        if (entry.pendingRemoteKey) {
+        // If we received the remote key before our keyPair was ready, finish
+        // the handshake here. We also re-check at the end to cover the narrow
+        // window where the remote public-key lands between this check and the
+        // data handler's own derive path (can't actually happen today because
+        // entry.keyPair is set before this point and the data handler will
+        // derive directly, but the re-check costs nothing and prevents a
+        // silent 10 s stall if a future refactor introduces the race).
+        async function drainPendingRemoteKey(): Promise<void> {
+          if (!entry.keyPair || !entry.pendingRemoteKey || entry.encryptKey) return
           try {
             const remotePubKey = await importPublicKey(entry.pendingRemoteKey)
             entry.encryptKey = await deriveSharedKey(entry.keyPair.privateKey, remotePubKey, pubKeyBytes, entry.pendingRemoteKey)
@@ -504,6 +517,10 @@ export function useCollabGuest(roomId: string) {
             teardownMesh(peerId, 'mesh key derivation failed')
           }
         }
+
+        if (entry.pendingRemoteKey) await drainPendingRemoteKey()
+        // Re-check after any microtask gap above.
+        if (entry.pendingRemoteKey && !entry.encryptKey) await drainPendingRemoteKey()
       } catch (err) {
         console.warn('mesh handshake setup failed:', err)
         teardownMesh(peerId, 'mesh handshake failed')
@@ -781,6 +798,18 @@ export function useCollabGuest(roomId: string) {
         if (destroyedRef.current) { try { incoming.close() } catch {}; return }
         const myId = peer.id ?? myPeerIdRef.current
         if (incoming.peer === myId) { try { incoming.close() } catch {}; return }
+        // Admission gate: only accept mesh connections from peerIds that
+        // the host has announced as participants. Without this check any
+        // party who guesses a peerId can open a DataConnection, run the
+        // full ECDH handshake, and sit in the connection map consuming
+        // resources. Host isn't in participants list, but the host never
+        // initiates to us anyway — `incoming.peer === hostPeerId` is a
+        // separate concern handled by roomId routing.
+        const known = participantsRef.current.participants.some(p => p.peerId === incoming.peer)
+        if (!known) {
+          try { incoming.close() } catch {}
+          return
+        }
         // Tie-break: responder is the higher peerId. If we happen to be the
         // lower id, prefer our outgoing attempt instead — close this inbound.
         if (myId && myId < incoming.peer) {
@@ -1221,35 +1250,34 @@ export function useCollabGuest(roomId: string) {
               return
             }
 
-            // Pause request from requester (via host relay)
-            if (payload.type === 'collab-pause-file') {
+            // Pause / resume / cancel from the requesting peer (via host
+            // relay). The host tags every forwarded control message with
+            // `requesterPeerId: gs.peerId` where gs is the sender. Without
+            // the match-check below, ANY guest could cancel another guest's
+            // in-flight download just by knowing the fileId (both are in the
+            // shared file list broadcast). `transfer.targetPeerId` is null
+            // when the host itself is the requester, which matches a
+            // missing requesterPeerId on host-originated control messages.
+            if (
+              payload.type === 'collab-pause-file' ||
+              payload.type === 'collab-resume-file' ||
+              payload.type === 'collab-cancel-file'
+            ) {
               const fileId = payload.fileId as string
+              const requesterPeerId = (payload.requesterPeerId as string | undefined) ?? null
               const transfer = activeTransfersRef.current.get(fileId)
-              if (transfer) {
-                transfer.paused = true
-              }
-              return
-            }
+              if (!transfer || transfer.targetPeerId !== requesterPeerId) return
 
-            // Resume request from requester (via host relay)
-            if (payload.type === 'collab-resume-file') {
-              const fileId = payload.fileId as string
-              const transfer = activeTransfersRef.current.get(fileId)
-              if (transfer) {
+              if (payload.type === 'collab-pause-file') {
+                transfer.paused = true
+              } else if (payload.type === 'collab-resume-file') {
                 transfer.paused = false
                 if (transfer.pauseResolver) {
                   transfer.pauseResolver()
                   transfer.pauseResolver = undefined
                 }
-              }
-              return
-            }
-
-            // Cancel request from requester (via host relay)
-            if (payload.type === 'collab-cancel-file') {
-              const fileId = payload.fileId as string
-              const transfer = activeTransfersRef.current.get(fileId)
-              if (transfer) {
+              } else {
+                // collab-cancel-file
                 transfer.aborted = true
                 transfer.paused = false
                 if (transfer.pauseResolver) {

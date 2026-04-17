@@ -685,6 +685,15 @@ export function useReceiver(peerId: string) {
   }, [peerId, startConnection])
 
   const enableRelay = useCallback((): void => {
+    // Bump the reconnect token FIRST so any in-flight async handlers that
+    // captured the old token (e.g. a chunk decrypt still awaiting) detect
+    // the switch and bail out of mutating state against the new connection.
+    // This is the primary race-stop — setting destroyedRef=true is retained
+    // for synchronous handlers that only check that flag, but the token
+    // bump is what protects async paths across the 500 ms gap before the
+    // new peer is started.
+    reconnectTokenRef.current = Symbol('enable-relay')
+    const token = reconnectTokenRef.current
     destroyedRef.current = true
     clearTimeout(timeoutRef.current!)
     chunkQueueRef.current = Promise.resolve()
@@ -692,7 +701,6 @@ export function useReceiver(peerId: string) {
     if (peerRef.current) peerRef.current.destroy()
     useTurnRef.current = true
     dispatchConn({ type: 'SET', payload: { useRelay: true } })
-    const token = reconnectTokenRef.current
     setTimeout(() => {
       if (!isMountedRef.current || reconnectTokenRef.current !== token) return
       startConnection(true)

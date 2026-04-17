@@ -1,15 +1,29 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'crypto'
 
-// Simple per-IP in-memory rate limiter (resets on cold start)
+// Simple per-IP in-memory rate limiter. Advisory only on serverless:
+// Vercel cold-starts new instances and each has its own Map, so an
+// attacker hitting multiple warm instances can exceed the nominal cap.
+// Treat this as a speed bump, not an authoritative gate. For production
+// scale move to Vercel KV / Upstash Redis keyed by the same IP.
 const ipBuckets = new Map<string, { count: number; windowStart: number }>()
 const RATE_LIMIT_WINDOW_MS = 60 * 1000 // 1 minute
 const RATE_LIMIT_MAX = 10 // 10 requests per minute per IP
 
 function getClientIp(req: VercelRequest): string {
+  // x-real-ip is set by Vercel and not client-controllable. Prefer it.
+  const realIp = req.headers['x-real-ip']
+  if (typeof realIp === 'string' && realIp) return realIp.trim()
+  // Fallback: the RIGHTMOST x-forwarded-for entry is the last proxy that
+  // touched the request (Vercel's edge). Earlier entries are client-supplied
+  // and trivially spoofable — taking the leftmost lets any attacker forge
+  // their rate-limit bucket.
   const forwarded = req.headers['x-forwarded-for']
-  if (typeof forwarded === 'string') return forwarded.split(',')[0].trim()
-  if (Array.isArray(forwarded)) return forwarded[0]
+  if (typeof forwarded === 'string') {
+    const parts = forwarded.split(',').map(s => s.trim()).filter(Boolean)
+    if (parts.length > 0) return parts[parts.length - 1]
+  }
+  if (Array.isArray(forwarded) && forwarded.length > 0) return forwarded[forwarded.length - 1]
   return req.socket?.remoteAddress || 'unknown'
 }
 
