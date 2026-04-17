@@ -190,7 +190,7 @@ export default function Portal() {
                     <p className="font-mono text-sm">Wrong password. Try again.</p>
                   </div>
                 )}
-                <button type="submit" disabled={passwordLoading || !passwordInput} className="w-full px-5 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                <button type="submit" data-testid="portal-password-submit" disabled={passwordLoading || !passwordInput} className="w-full px-5 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed">
                   {passwordLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1.5" />Verifying...</> : 'Unlock Portal'}
                 </button>
               </form>

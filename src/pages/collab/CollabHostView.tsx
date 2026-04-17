@@ -323,6 +323,7 @@ export default function CollabHostView() {
                         {!editingName && (
                           <button
                             onClick={() => { setNameInput(host.myName); setEditingName(true) }}
+                            data-testid="collab-edit-name"
                             className="p-1 rounded hover:bg-accent/10 text-muted hover:text-accent transition-colors"
                             title="Edit nickname"
                           >
@@ -350,6 +351,7 @@ export default function CollabHostView() {
                           </div>
                           <button
                             onClick={() => host.kickUser(p.peerId)}
+                            data-testid={`collab-kick-${p.peerId}`}
                             className="p-1 rounded hover:bg-danger/10 text-muted hover:text-danger transition-colors"
                             title="Remove from room"
                           >
@@ -371,6 +373,7 @@ export default function CollabHostView() {
                 <div className="px-5 py-3 border-t border-border">
                   <button
                     onClick={host.closeRoom}
+                    data-testid="collab-close-room"
                     className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs bg-danger/10 border border-danger/20 text-danger hover:bg-danger/20 hover:border-danger/30 transition-colors"
                   >
                     <DoorOpen className="w-3.5 h-3.5" />
