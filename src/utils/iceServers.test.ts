@@ -15,6 +15,10 @@ describe('iceServers – default config (no env vars set)', () => {
     vi.stubEnv('VITE_TURN_URL', '')
     vi.stubEnv('VITE_SIGNAL_HOST', '')
     vi.stubEnv('VITE_SIGNAL_PATH', '')
+    // .env.test sets port=9000 / secure=false for Playwright; blank those
+    // out here so the defaults (443 / true) apply.
+    vi.stubEnv('VITE_SIGNAL_PORT', '')
+    vi.stubEnv('VITE_SIGNAL_SECURE', '')
   })
 
   it('STUN_ONLY.config.iceServers contains only Google STUN fallbacks', async () => {
@@ -51,6 +55,10 @@ describe('iceServers – with VITE_SIGNAL_HOST configured', () => {
     vi.unstubAllEnvs()
     vi.stubEnv('VITE_SIGNAL_HOST', 'signal.example.com')
     vi.stubEnv('VITE_SIGNAL_PATH', '/peerjs')
+    // .env.test port=9000 / secure=false — blank them so the production
+    // defaults assert as 443 / true.
+    vi.stubEnv('VITE_SIGNAL_PORT', '')
+    vi.stubEnv('VITE_SIGNAL_SECURE', '')
   })
 
   it('STUN_ONLY includes host from VITE_SIGNAL_HOST', async () => {
@@ -103,6 +111,8 @@ describe('iceServers – getWithTurn with API response', () => {
     vi.resetModules()
     vi.unstubAllEnvs()
     vi.stubEnv('VITE_TURN_URL', 'turn.example.com')
+    vi.stubEnv('VITE_SIGNAL_PORT', '')
+    vi.stubEnv('VITE_SIGNAL_SECURE', '')
   })
 
   it('getWithTurn includes TURN servers from API response', async () => {
