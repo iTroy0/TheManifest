@@ -20,6 +20,7 @@ import {
   initialTransferState,
   CollabParticipant,
   SharedFile,
+  FileDownload,
   validateSharedFile,
   sanitizeSharedFile,
 } from './state/collabState'
@@ -273,7 +274,18 @@ export function useCollabHost() {
     const ownerGs = connectionsRef.current.get(ownerId)
     if (!ownerGs?.encryptKey) return
 
-    dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download: { status: 'requesting', progress: 0, speed: 0 } })
+    // If another download from this same guest is still in flight, the
+    // guest's uploadQueue will serve us sequentially — surface that as
+    // 'queued' so the UI doesn't look stuck on "Requesting".
+    const snap = filesRef.current
+    const ownerBusy = Object.entries(snap.downloads).some(([fid, dl]) => {
+      if (fid === fileId) return false
+      const f = snap.sharedFiles.find(x => x.id === fid)
+      if (!f || f.owner !== ownerId) return false
+      return dl.status === 'requesting' || dl.status === 'downloading' || dl.status === 'queued'
+    })
+    const initialStatus: FileDownload['status'] = ownerBusy ? 'queued' : 'requesting'
+    dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download: { status: initialStatus, progress: 0, speed: 0 } })
     scheduleDownloadTimeout(fileId)
 
     try {

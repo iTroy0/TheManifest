@@ -55,7 +55,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
   const [nameInput, setNameInput] = useState(guest.myName)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const hasPending = Object.values(guest.downloads).some(d => d.status === 'downloading' || d.status === 'requesting')
+  const hasPending = Object.values(guest.downloads).some(d => d.status === 'downloading' || d.status === 'requesting' || d.status === 'queued')
 
   const handleFileSelect = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files

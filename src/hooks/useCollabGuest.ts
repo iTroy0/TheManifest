@@ -20,6 +20,7 @@ import {
   initialTransferState,
   CollabParticipant,
   SharedFile,
+  FileDownload,
   validateSharedFile,
   sanitizeSharedFile,
 } from './state/collabState'
@@ -216,7 +217,19 @@ export function useCollabGuest(roomId: string) {
   const requestFile = useCallback(async (fileId: string, ownerId: string): Promise<void> => {
     if (!decryptKeyRef.current) return
 
-    dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download: { status: 'requesting', progress: 0, speed: 0 } })
+    // If another download from the same owner is still in flight, mark this
+    // one 'queued' instead of 'requesting' — per-conn uploadQueue on the
+    // owner serializes, so the request really is queued until the prior
+    // transfer ends. On collab-file-start we flip to 'downloading'.
+    const snap = filesRef.current
+    const ownerBusy = Object.entries(snap.downloads).some(([fid, dl]) => {
+      if (fid === fileId) return false
+      const f = snap.sharedFiles.find(x => x.id === fid)
+      if (!f || f.owner !== ownerId) return false
+      return dl.status === 'requesting' || dl.status === 'downloading' || dl.status === 'queued'
+    })
+    const initialStatus: FileDownload['status'] = ownerBusy ? 'queued' : 'requesting'
+    dispatchFiles({ type: 'SET_DOWNLOAD', fileId, download: { status: initialStatus, progress: 0, speed: 0 } })
     scheduleDownloadTimeout(fileId)
 
     // Try direct P2P first if we have a connection to the owner

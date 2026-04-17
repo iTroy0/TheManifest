@@ -211,8 +211,9 @@ function CollabFileItem({
   const isDownloading = status === 'downloading'
   const isPaused = status === 'paused'
   const isRequesting = status === 'requesting'
+  const isQueued = status === 'queued'
   const isError = status === 'error'
-  const isPending = isRequesting || isDownloading
+  const isPending = isRequesting || isDownloading || isQueued
   const isIdle = !status || status === 'pending'
 
   // Fix #8(a): iconless-path keeps the SVG ring; thumbnail path uses a
@@ -375,6 +376,15 @@ function CollabFileItem({
               <span className="inline-flex items-center gap-1 font-mono text-[10px] text-info/70">
                 <Clock className="w-2.5 h-2.5" />
                 requesting… {requestingElapsedS ?? 0}s
+              </span>
+            </>
+          )}
+          {isQueued && (
+            <>
+              <span className="text-muted/40 font-mono text-[10px]">·</span>
+              <span className="inline-flex items-center gap-1 font-mono text-[10px] text-muted-light">
+                <Clock className="w-2.5 h-2.5" />
+                queued
               </span>
             </>
           )}
@@ -745,7 +755,7 @@ export default function CollabFileList({
     return visibleFiles.filter(f => {
       if (isOwnFile(f)) return false
       const st = downloads[f.id]?.status
-      return st !== 'complete' && st !== 'downloading' && st !== 'requesting' && st !== 'paused'
+      return st !== 'complete' && st !== 'downloading' && st !== 'requesting' && st !== 'queued' && st !== 'paused'
     }).map(f => f.id)
   }, [visibleFiles, downloads, isOwnFile])
 

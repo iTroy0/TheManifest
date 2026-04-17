@@ -40,7 +40,11 @@ export interface SharedFile {
 }
 
 export interface FileDownload {
-  status: 'pending' | 'requesting' | 'downloading' | 'paused' | 'complete' | 'error'
+  // 'queued' means the request has been sent but the owner is busy serving
+  // an earlier download to us on the same connection — we surface it so the
+  // UI can show "Queued" instead of making the user think a stuck
+  // "Requesting" state means the owner is unresponsive.
+  status: 'pending' | 'queued' | 'requesting' | 'downloading' | 'paused' | 'complete' | 'error'
   progress: number
   speed: number
   error?: string
