@@ -97,22 +97,23 @@ const MEDIA_ERROR_TABLE: Record<string, { code: CallError['code']; message?: str
   unsupported:           { code: 'media-failed',      recoverable: false },
 }
 
-function classifyMediaError(e: unknown): CallError {
-  const name = (e as { name?: string })?.name || ''
-  const message = (e as { message?: string })?.message || 'Failed to start media'
-  const entry = MEDIA_ERROR_TABLE[name]
-  if (entry) return { code: entry.code, message: entry.message ?? message, recoverable: entry.recoverable }
-  return { code: 'media-failed', message, recoverable: true }
-}
-
-// Lift a useLocalMedia error into the call lane's CallError shape so the
-// panel only watches a single error surface. Shares MEDIA_ERROR_TABLE with
-// classifyMediaError above; the caller-supplied message wins so device-
-// specific detail reaches the UI.
-function liftLocalMediaError(err: { code: string; message: string }): CallError {
-  const entry = MEDIA_ERROR_TABLE[err.code]
-  if (entry) return { code: entry.code, message: err.message, recoverable: entry.recoverable }
-  return { code: 'media-failed', message: err.message, recoverable: true }
+// Single classifier keyed by the normalized MEDIA_ERROR_TABLE. Handles
+// both raw DOMExceptions from getUserMedia (prefer the table's phrasing
+// because the raw .message is often developer-facing cruft like
+// "NotAllowedError: Permission denied") and pre-classified errors from
+// useLocalMedia (prefer the caller's message so device-specific detail
+// — "Pick an available camera" etc. — reaches the UI verbatim).
+function classifyMediaError(
+  key: string,
+  fallbackMessage: string,
+  preferTableMessage = false,
+): CallError {
+  const entry = MEDIA_ERROR_TABLE[key]
+  if (entry) {
+    const message = preferTableMessage ? (entry.message ?? fallbackMessage) : fallbackMessage
+    return { code: entry.code, message, recoverable: entry.recoverable }
+  }
+  return { code: 'media-failed', message: fallbackMessage, recoverable: true }
 }
 
 function streamHasLiveVideo(stream: MediaStream | null): boolean {
@@ -840,7 +841,11 @@ export function useCall(options: UseCallOptions) {
       // superseded (e.g., the user hit Leave during the permission prompt,
       // or the component unmounted). Don't surface it as an error banner.
       if ((e as Error).name === 'AbortError') return
-      const err = classifyMediaError(e)
+      const err = classifyMediaError(
+        (e as { name?: string })?.name || '',
+        (e as { message?: string })?.message || 'Failed to start media',
+        true,
+      )
       setCallError(err)
       setEndReason(null) // join failure isn't a "call ended"
     } finally {
@@ -898,7 +903,7 @@ export function useCall(options: UseCallOptions) {
   // Public error surface: call-layer wins over media-layer (call-layer is
   // usually scoped to a specific peer and more time-sensitive).
   const error: CallError | null = callError
-    ?? (localMedia.error ? liftLocalMediaError(localMedia.error) : null)
+    ?? (localMedia.error ? classifyMediaError(localMedia.error.code, localMedia.error.message) : null)
 
   // ── Track-state broadcast on local mic toggle ──────────────────────────
 
