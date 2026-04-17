@@ -1,8 +1,8 @@
 // Page helpers shared across portal.spec.ts and collab.spec.ts.
 // Keep these as Page-scoped actions. No shared mutable state across tests.
 
-import { expect, type Page, type BrowserContext, type Locator } from '@playwright/test'
-import { mkdtempSync, writeFileSync } from 'fs'
+import { expect, type Page, type BrowserContext } from '@playwright/test'
+import { mkdtempSync, writeFileSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -31,91 +31,109 @@ export function patternedBytes(n: number): Uint8Array {
   return out
 }
 
-// ── Portal helpers ──────────────────────────────────────────────────────
+// ── URL locators ────────────────────────────────────────────────────────
 
-// Grab the /portal/<peerId> URL rendered in PortalLink's <code> element.
-// We wait up to the expect timeout because the peer-open event is async.
+// Wait for the /portal/<peerId> link to appear anywhere on the page.
+// On Home, this element only renders after:
+//   1. peerRef.current opens (peerId set), AND
+//   2. hasFiles || chatMode || sessionStarted is true.
+// So callers must have already uploaded a file (or enabled chat mode).
+// The regex matches the full URL format rendered by PortalLink — in a
+// <code> block today, but we use getByText so a future refactor that
+// moves the URL into a <div> / <pre> / <span> doesn't break us.
 export async function getPortalUrl(page: Page): Promise<string> {
-  const code = page.locator('code', { hasText: '/portal/' }).first()
-  await expect(code).toBeVisible()
-  const text = await code.textContent()
-  if (!text) throw new Error('portal link not found')
-  return text.trim()
+  const portalRegex = /https?:\/\/[^\s]+\/portal\/[a-f0-9-]{8,}/i
+  await expect(page.getByText(portalRegex).first()).toBeVisible({ timeout: 15_000 })
+  const text = await page.getByText(portalRegex).first().textContent()
+  if (!text) throw new Error('portal link text empty')
+  const match = text.match(portalRegex)
+  if (!match) throw new Error(`portal link regex missed on text: ${text}`)
+  return match[0]
 }
+
+// Collab host view renders the share URL inside a <div> (not <code>),
+// formatted as `{origin}/collab/{roomId}`. Match the URL with the
+// same broad getByText approach.
+export async function getCollabRoomUrl(page: Page): Promise<string> {
+  const roomRegex = /https?:\/\/[^\s]+\/collab\/[a-f0-9-]{8,}/i
+  await expect(page.getByText(roomRegex).first()).toBeVisible({ timeout: 20_000 })
+  const text = await page.getByText(roomRegex).first().textContent()
+  if (!text) throw new Error('collab room link text empty')
+  const match = text.match(roomRegex)
+  if (!match) throw new Error(`collab room link regex missed on text: ${text}`)
+  return match[0]
+}
+
+// ── File upload ─────────────────────────────────────────────────────────
 
 // Browse + select a file via the host's hidden file input. The visible
 // "Add files" button just proxies click() to the input; we skip that
 // and set files directly for determinism.
 export async function uploadFile(page: Page, filePath: string): Promise<void> {
-  const input = page.locator('input[type="file"][aria-label="Select files to share"]')
+  // Home shows two different file inputs depending on state:
+  //   - DropZone's <input type="file" multiple> on the landing page
+  //     (no aria-label, className="hidden").
+  //   - Home's own <input aria-label="Select files to share"> once
+  //     isActive (hasFiles || chatMode || sessionStarted) is true.
+  // On initial load only DropZone's input exists. Match by attachment
+  // rather than visibility — both are display:none — and take the first.
+  const input = page.locator('input[type="file"]').first()
   await input.setInputFiles(filePath)
 }
 
 // ── Chat helpers ────────────────────────────────────────────────────────
 
-// The chat input is an editable div / textarea inside ChatPanel. We
-// locate by placeholder; adjust if ChatPanel's placeholder text changes.
+// ChatPanel renders a contenteditable rich-text area + send button.
+// Fall back to textarea/input if the component is later simplified.
+async function locateChatInput(page: Page) {
+  const candidates = [
+    page.locator('[contenteditable="true"]'),
+    page.getByPlaceholder(/message|type|chat/i),
+    page.locator('textarea'),
+  ]
+  for (const loc of candidates) {
+    if ((await loc.count()) > 0) return loc.first()
+  }
+  throw new Error('chat input not located (tried contenteditable, placeholder, textarea)')
+}
+
 export async function sendChatMessage(page: Page, text: string): Promise<void> {
-  // ChatPanel renders a contenteditable; fall back to textarea if the
-  // component is later simplified. Try both.
-  const editable = page.locator('[contenteditable="true"]').first()
-  const textarea = page.locator('textarea').first()
-  const input = (await editable.count()) > 0 ? editable : textarea
-  await input.click()
-  await input.fill(text)
+  const input = await locateChatInput(page)
+  // Avoid .click() — surrounding collapsible cards sometimes intercept
+  // pointer events on the first few frames after the ChatPanel mounts.
+  // Focus the input directly and type.
+  await input.focus()
+  await input.pressSequentially(text, { delay: 10 })
   await input.press('Enter')
 }
 
 // Assert a chat message with the given text appears for the current page.
-// Throws via expect() on timeout.
 export async function expectChatMessage(page: Page, text: string): Promise<void> {
   await expect(page.getByText(text, { exact: false }).first()).toBeVisible({ timeout: 15_000 })
 }
 
-// ── Collab helpers ──────────────────────────────────────────────────────
-
-// Pull the /collab/<roomId> share URL from the host page. The link is
-// displayed near the top of the room header once peer-open fires.
-export async function getCollabRoomUrl(page: Page): Promise<string> {
-  const code = page.locator('code', { hasText: '/collab/' }).first()
-  await expect(code).toBeVisible()
-  const text = await code.textContent()
-  if (!text) throw new Error('collab room link not found')
-  return text.trim()
-}
-
 // ── ContextPair — open two browser pages from the same context ─────────
 
-// Most tests need a sender + a receiver. Contexts are isolated so
-// service workers, IndexedDB, and localStorage don't bleed across.
 export async function openSecondPage(context: BrowserContext, url: string): Promise<Page> {
   const page = await context.newPage()
   await page.goto(url)
   return page
 }
 
-// ── Key-exchange + handshake waiters ────────────────────────────────────
+// ── Manifest / receiver readiness ──────────────────────────────────────
 
-// Wait for the peer-ready indicator. Portal sender shows the portal URL
-// as soon as peerRef.current opens, so any follow-up action is safe.
-export async function waitForPeerOpen(page: Page): Promise<void> {
-  await expect(page.locator('code', { hasText: /\/portal\/|\/collab\// }).first()).toBeVisible()
-}
-
-// Receiver side — wait for the manifest to be delivered. The UI
-// transitions from "connecting" / "password-required" to showing the
-// file list once `manifest-enc` decrypts successfully.
+// Receiver side — wait for the file list UI to appear, which fires once
+// `manifest-enc` decrypts. We look for a "Download" button (the single-
+// file or "Download all" CTA) which only renders after manifest arrival.
 export async function waitForManifest(page: Page): Promise<void> {
-  // The file list row count goes from 0 to >=1 when manifest arrives.
-  // Use a liberal timeout — 1st connect + ECDH + manifest ~2-3 s.
-  await expect(page.locator('text=Download').first()).toBeVisible({ timeout: 20_000 })
+  await expect(
+    page.getByRole('button', { name: /download/i }).first(),
+  ).toBeVisible({ timeout: 25_000 })
 }
 
 // ── Download assertion ─────────────────────────────────────────────────
 
 // Waits for a download event, pulls its bytes, and compares to expected.
-// The app writes downloads either via StreamSaver (service worker) or a
-// plain <a download> click; both fire Playwright's 'download' event.
 export async function expectDownloadMatches(
   page: Page,
   clickAction: () => Promise<void>,
@@ -127,9 +145,7 @@ export async function expectDownloadMatches(
   ])
   const path = await download.path()
   if (!path) throw new Error('download path unavailable')
-  const { readFileSync } = await import('fs')
   const got = readFileSync(path)
-  // Compare as arrays so mismatches produce readable diffs.
   if (got.byteLength !== expected.byteLength) {
     throw new Error(`length mismatch: got ${got.byteLength}, expected ${expected.byteLength}`)
   }
@@ -138,14 +154,4 @@ export async function expectDownloadMatches(
       throw new Error(`byte ${i}: got 0x${got[i].toString(16)}, expected 0x${expected[i].toString(16)}`)
     }
   }
-}
-
-// ── Utility: locate by any of several fallback strategies ───────────────
-
-// Accept a list of candidate locators and return the first that resolves.
-// Used where the UI's testable surface has a couple of plausible names.
-export function firstVisible(locators: Locator[]): Locator {
-  // Playwright's `or()` composes alternatives; fallback chain keeps tests
-  // stable across minor UI refactors.
-  return locators.reduce((acc, next) => acc.or(next))
 }
