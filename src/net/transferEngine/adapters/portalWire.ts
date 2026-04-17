@@ -1,5 +1,6 @@
 import { encryptChunk, decryptChunk } from '../../../utils/crypto'
 import type { WireAdapter } from '../types'
+import type { PortalMsg } from '../../protocol'
 
 function portalPacketIndex(fileId: string): number {
   const m = /^file-(\d+)$/.exec(fileId)
@@ -15,18 +16,23 @@ export const portalWire: WireAdapter = {
   async buildFileStart(_s, m) {
     return {
       type: 'file-start',
-      fileId: m.fileId,
+      index: portalPacketIndex(m.fileId),
       name: m.name,
       size: m.size,
       totalChunks: m.totalChunks,
-      index: portalPacketIndex(m.fileId),
-    }
+    } satisfies PortalMsg
   },
   async buildFileEnd(_s, fileId) {
-    return { type: 'file-end', index: portalPacketIndex(fileId) }
+    return {
+      type: 'file-end',
+      index: portalPacketIndex(fileId),
+    } satisfies PortalMsg
   },
   async buildFileCancelled(_s, fileId) {
-    return { type: 'file-cancelled', index: portalPacketIndex(fileId) }
+    return {
+      type: 'file-cancelled',
+      index: portalPacketIndex(fileId),
+    } satisfies PortalMsg
   },
   async encryptChunk(session, pt) {
     if (!session.encryptKey) throw new Error('portalWire.encryptChunk: no key')

@@ -25,9 +25,9 @@ describe('portalWire', () => {
     const s = makeSessionWithKey(key)
     const msg = await portalWire.buildFileStart(s, {
       fileId: 'file-0', name: 'a.txt', size: 10, totalChunks: 1,
-    }) as { type: string; fileId: string; name: string; size: number; totalChunks: number }
+    }) as { type: string; index: number; name: string; size: number; totalChunks: number }
     expect(msg.type).toBe('file-start')
-    expect(msg.fileId).toBe('file-0')
+    expect(msg.index).toBe(0)
     expect(msg.name).toBe('a.txt')
     expect(msg.size).toBe(10)
     expect(msg.totalChunks).toBe(1)
@@ -60,5 +60,17 @@ describe('portalWire', () => {
   it('encryptChunk throws when key is null', async () => {
     const s = { encryptKey: null } as unknown as Session
     await expect(portalWire.encryptChunk(s, new ArrayBuffer(4))).rejects.toThrow(/no key/)
+  })
+
+  it('buildFileEnd returns PortalMsg.file-end with index', async () => {
+    const msg = await portalWire.buildFileEnd({} as any, 'file-7') as { type: string; index: number }
+    expect(msg.type).toBe('file-end')
+    expect(msg.index).toBe(7)
+  })
+
+  it('buildFileCancelled returns PortalMsg.file-cancelled with index', async () => {
+    const msg = await portalWire.buildFileCancelled({} as any, 'file-3') as { type: string; index: number }
+    expect(msg.type).toBe('file-cancelled')
+    expect(msg.index).toBe(3)
   })
 })
