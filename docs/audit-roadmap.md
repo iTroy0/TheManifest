@@ -18,8 +18,13 @@ cross off.
   `src/net/keyExchange.ts` (P1.A) has landed with round-trip tests;
   `src/net/protocol.ts` (P1.B) is now both-directions locked — all
   five hooks dispatch inbound against the discriminated unions and
-  construct outbound literals with `satisfies`. The remaining P1
-  pieces (session, transferEngine) are staged as independent commits.
+  construct outbound literals with `satisfies`. `src/net/session.ts`
+  (P1.C) shipped with 38 unit tests; **useReceiver and useSender
+  have both been migrated** onto it — the receiver collapses ten
+  per-connection refs into a single `sessionRef`, and the sender
+  splits every ConnState into `ConnEntry = { session, meta }` with
+  pause/resume/cancel driven by `TransferHandle`. `tsc` clean;
+  309/309 tests pass. Next commit migrates useCollabHost.
 - **P2.1 done.** All ~200 silent `catch {}` in the four hooks migrated to
   `log.warn()` — 191 log sites across useSender/useReceiver/useCollabHost/
   useCollabGuest. Diagnostics buffer captures everything. "Copy diagnostics"
@@ -284,6 +289,117 @@ in one PR — the diff is unreadable.
 Per-peer state machine that collapses `ConnState` (useSender) +
 `GuestConnection` (useCollabHost) + `PeerConnection` (useCollabGuest mesh) +
 the receiver's ad-hoc connection refs.
+
+**Plan:** `docs/plan-session.md`. Open questions answered
+2026-04-17 (callMessageHandler stays on hook; event bus is a tiny
+hand-written `on(type,fn)`; connectionsRef stays on hook; Session is
+monomorphic with empty `requestedFileIds` / `recentFileShares` on
+every role).
+
+**Progress:**
+
+- **Step 1 [DONE]** — `src/net/session.ts` landed alongside the
+  existing hooks. No consumers migrated yet. Exposes:
+  - `SessionState` / `SessionRole` / `CloseReason` enums.
+  - `TransferHandle` + `InProgressImageSlot`.
+  - `SessionInput` (non-terminal transitions) +
+    `SessionEvent` (subscriber payloads).
+  - `Session` interface: fields for handshake (`encryptKey`,
+    `keyPair`, `pendingRemoteKey`, `keyExchangeTimeout`,
+    `fingerprint`), liveness (`heartbeat`, `rttPoller`,
+    `disconnectHandled`), lanes (`chunkQueue`, `imageSendQueue`,
+    `uploadQueue`), bookkeeping (`activeTransfers`,
+    `requestedFileIds`, `recentFileShares`, `inProgressImage`),
+    password (`passwordVerified`, `passwordAttempts`), and methods
+    `dispatch`, `close`, `send`, `sendBinary`, transfer helpers,
+    field mutators, and a typed `on(type, fn)` bus.
+  - `createSession({ conn, role, generation, passwordRequired, id? })`
+    factory.
+  - Pure `nextState(from, input, role, remaining)` transition fn
+    encodes the table from `plan-session.md`. Terminal states are
+    reached exclusively via `close(reason)`; non-terminal
+    transitions flow through `dispatch`. `close()` runs cleanup
+    (clears `keyExchangeTimeout`, stops heartbeat + rttPoller,
+    aborts + unblocks every active transfer) and is idempotent.
+  - Invariant preserved by construction: the `keys-derived` event
+    carries `encryptKey` + `fingerprint` so the state flip and the
+    field assignment happen atomically.
+  - `send` / `sendBinary` throw from any terminal state.
+- `src/net/session.test.ts` — 37 tests. Covers every valid
+  non-terminal transition, every `CloseReason` → terminal-state
+  mapping, `send` throwing from terminal, event emission (including
+  listener-throw isolation), transfer begin/end/pause/resume/cancel
+  bookkeeping, cleanup on terminal (`keyExchangeTimeout` cleared,
+  heartbeat + rttPoller stopped, active transfers aborted),
+  `close()` idempotence, `generation` plumbing, password
+  `incrementPasswordAttempts` + `setPasswordVerified`, and a
+  keyExchange integration check that two sessions end up at
+  matching `encryptKey` + `fingerprint` via direct
+  `finalizeKeyExchange`.
+- Full suite: **308/308** (271 prior + 37 new). `tsc --noEmit` clean.
+
+- **Step 3 [DONE]** — useSender migrated onto `Session`. The
+  N-receiver room map now keys `Map<connId, ConnEntry>` where
+  `ConnEntry = { session: Session, meta: SenderMeta }`. Session
+  absorbs all per-connection state (handshake, liveness, lanes,
+  inProgressImage, password counters, active-transfer bookkeeping,
+  nickname). `SenderMeta` keeps UI accounting that is not session
+  state: `progress`, `totalSent`, `startTime`, `transferTotalSize`,
+  `speed`, `currentFileIndex`, `transferring`, `chunker`,
+  `progressThrottler`, and the whole-connection `abort: { aborted }`
+  bag (kept as a fresh object per transfer to preserve the
+  old-code async-closure semantics). The old `pauseResolvers`,
+  `cancelledFiles`, and `pausedFiles` sets are replaced by
+  `TransferHandle` records per file, driven via
+  `session.beginTransfer('file-${index}')`,
+  `session.pauseTransfer`, `session.resumeTransfer`,
+  `session.cancelTransfer`, and `session.cancelAllTransfers`.
+  `sendSingleFile` now begins/ends the transfer around the chunk
+  loop so session.state tracks transferring/authenticated
+  accurately and `endTransfer` emits the right reason
+  (`complete` / `cancelled` / `error`). Password flow uses
+  `session.incrementPasswordAttempts` +
+  `session.setPasswordVerified` in place of
+  `connState.passwordAttempts`. Sender line count: **1113 → 1126**
+  (slight growth from the cleaner Session/Meta/Entry separation;
+  the wins are on the deleted `ConnState` interface and the
+  uniform transfer-handle model).
+- **Step 2 [DONE]** — useReceiver migrated onto `Session`. Ten
+  per-connection refs are gone: `decryptKeyRef`, `keyPairRef`,
+  `heartbeatRef`, `rttPollerRef`, `keyExchangeTimeoutRef`,
+  `chunkQueueRef`, `imageSendQueueRef`, `inProgressImageRef`,
+  `connRef`, and the receiver-side `reconnectTokenRef`'s per-session
+  role. One `sessionRef: Session | null` carries them all. Hook-
+  level `reconnectTokenRef` stays (it coordinates reconnect-intent
+  across the hook lifetime; orthogonal to session identity, per
+  `plan-session.md`). Extended `session.ts` so `keys-derived`
+  auto-clears `keyExchangeTimeout` — single source of truth for
+  the handshake watchdog. All paths that used to reach into
+  individual refs (public-key handler, chunk decrypt, chat-image
+  assembly, cancel/pause/resume/typing/reaction, enableRelay,
+  beforeunload, online, visibilitychange, unmount cleanup) now
+  read through `sessionRef.current` and use `sess.send` /
+  `sess.close('peer-disconnect' | 'session-abort')`. Behaviour
+  preserved: M10 pendingManifest null-on-error, M11 out-of-order
+  chunk-cursor max, fingerprint rotation warning, and the
+  zip-resume path all typecheck and test.
+- Receiver line count: **1061 → 1056** (structural churn, not
+  shrinkage — the real win is the centralised lifecycle).
+- Full suite: **309/309** (271 prior + 38 session). `tsc --noEmit`
+  clean.
+
+**Still to do (in order, each its own commit):**
+
+1. ~~Migrate useReceiver.~~ Done (step 2).
+2. ~~Migrate useSender.~~ Done (step 3).
+3. Migrate useCollabHost guests.
+4. Migrate useCollabGuest host-conn.
+5. Migrate useCollabGuest mesh peers.
+6. Delete `GuestConnection`, `PeerConnection` type declarations
+   once every call site is on `Session`. (`ConnState` is already
+   gone as of step 3.)
+
+### P1.C — historical note (kept for reference)
 
 **Before writing code, write the plan.** Target: `docs/plan-session.md`
 with:

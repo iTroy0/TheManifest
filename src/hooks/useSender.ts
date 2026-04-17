@@ -3,6 +3,7 @@ import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
 import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
 import { generateKeyPair, exportPublicKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, uint8ToBase64, base64ToUint8, timingSafeEqual } from '../utils/crypto'
 import { finalizeKeyExchange } from '../net/keyExchange'
+import { createSession, type Session, type TransferHandle } from '../net/session'
 import { STUN_ONLY } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { buildManifestData } from '../utils/manifest'
@@ -31,11 +32,9 @@ interface InProgressImage {
   receivedBytes: number
 }
 
-interface ConnState {
-  conn: DataConnection
-  encryptKey: CryptoKey | null
-  keyPair: CryptoKeyPair | null
-  abort: { aborted: boolean }
+// UI + adaptive-chunker accounting that doesn't belong on Session. Keyed
+// by connId alongside the Session map; the pair makes up a `ConnEntry`.
+interface SenderMeta {
   progress: Record<string, number>
   totalSent: number
   startTime: number | null
@@ -43,23 +42,32 @@ interface ConnState {
   speed: number
   currentFileIndex: number
   transferring: boolean
-  inProgressImage: InProgressImage | null
-  chunkQueue: Promise<void>
-  imageSendQueue: Promise<void>
-  nickname?: string
-  heartbeat?: ReturnType<typeof setupHeartbeat>
-  rttPoller?: ReturnType<typeof setupRTTPolling>
-  disconnectHandled?: boolean
-  pendingJoinAnnounce?: boolean
-  passwordAttempts?: number
-  pauseResolvers?: Record<number, () => void>
-  cancelledFiles?: Set<number>
-  pausedFiles?: Set<number>
+  // Whole-connection abort flag — flipped on cancel-all, peer disconnect,
+  // or unmount so both the inner chunk loop and the outer file loop exit.
+  // Separate from `TransferHandle.aborted` (per-file cancel). Keeps the
+  // pre-session semantics of a fresh `{aborted:false}` object per transfer.
+  abort: { aborted: boolean }
   chunker?: InstanceType<typeof AdaptiveChunker>
   progressThrottler?: InstanceType<typeof ProgressThrottler>
-  pendingRemoteKey?: Uint8Array | null
-  keyExchangeTimeout?: ReturnType<typeof setTimeout>
-  fingerprint?: string
+  pendingJoinAnnounce?: boolean
+}
+
+interface ConnEntry {
+  session: Session
+  meta: SenderMeta
+}
+
+function createSenderMeta(): SenderMeta {
+  return {
+    progress: {},
+    totalSent: 0,
+    startTime: null,
+    transferTotalSize: 0,
+    speed: 0,
+    currentFileIndex: -1,
+    transferring: false,
+    abort: { aborted: false },
+  }
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────
@@ -76,7 +84,9 @@ export function useSender() {
   const lastMsgTime = useRef<number>(0)
   const peerRef = useRef<InstanceType<typeof Peer> | null>(null)
   const filesRef = useRef<File[]>([])
-  const connectionsRef = useRef<Map<string, ConnState>>(new Map())
+  // Map<connId, ConnEntry> — the room-level membership. Each entry holds a
+  // `Session` (per-connection lifecycle) plus a `SenderMeta` (UI accounting).
+  const connectionsRef = useRef<Map<string, ConnEntry>>(new Map())
   const passwordRef = useRef<string | null>(null)
   const chatOnlyRef = useRef<boolean>(false)
   const imageBlobUrlsRef = useRef<string[]>([])
@@ -91,8 +101,8 @@ export function useSender() {
 
   const refreshParticipants = useCallback((): void => {
     const list: Array<{ peerId: string; name: string }> = []
-    connectionsRef.current.forEach(cs => {
-      list.push({ peerId: cs.conn.peer, name: cs.nickname || 'Anon' })
+    connectionsRef.current.forEach(entry => {
+      list.push({ peerId: entry.session.conn.peer, name: entry.session.nickname || 'Anon' })
     })
     setParticipants(list)
   }, [])
@@ -102,17 +112,17 @@ export function useSender() {
   }, [])
 
   const sendCallMessage = useCallback((peerId: string, msg: Record<string, unknown>): void => {
-    connectionsRef.current.forEach(cs => {
-      if (cs.conn.peer === peerId) {
-        try { cs.conn.send(msg) } catch (e) { log.warn('useSender.sendCallMessage', e) }
+    connectionsRef.current.forEach(entry => {
+      if (entry.session.conn.peer === peerId) {
+        try { entry.session.send(msg) } catch (e) { log.warn('useSender.sendCallMessage', e) }
       }
     })
   }, [])
 
   const broadcastCallMessage = useCallback((msg: Record<string, unknown>, exceptPeerId?: string): void => {
-    connectionsRef.current.forEach(cs => {
-      if (exceptPeerId && cs.conn.peer === exceptPeerId) return
-      try { cs.conn.send(msg) } catch (e) { log.warn('useSender.broadcastCallMessage', e) }
+    connectionsRef.current.forEach(entry => {
+      if (exceptPeerId && entry.session.conn.peer === exceptPeerId) return
+      try { entry.session.send(msg) } catch (e) { log.warn('useSender.broadcastCallMessage', e) }
     })
   }, [])
 
@@ -149,58 +159,58 @@ export function useSender() {
       }
 
       const connId = conn.peer + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
-      const connState: ConnState = {
-        conn, encryptKey: null, keyPair: null, abort: { aborted: false },
-        progress: {}, totalSent: 0, startTime: null, transferTotalSize: 0,
-        speed: 0, currentFileIndex: -1, transferring: false,
-        inProgressImage: null,
-        chunkQueue: Promise.resolve(),
-        imageSendQueue: Promise.resolve(),
-      }
-      connectionsRef.current.set(connId, connState)
+      const session = createSession({ conn, role: 'portal-sender' })
+      // Inbound peer connection — we didn't initiate, but the transition
+      // table expects connect-start before conn-open. Dispatch both now
+      // (connect-start unconditionally on allocation; conn-open when the
+      // DataConnection 'open' event fires below).
+      session.dispatch({ type: 'connect-start' })
+      const meta = createSenderMeta()
+      const entry: ConnEntry = { session, meta }
+      connectionsRef.current.set(connId, entry)
 
-      function announceJoin(cs: ConnState, cId: string): void {
+      function announceJoin(e: ConnEntry, cId: string): void {
         dispatchConn({ type: 'SET', payload: { status: 'connected', recipientCount: connectionsRef.current.size } })
         refreshParticipants()
         // Fall back to 'Anon' when the peer hasn't sent a `nickname` yet —
         // reconnect / password-gate paths can announce before the join
         // message lands, which used to render as "  joined".
-        const name = cs.nickname || 'Anon'
+        const name = e.session.nickname || 'Anon'
         setMessages(prev => [...prev, { text: `${name} joined`, from: 'system', time: Date.now(), self: false }].slice(-500))
         const count = connectionsRef.current.size + 1
         connectionsRef.current.forEach((other, id) => {
-          try { other.conn.send({ type: 'online-count', count } satisfies PortalMsg) } catch (e) { log.warn('useSender.announceJoin.onlineCount', e) }
+          try { other.session.send({ type: 'online-count', count } satisfies PortalMsg) } catch (e) { log.warn('useSender.announceJoin.onlineCount', e) }
           if (id !== cId) {
-            try { other.conn.send({ type: 'system-msg', text: `${name} joined`, time: Date.now() } satisfies PortalMsg) } catch (e) { log.warn('useSender.announceJoin.systemMsg', e) }
+            try { other.session.send({ type: 'system-msg', text: `${name} joined`, time: Date.now() } satisfies PortalMsg) } catch (e) { log.warn('useSender.announceJoin.systemMsg', e) }
           }
         })
       }
 
       function aggregateUI(): void {
-        const conns = Array.from(connectionsRef.current.values())
-        const active = conns.filter(cs => cs.transferring)
+        const entries = Array.from(connectionsRef.current.values())
+        const active = entries.filter(e => e.meta.transferring)
 
         const merged: Record<string, number> = {}
-        for (const cs of active) {
-          for (const [name, pct] of Object.entries(cs.progress || {})) {
+        for (const e of active) {
+          for (const [name, pct] of Object.entries(e.meta.progress || {})) {
             if (merged[name] === undefined) merged[name] = pct
             else merged[name] = Math.max(merged[name], pct)
           }
         }
 
-        const activeWithFile = active.find(cs => cs.currentFileIndex >= 0)
+        const activeWithFile = active.find(e => e.meta.currentFileIndex >= 0)
 
         if (active.length === 0) {
           dispatchTransfer({ type: 'SET', payload: { progress: merged, currentFileIndex: -1, totalSent: 0, overallProgress: 0, speed: 0, eta: null } })
           return
         }
 
-        const sent = active.reduce((s, cs) => s + cs.totalSent, 0)
-        const total = active.reduce((s, cs) => s + cs.transferTotalSize, 0)
-        const spd = active.reduce((s, cs) => s + cs.speed, 0)
+        const sent = active.reduce((s, e) => s + e.meta.totalSent, 0)
+        const total = active.reduce((s, e) => s + e.meta.transferTotalSize, 0)
+        const spd = active.reduce((s, e) => s + e.meta.speed, 0)
         dispatchTransfer({ type: 'SET', payload: {
           progress: merged,
-          currentFileIndex: activeWithFile ? activeWithFile.currentFileIndex : -1,
+          currentFileIndex: activeWithFile ? activeWithFile.meta.currentFileIndex : -1,
           totalSent: sent,
           overallProgress: total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : 0,
           speed: spd,
@@ -209,23 +219,23 @@ export function useSender() {
       }
 
       // Hoisted out of `conn.on('data')` so we don't allocate two new
-      // closures on every inbound message. Same lifetime as connState.
+      // closures on every inbound message. Same lifetime as entry.
       function startTransfer(transferSize: number): void {
-        connState.abort = { aborted: false }
-        connState.totalSent = 0
-        connState.startTime = Date.now()
-        connState.progress = {}
-        connState.speed = 0
-        connState.transferTotalSize = transferSize
-        connState.transferring = true
+        meta.abort = { aborted: false }
+        meta.totalSent = 0
+        meta.startTime = Date.now()
+        meta.progress = {}
+        meta.speed = 0
+        meta.transferTotalSize = transferSize
+        meta.transferring = true
         dispatchConn({ type: 'SET_STATUS', payload: 'transferring' })
       }
 
       function endTransfer(): void {
-        connState.transferring = false
-        connState.currentFileIndex = -1
+        meta.transferring = false
+        meta.currentFileIndex = -1
         aggregateUI()
-        const anyActive = Array.from(connectionsRef.current.values()).some(cs => cs.transferring)
+        const anyActive = Array.from(connectionsRef.current.values()).some(e => e.meta.transferring)
         if (!anyActive) dispatchConn({ type: 'SET_STATUS', payload: 'connected' })
       }
 
@@ -244,35 +254,32 @@ export function useSender() {
       conn.on('open', async () => {
         if (destroyed) return
         if (!passwordRef.current) dispatchConn({ type: 'SET_STATUS', payload: 'connected' })
+        session.dispatch({ type: 'conn-open' })
 
-        connState.rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
+        session.rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
 
         function handlePeerDisconnect(reason: string): void {
-          if (connState.disconnectHandled || destroyed) return
-          connState.disconnectHandled = true
-          connState.abort.aborted = true
-          if (connState.heartbeat) connState.heartbeat.cleanup()
-          if (connState.rttPoller) connState.rttPoller.cleanup()
-          if (connState.keyExchangeTimeout) clearTimeout(connState.keyExchangeTimeout)
-          if (connState.pauseResolvers) {
-            Object.values(connState.pauseResolvers).forEach(r => r())
-            connState.pauseResolvers = {}
-          }
+          if (destroyed) return
+          if (session.state === 'closed' || session.state === 'error' || session.state === 'kicked') return
+          meta.abort.aborted = true
           try { conn.removeAllListeners() } catch (e) { log.warn('useSender.handlePeerDisconnect.removeListeners', e) }
-          // Null ICE handler to release the closure holding connState
+          // Null ICE handler to release the closure holding the session
           if (conn.peerConnection) {
             try { conn.peerConnection.oniceconnectionstatechange = null } catch (e) { log.warn('useSender.handlePeerDisconnect.clearIce', e) }
           }
-          const name = connState.nickname || 'A recipient'
+          // Session-level cleanup: heartbeat, rttPoller, keyExchangeTimeout,
+          // plus every active transfer handle gets aborted + pauseResolved.
+          session.close('peer-disconnect')
+          const name = session.nickname || 'A recipient'
           connectionsRef.current.delete(connId)
           dispatchConn({ type: 'SET', payload: { recipientCount: connectionsRef.current.size } })
           refreshParticipants()
           setMessages(prev => [...prev, { text: `${name} ${reason}`, from: 'system', time: Date.now(), self: false }].slice(-500))
           const newCount = connectionsRef.current.size + 1
-          connectionsRef.current.forEach(cs => {
+          connectionsRef.current.forEach(other => {
             try {
-              cs.conn.send({ type: 'online-count', count: newCount } satisfies PortalMsg)
-              cs.conn.send({ type: 'system-msg', text: `${name} ${reason}`, time: Date.now() } satisfies PortalMsg)
+              other.session.send({ type: 'online-count', count: newCount } satisfies PortalMsg)
+              other.session.send({ type: 'system-msg', text: `${name} ${reason}`, time: Date.now() } satisfies PortalMsg)
             } catch (e) { log.warn('useSender.handlePeerDisconnect.broadcast', e) }
           })
           if (connectionsRef.current.size === 0) {
@@ -281,7 +288,7 @@ export function useSender() {
           }
         }
 
-        connState.heartbeat = setupHeartbeat(conn, {
+        session.heartbeat = setupHeartbeat(conn, {
           onDead: () => handlePeerDisconnect('connection lost'),
         })
 
@@ -297,35 +304,36 @@ export function useSender() {
           }
         }
 
-        connState.keyPair = await generateKeyPair()
-        const pubKeyBytes = await exportPublicKey(connState.keyPair.publicKey)
-        conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies PortalMsg)
+        session.setKeyPair(await generateKeyPair())
+        const pubKeyBytes = await exportPublicKey(session.keyPair!.publicKey)
+        try { session.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendPublicKey', e) }
 
-        // ECDH key exchange timeout
-        connState.keyExchangeTimeout = setTimeout(() => {
-          if (!connState.encryptKey) {
+        // Handshake watchdog. Session auto-clears on `keys-derived` and
+        // on `close()`; no manual teardown needed.
+        session.keyExchangeTimeout = setTimeout(() => {
+          if (!session.encryptKey && !destroyed) {
             console.warn('Key exchange timed out for', connId)
             conn.close()
           }
         }, 10_000)
 
         // Handle deferred public key if receiver responded before our key was ready
-        if (connState.pendingRemoteKey) {
+        if (session.pendingRemoteKey) {
           try {
             const { encryptKey, fingerprint } = await finalizeKeyExchange({
-              localPrivate: connState.keyPair.privateKey,
+              localPrivate: session.keyPair!.privateKey,
               localPublic: pubKeyBytes,
-              remotePublic: connState.pendingRemoteKey,
+              remotePublic: session.pendingRemoteKey,
             })
-            connState.encryptKey = encryptKey
-            if (connState.keyExchangeTimeout) { clearTimeout(connState.keyExchangeTimeout); connState.keyExchangeTimeout = undefined }
-            connState.fingerprint = fingerprint
+            // Atomic: flips state to authenticated, sets encryptKey +
+            // fingerprint, disarms keyExchangeTimeout.
+            session.dispatch({ type: 'keys-derived', encryptKey, fingerprint })
             dispatchConn({ type: 'SET', payload: { fingerprint } })
-            connState.pendingRemoteKey = null
+            session.pendingRemoteKey = null
             if (passwordRef.current) {
-              conn.send({ type: 'password-required' } satisfies PortalMsg)
+              try { session.send({ type: 'password-required' } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendPasswordRequired', e) }
             } else {
-              await sendManifest(conn, connState.encryptKey)
+              await sendManifest(conn, encryptKey)
             }
           } catch (e) {
             log.warn('useSender.pendingRemoteKey.derive', e)
@@ -336,14 +344,14 @@ export function useSender() {
 
       conn.on('data', async (data: unknown) => {
         if (destroyed) return
-        if (connState.heartbeat) connState.heartbeat.markAlive()
+        if (session.heartbeat) session.heartbeat.markAlive()
 
         // Binary chunk packet — routed through the chunk queue. Must come
         // before the PortalMsg cast: ArrayBuffers don't have a `type` field
         // and shouldn't be treated as JSON messages.
         if (data instanceof ArrayBuffer || (data && (data as ArrayBuffer).byteLength !== undefined && !(typeof data === 'object' && (data as { type?: unknown }).type))) {
-          connState.chunkQueue = connState.chunkQueue
-            .then(() => handleHostChunk(connState, data as ArrayBuffer))
+          session.chunkQueue = session.chunkQueue
+            .then(() => handleHostChunk(entry, data as ArrayBuffer))
             .catch(e => log.warn('useSender.chunkQueue', e))
           return
         }
@@ -369,33 +377,31 @@ export function useSender() {
 
         if (msg.type === 'pong') return
         if (msg.type === 'ping') {
-          try { conn.send({ type: 'pong', ts: msg.ts } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendPong', e) }
+          try { session.send({ type: 'pong', ts: msg.ts } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendPong', e) }
           return
         }
 
         if (msg.type === 'public-key') {
           const remoteKeyRaw = new Uint8Array(msg.key as number[])
-          if (!connState.keyPair) {
+          if (!session.keyPair) {
             // Key pair not ready yet — defer until generateKeyPair resolves
-            connState.pendingRemoteKey = remoteKeyRaw
+            session.pendingRemoteKey = remoteKeyRaw
             return
           }
           try {
-            const localPubBytes = await exportPublicKey(connState.keyPair.publicKey)
+            const localPubBytes = await exportPublicKey(session.keyPair.publicKey)
             const { encryptKey, fingerprint } = await finalizeKeyExchange({
-              localPrivate: connState.keyPair.privateKey,
+              localPrivate: session.keyPair.privateKey,
               localPublic: localPubBytes,
               remotePublic: remoteKeyRaw,
             })
-            connState.encryptKey = encryptKey
-            if (connState.keyExchangeTimeout) { clearTimeout(connState.keyExchangeTimeout); connState.keyExchangeTimeout = undefined }
-            connState.fingerprint = fingerprint
+            session.dispatch({ type: 'keys-derived', encryptKey, fingerprint })
             dispatchConn({ type: 'SET', payload: { fingerprint } })
 
             if (passwordRef.current) {
-              conn.send({ type: 'password-required' } satisfies PortalMsg)
+              try { session.send({ type: 'password-required' } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendPasswordRequired', e) }
             } else {
-              await sendManifest(conn, connState.encryptKey)
+              await sendManifest(conn, encryptKey)
             }
           } catch (e) {
             log.warn('useSender.publicKey.derive', e)
@@ -409,23 +415,23 @@ export function useSender() {
           // Exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 30s
           const backoffMs = Math.min(30_000, 1000 * Math.pow(2, Math.max(0, globalPasswordAttempts.current - 1)))
           if (now - lastPasswordAttemptTime.current < backoffMs) {
-            try { conn.send({ type: 'password-rate-limited' } satisfies PortalMsg) } catch (e) { log.warn('useSender.passwordRateLimited.send', e) }
+            try { session.send({ type: 'password-rate-limited' } satisfies PortalMsg) } catch (e) { log.warn('useSender.passwordRateLimited.send', e) }
             return
           }
           lastPasswordAttemptTime.current = now
           globalPasswordAttempts.current += 1
-          connState.passwordAttempts = (connState.passwordAttempts || 0) + 1
-          if (globalPasswordAttempts.current > 8 || connState.passwordAttempts > 5) {
-            conn.send({ type: 'password-locked' } satisfies PortalMsg)
+          const attempts = session.incrementPasswordAttempts()
+          if (globalPasswordAttempts.current > 8 || attempts > 5) {
+            try { session.send({ type: 'password-locked' } satisfies PortalMsg) } catch (e) { log.warn('useSender.passwordLocked.send', e) }
             conn.close()
             return
           }
           let password = ''
-          if (connState.encryptKey && msg.data) {
+          if (session.encryptKey && msg.data) {
             try {
-              const decrypted = await decryptChunk(connState.encryptKey, base64ToUint8(msg.data as string))
+              const decrypted = await decryptChunk(session.encryptKey, base64ToUint8(msg.data as string))
               password = new TextDecoder().decode(decrypted)
-            } catch (e) { log.warn('useSender.passwordDecrypt', e); conn.send({ type: 'password-wrong' } satisfies PortalMsg); return }
+            } catch (e) { log.warn('useSender.passwordDecrypt', e); try { session.send({ type: 'password-wrong' } satisfies PortalMsg) } catch (err) { log.warn('useSender.passwordWrong.send', err) }; return }
           }
           const expected = passwordRef.current || ''
           const matched = password.length > 0 && timingSafeEqual(password, expected)
@@ -438,23 +444,24 @@ export function useSender() {
             // future guest regardless of whether they had the password.
             globalPasswordAttempts.current = 0
             lastPasswordAttemptTime.current = 0
-            connState.passwordAttempts = 0
-            conn.send({ type: 'password-accepted' } satisfies PortalMsg)
-            if (connState.pendingJoinAnnounce) {
-              connState.pendingJoinAnnounce = false
-              announceJoin(connState, connId)
+            session.passwordAttempts = 0
+            session.setPasswordVerified()
+            try { session.send({ type: 'password-accepted' } satisfies PortalMsg) } catch (e) { log.warn('useSender.passwordAccepted.send', e) }
+            if (meta.pendingJoinAnnounce) {
+              meta.pendingJoinAnnounce = false
+              announceJoin(entry, connId)
             }
-            if (connState.encryptKey) await sendManifest(conn, connState.encryptKey)
+            if (session.encryptKey) await sendManifest(conn, session.encryptKey)
           } else {
-            conn.send({ type: 'password-wrong' } satisfies PortalMsg)
+            try { session.send({ type: 'password-wrong' } satisfies PortalMsg) } catch (e) { log.warn('useSender.passwordWrong.send', e) }
           }
           return
         }
 
         if (msg.type === 'typing') {
           handleTypingMessage(msg.nickname as string, setTypingUsers, typingTimeouts.current)
-          connectionsRef.current.forEach((cs, id) => {
-            if (id !== connId) { try { cs.conn.send({ type: 'typing', nickname: msg.nickname } satisfies PortalMsg) } catch (e) { log.warn('useSender.relayTyping', e) } }
+          connectionsRef.current.forEach((other, id) => {
+            if (id !== connId) { try { other.session.send({ type: 'typing', nickname: msg.nickname } satisfies PortalMsg) } catch (e) { log.warn('useSender.relayTyping', e) } }
           })
           return
         }
@@ -471,26 +478,26 @@ export function useSender() {
             }
             return m
           }))
-          connectionsRef.current.forEach((cs, id) => {
-            if (id !== connId) { try { cs.conn.send(data) } catch (e) { log.warn('useSender.relayReaction', e) } }
+          connectionsRef.current.forEach((other, id) => {
+            if (id !== connId) { try { other.session.send(data as Record<string, unknown>) } catch (e) { log.warn('useSender.relayReaction', e) } }
           })
           return
         }
 
         if (msg.type === 'chat-encrypted') {
           let payload: Record<string, unknown> = {}
-          if (connState.encryptKey && msg.data) {
-            try { payload = await decryptJSON(connState.encryptKey, msg.data as string) }
+          if (session.encryptKey && msg.data) {
+            try { payload = await decryptJSON(session.encryptKey, msg.data as string) }
             catch (e) { log.warn('useSender.chatEncrypted.decrypt', e); return }
           }
           const chatMsg: ChatMessage = { text: payload.text as string || '', image: payload.image as string | undefined, mime: payload.mime as string | undefined, replyTo: payload.replyTo as ChatMessage['replyTo'], from: msg.nickname as string || 'Anon', time: msg.time as number, self: false }
           setMessages(prev => [...prev, chatMsg].slice(-500))
           const relayPayload = JSON.stringify(payload)
-          for (const [id, cs] of connectionsRef.current) {
-            if (id !== connId && cs.encryptKey) {
+          for (const [id, other] of connectionsRef.current) {
+            if (id !== connId && other.session.encryptKey) {
               try {
-                const encrypted = await encryptChunk(cs.encryptKey, new TextEncoder().encode(relayPayload))
-                cs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: msg.nickname || 'Anon', time: msg.time } satisfies PortalMsg)
+                const encrypted = await encryptChunk(other.session.encryptKey, new TextEncoder().encode(relayPayload))
+                other.session.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: msg.nickname || 'Anon', time: msg.time } satisfies PortalMsg)
               } catch (e) { log.warn('useSender.chatEncrypted.relay', e) }
             }
           }
@@ -500,23 +507,23 @@ export function useSender() {
         // Mid-stream abort from peer — clear the in-progress image slot so
         // accumulated bytes don't linger until the next start message.
         if (msg.type === 'chat-image-abort') {
-          connState.inProgressImage = null
+          session.inProgressImage = null
           return
         }
 
         if (msg.type === 'chat-image-start-enc') {
-          if (!connState.encryptKey || !msg.data) return
-          let meta: Record<string, unknown>
-          try { meta = await decryptJSON(connState.encryptKey, msg.data as string) }
+          if (!session.encryptKey || !msg.data) return
+          let metaPayload: Record<string, unknown>
+          try { metaPayload = await decryptJSON(session.encryptKey, msg.data as string) }
           catch (e) { log.warn('useSender.chatImageStart.decrypt', e); return }
-          connState.inProgressImage = {
-            mime: meta.mime as string || 'application/octet-stream',
-            size: meta.size as number || 0,
-            text: meta.text as string || '',
-            replyTo: meta.replyTo as InProgressImage['replyTo'] || null,
-            time: meta.time as number || Date.now(),
-            from: msg.from as string || connState.nickname || 'Anon',
-            duration: meta.duration as number | undefined,
+          session.inProgressImage = {
+            mime: metaPayload.mime as string || 'application/octet-stream',
+            size: metaPayload.size as number || 0,
+            text: metaPayload.text as string || '',
+            replyTo: metaPayload.replyTo as InProgressImage['replyTo'] || null,
+            time: metaPayload.time as number || Date.now(),
+            from: msg.from as string || session.nickname || 'Anon',
+            duration: metaPayload.duration as number | undefined,
             chunks: [],
             receivedBytes: 0,
           }
@@ -524,9 +531,9 @@ export function useSender() {
         }
 
         if (msg.type === 'chat-image-end-enc') {
-          await connState.chunkQueue
-          const inFlight = connState.inProgressImage
-          connState.inProgressImage = null
+          await session.chunkQueue
+          const inFlight = session.inProgressImage
+          session.inProgressImage = null
           if (!inFlight) return
 
           const totalLen = inFlight.chunks.reduce((s, c) => s + c.byteLength, 0)
@@ -548,11 +555,12 @@ export function useSender() {
             self: false,
           }].slice(-500))
 
-          for (const [otherId, otherCs] of connectionsRef.current) {
-            if (otherId === connId || !otherCs.encryptKey) continue
-            otherCs.imageSendQueue = otherCs.imageSendQueue
+          for (const [otherId, other] of connectionsRef.current) {
+            if (otherId === connId || !other.session.encryptKey) continue
+            const key = other.session.encryptKey
+            other.session.imageSendQueue = other.session.imageSendQueue
               .then(() => streamImageToConn(
-                otherCs.conn, otherCs.encryptKey!, fullBytes,
+                other.session.conn, key, fullBytes,
                 inFlight.mime, inFlight.text, inFlight.replyTo,
                 inFlight.from, inFlight.time, inFlight.duration
               ))
@@ -562,79 +570,68 @@ export function useSender() {
         }
 
         if (msg.type === 'join') {
-          connState.nickname = (msg.nickname as string || '').slice(0, 32)
+          session.setNickname((msg.nickname as string || '').slice(0, 32))
           const now = Date.now()
-          for (const [otherId, otherCs] of connectionsRef.current) {
+          for (const [otherId, other] of connectionsRef.current) {
             if (otherId === connId) continue
-            if (otherCs.nickname !== msg.nickname) continue
-            const lastSeen = otherCs.heartbeat ? otherCs.heartbeat.getLastSeen() : 0
+            if (other.session.nickname !== msg.nickname) continue
+            const lastSeen = other.session.heartbeat ? other.session.heartbeat.getLastSeen() : 0
             if (now - lastSeen < 10000) continue
-            otherCs.abort.aborted = true
-            if (otherCs.heartbeat) otherCs.heartbeat.cleanup()
-            if (otherCs.rttPoller) otherCs.rttPoller.cleanup()
-            try { otherCs.conn.close() } catch (e) { log.warn('useSender.join.closeDup', e) }
+            other.meta.abort.aborted = true
+            other.session.close('session-abort')
+            try { other.session.conn.close() } catch (e) { log.warn('useSender.join.closeDup', e) }
             connectionsRef.current.delete(otherId)
           }
 
           if (passwordRef.current) {
-            connState.pendingJoinAnnounce = true
+            meta.pendingJoinAnnounce = true
           } else {
-            announceJoin(connState, connId)
+            announceJoin(entry, connId)
           }
           return
         }
 
         if (msg.type === 'nickname-change') {
-          const oldName = connState.nickname || msg.oldName as string
-          connState.nickname = (msg.newName as string || '').slice(0, 32)
+          const oldName = session.nickname || msg.oldName as string
+          session.setNickname((msg.newName as string || '').slice(0, 32))
           refreshParticipants()
           const changeMsg = `${oldName} is now ${msg.newName}`
           setMessages(prev => [...prev, { text: changeMsg, from: 'system', time: Date.now(), self: false }].slice(-500))
-          connectionsRef.current.forEach((cs, id) => {
+          connectionsRef.current.forEach((other, id) => {
             if (id !== connId) {
-              try { cs.conn.send({ type: 'system-msg', text: changeMsg, time: Date.now() } satisfies PortalMsg) } catch (e) { log.warn('useSender.nicknameChange.broadcast', e) }
+              try { other.session.send({ type: 'system-msg', text: changeMsg, time: Date.now() } satisfies PortalMsg) } catch (e) { log.warn('useSender.nicknameChange.broadcast', e) }
             }
           })
           return
         }
 
         if (msg.type === 'cancel-all') {
-          connState.abort = { aborted: true }
-          connState.transferring = false
-          connState.progress = {}
-          connState.totalSent = 0
-          connState.speed = 0
-          if (connState.pauseResolvers) {
-            Object.values(connState.pauseResolvers).forEach(r => r())
-            connState.pauseResolvers = {}
-          }
+          meta.abort = { aborted: true }
+          meta.transferring = false
+          meta.progress = {}
+          meta.totalSent = 0
+          meta.speed = 0
+          // Abort every in-flight file-transfer handle on this session so
+          // pausedFile awaits unblock and the sender loop exits.
+          session.cancelAllTransfers()
           aggregateUI()
-          const anyActive = Array.from(connectionsRef.current.values()).some(cs => cs.transferring)
+          const anyActive = Array.from(connectionsRef.current.values()).some(e => e.meta.transferring)
           if (!anyActive) dispatchConn({ type: 'SET_STATUS', payload: 'connected' })
           return
         }
 
         if (msg.type === 'cancel-file') {
-          if (!connState.cancelledFiles) connState.cancelledFiles = new Set()
-          connState.cancelledFiles.add(msg.index as number)
-          connState.pausedFiles?.delete(msg.index as number)
-          if (connState.pauseResolvers?.[msg.index as number]) {
-            connState.pauseResolvers[msg.index as number]()
-          }
+          session.cancelTransfer(`file-${msg.index}`)
           return
         }
 
         if (msg.type === 'pause-file') {
-          if (!connState.pausedFiles) connState.pausedFiles = new Set()
-          connState.pausedFiles.add(msg.index as number)
+          session.pauseTransfer(`file-${msg.index}`)
           return
         }
 
         if (msg.type === 'resume-file') {
-          connState.pausedFiles?.delete(msg.index as number)
-          if (connState.pauseResolvers?.[msg.index as number]) {
-            connState.pauseResolvers[msg.index as number]()
-          }
+          session.resumeTransfer(`file-${msg.index}`)
           return
         }
 
@@ -647,13 +644,13 @@ export function useSender() {
           const resumeChunk = Math.min(Math.max(0, (msg.resumeChunk as number) || 0), Math.max(0, totalChunks - 1))
           startTransfer(file.size)
           try {
-            await sendSingleFile(conn, filesRef.current, msg.index as number, resumeChunk, connState, connState.encryptKey, aggregateUI)
-            if (!connState.abort.aborted) endTransfer()
+            await sendSingleFile(conn, filesRef.current, msg.index as number, resumeChunk, entry, session.encryptKey, aggregateUI)
+            if (!meta.abort.aborted) endTransfer()
           } catch (e) {
             console.warn('sendSingleFile failed:', e)
-            connState.abort.aborted = true
+            meta.abort.aborted = true
             endTransfer()
-            try { conn.close() } catch (e) { log.warn('useSender.requestFile.closeAfterFail', e) }
+            try { conn.close() } catch (err) { log.warn('useSender.requestFile.closeAfterFail', err) }
           }
         }
 
@@ -662,19 +659,19 @@ export function useSender() {
           const transferSize = indices.reduce((sum, i) => sum + (filesRef.current[i]?.size || 0), 0)
           startTransfer(transferSize)
           for (const idx of indices) {
-            if (connState.abort.aborted) break
-            try { await sendSingleFile(conn, filesRef.current, idx, 0, connState, connState.encryptKey, aggregateUI) }
+            if (meta.abort.aborted) break
+            try { await sendSingleFile(conn, filesRef.current, idx, 0, entry, session.encryptKey, aggregateUI) }
             catch (e) {
               log.warn('useSender.requestAll.skip', e)
               // Tell the receiver why the file is missing from the batch so
               // it can surface the failure instead of silently completing
               // with fewer files than requested.
-              try { conn.send({ type: 'file-skipped', index: idx, reason: (e as Error)?.message || 'send-failed' } satisfies PortalMsg) }
+              try { session.send({ type: 'file-skipped', index: idx, reason: (e as Error)?.message || 'send-failed' } satisfies PortalMsg) }
               catch (sendErr) { log.warn('useSender.requestAll.skipNotify', sendErr) }
             }
           }
-          if (!connState.abort.aborted) {
-            conn.send({ type: 'batch-done' } satisfies PortalMsg)
+          if (!meta.abort.aborted) {
+            try { session.send({ type: 'batch-done' } satisfies PortalMsg) } catch (e) { log.warn('useSender.batchDone.send', e) }
             endTransfer()
           }
         }
@@ -683,17 +680,17 @@ export function useSender() {
           const transferSize = filesRef.current.reduce((sum, f) => sum + f.size, 0)
           startTransfer(transferSize)
           for (let i = 0; i < filesRef.current.length; i++) {
-            if (connState.abort.aborted) break
-            try { await sendSingleFile(conn, filesRef.current, i, 0, connState, connState.encryptKey, aggregateUI) }
+            if (meta.abort.aborted) break
+            try { await sendSingleFile(conn, filesRef.current, i, 0, entry, session.encryptKey, aggregateUI) }
             catch (e) {
               log.warn('useSender.ready.skip', e)
-              try { conn.send({ type: 'file-skipped', index: i, reason: (e as Error)?.message || 'send-failed' } satisfies PortalMsg) }
+              try { session.send({ type: 'file-skipped', index: i, reason: (e as Error)?.message || 'send-failed' } satisfies PortalMsg) }
               catch (sendErr) { log.warn('useSender.ready.skipNotify', sendErr) }
             }
           }
-          if (!connState.abort.aborted) {
-            conn.send({ type: 'done' } satisfies PortalMsg)
-            connState.transferring = false
+          if (!meta.abort.aborted) {
+            try { session.send({ type: 'done' } satisfies PortalMsg) } catch (e) { log.warn('useSender.done.send', e) }
+            meta.transferring = false
             dispatchConn({ type: 'SET_STATUS', payload: 'done' })
           }
         }
@@ -701,22 +698,21 @@ export function useSender() {
         if (msg.type === 'resume') {
           const transferSize = filesRef.current[msg.fileIndex as number]?.size || 0
           startTransfer(transferSize)
-          await sendSingleFile(conn, filesRef.current, msg.fileIndex as number, msg.chunkIndex as number, connState, connState.encryptKey, aggregateUI)
-          if (!connState.abort.aborted) endTransfer()
+          await sendSingleFile(conn, filesRef.current, msg.fileIndex as number, msg.chunkIndex as number, entry, session.encryptKey, aggregateUI)
+          if (!meta.abort.aborted) endTransfer()
         }
       })
 
       conn.on('close', () => {
-        if (destroyed || connState.disconnectHandled) return
-        connState.disconnectHandled = true
+        if (destroyed) return
+        if (session.state === 'closed' || session.state === 'error' || session.state === 'kicked') return
         try { conn.removeAllListeners() } catch (e) { log.warn('useSender.close.removeListeners', e) }
         if (conn.peerConnection) {
           try { conn.peerConnection.oniceconnectionstatechange = null } catch (e) { log.warn('useSender.close.clearIce', e) }
         }
-        connState.abort.aborted = true
-        if (connState.heartbeat) connState.heartbeat.cleanup()
-        if (connState.rttPoller) connState.rttPoller.cleanup()
-        const name = connState.nickname || 'A recipient'
+        meta.abort.aborted = true
+        session.close('peer-disconnect')
+        const name = session.nickname || 'A recipient'
         if (name && typingTimeouts.current[name]) {
           clearTimeout(typingTimeouts.current[name])
           delete typingTimeouts.current[name]
@@ -727,10 +723,10 @@ export function useSender() {
         refreshParticipants()
         setMessages(prev => [...prev, { text: `${name} left`, from: 'system', time: Date.now(), self: false }].slice(-500))
         const count = connectionsRef.current.size + 1
-        connectionsRef.current.forEach(cs => {
+        connectionsRef.current.forEach(other => {
           try {
-            cs.conn.send({ type: 'online-count', count } satisfies PortalMsg)
-            cs.conn.send({ type: 'system-msg', text: `${name} left`, time: Date.now() } satisfies PortalMsg)
+            other.session.send({ type: 'online-count', count } satisfies PortalMsg)
+            other.session.send({ type: 'system-msg', text: `${name} left`, time: Date.now() } satisfies PortalMsg)
           } catch (e) { log.warn('useSender.close.broadcastLeft', e) }
         })
         if (connectionsRef.current.size === 0) {
@@ -742,9 +738,8 @@ export function useSender() {
       conn.on('error', (err: unknown) => {
         if (destroyed) return
         console.warn('sender conn.on("error"):', err)
-        connState.abort.aborted = true
-        if (connState.heartbeat) connState.heartbeat.cleanup()
-        if (connState.rttPoller) connState.rttPoller.cleanup()
+        meta.abort.aborted = true
+        session.close('error')
         connectionsRef.current.delete(connId)
         dispatchConn({ type: 'SET', payload: { recipientCount: connectionsRef.current.size } })
         refreshParticipants()
@@ -784,13 +779,13 @@ export function useSender() {
       if (peer.disconnected && !peer.destroyed) peer.reconnect()
       // Reset heartbeat liveness on every live recipient so the 5s check-
       // timer that just un-paused can't false-positive on its first tick.
-      connectionsRef.current.forEach(cs => { if (cs.heartbeat) cs.heartbeat.markAlive() })
+      connectionsRef.current.forEach(entry => { if (entry.session.heartbeat) entry.session.heartbeat.markAlive() })
     }
     document.addEventListener('visibilitychange', handleVisibility)
 
     function handleBeforeUnload(): void {
-      connectionsRef.current.forEach(cs => {
-        try { cs.conn.send({ type: 'closing' } satisfies PortalMsg) } catch (e) { log.warn('useSender.beforeUnload.sendClosing', e) }
+      connectionsRef.current.forEach(entry => {
+        try { entry.session.send({ type: 'closing' } satisfies PortalMsg) } catch (e) { log.warn('useSender.beforeUnload.sendClosing', e) }
       })
     }
     window.addEventListener('beforeunload', handleBeforeUnload)
@@ -804,9 +799,10 @@ export function useSender() {
       Object.values(typingTimeouts.current).forEach(clearTimeout)
       typingTimeouts.current = {}
       destroyed = true
-      connectionsRef.current.forEach(cs => {
-        cs.abort.aborted = true
-        try { cs.conn.removeAllListeners() } catch (e) { log.warn('useSender.unmount.removeListeners', e) }
+      connectionsRef.current.forEach(entry => {
+        entry.meta.abort.aborted = true
+        try { entry.session.conn.removeAllListeners() } catch (e) { log.warn('useSender.unmount.removeListeners', e) }
+        entry.session.close('session-abort')
       })
       connectionsRef.current.clear()
       setPeerInstance(null)
@@ -832,11 +828,11 @@ export function useSender() {
       imageBlobUrlsRef.current.push(localUrl)
       setMessages(prev => [...prev, { text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }].slice(-500))
 
-      for (const cs of connectionsRef.current.values()) {
-        if (!cs.encryptKey) continue
-        const key = cs.encryptKey
-        cs.imageSendQueue = cs.imageSendQueue
-          .then(() => streamImageToConn(cs.conn, key, bytes, mime, text || '', replyTo ?? null, senderName, time, duration))
+      for (const entry of connectionsRef.current.values()) {
+        if (!entry.session.encryptKey) continue
+        const key = entry.session.encryptKey
+        entry.session.imageSendQueue = entry.session.imageSendQueue
+          .then(() => streamImageToConn(entry.session.conn, key, bytes, mime, text || '', replyTo ?? null, senderName, time, duration))
           .catch(e => log.warn('useSender.sendMessage.imageQueue', e))
       }
       return
@@ -845,19 +841,19 @@ export function useSender() {
     const imgStr = image as string | undefined
     setMessages(prev => [...prev, { text, image: imgStr, replyTo, from: 'You', time, self: true }].slice(-500))
     const payload = JSON.stringify({ text, image: imgStr, replyTo })
-    for (const cs of connectionsRef.current.values()) {
+    for (const entry of connectionsRef.current.values()) {
       try {
-        if (cs.encryptKey) {
-          const encrypted = await encryptChunk(cs.encryptKey, new TextEncoder().encode(payload))
-          cs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: senderName, time } satisfies PortalMsg)
+        if (entry.session.encryptKey) {
+          const encrypted = await encryptChunk(entry.session.encryptKey, new TextEncoder().encode(payload))
+          entry.session.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: senderName, time } satisfies PortalMsg)
         }
       } catch (e) { log.warn('useSender.sendMessage.chatEncrypt', e) }
     }
   }, [senderName])
 
   const sendTyping = useCallback((): void => {
-    connectionsRef.current.forEach(cs => {
-      try { cs.conn.send({ type: 'typing', nickname: senderName } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendTyping', e) }
+    connectionsRef.current.forEach(entry => {
+      try { entry.session.send({ type: 'typing', nickname: senderName } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendTyping', e) }
     })
   }, [senderName])
 
@@ -876,8 +872,8 @@ export function useSender() {
       }
       return m
     }))
-    connectionsRef.current.forEach(cs => {
-      try { cs.conn.send({ type: 'reaction', msgId, emoji, nickname: senderName } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendReaction', e) }
+    connectionsRef.current.forEach(entry => {
+      try { entry.session.send({ type: 'reaction', msgId, emoji, nickname: senderName } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendReaction', e) }
     })
   }, [senderName])
 
@@ -887,19 +883,19 @@ export function useSender() {
     setSenderName(newName.trim())
     const msg = `${oldName} is now ${newName.trim()}`
     setMessages(prev => [...prev, { text: msg, from: 'system', time: Date.now(), self: false }].slice(-500))
-    connectionsRef.current.forEach(cs => {
-      try { cs.conn.send({ type: 'system-msg', text: msg, time: Date.now() } satisfies PortalMsg) } catch (e) { log.warn('useSender.changeSenderName.broadcast', e) }
+    connectionsRef.current.forEach(entry => {
+      try { entry.session.send({ type: 'system-msg', text: msg, time: Date.now() } satisfies PortalMsg) } catch (e) { log.warn('useSender.changeSenderName.broadcast', e) }
     })
   }, [senderName])
 
   const broadcastManifest = useCallback(async (): Promise<void> => {
     if (connectionsRef.current.size === 0) return
     const manifest = await buildManifestData(filesRef.current, chatOnlyRef.current)
-    for (const cs of connectionsRef.current.values()) {
-      if (!cs.encryptKey) continue
+    for (const entry of connectionsRef.current.values()) {
+      if (!entry.session.encryptKey) continue
       try {
-        const encrypted = await encryptJSON(cs.encryptKey, manifest)
-        cs.conn.send({ type: 'manifest-enc', data: encrypted } satisfies PortalMsg)
+        const encrypted = await encryptJSON(entry.session.encryptKey, manifest)
+        entry.session.send({ type: 'manifest-enc', data: encrypted } satisfies PortalMsg)
       } catch (e) { console.warn('Failed to broadcast manifest:', e) }
     }
   }, [])
@@ -907,9 +903,10 @@ export function useSender() {
   const reset = useCallback((): void => {
     Object.values(typingTimeouts.current).forEach(clearTimeout)
     typingTimeouts.current = {}
-    connectionsRef.current.forEach(cs => {
-      cs.abort.aborted = true
-      try { cs.conn.removeAllListeners() } catch (e) { log.warn('useSender.reset.removeListeners', e) }
+    connectionsRef.current.forEach(entry => {
+      entry.meta.abort.aborted = true
+      try { entry.session.conn.removeAllListeners() } catch (e) { log.warn('useSender.reset.removeListeners', e) }
+      entry.session.close('session-abort')
     })
     connectionsRef.current.clear()
     if (peerRef.current) peerRef.current.destroy()
@@ -943,87 +940,103 @@ async function sendSingleFile(
   files: File[],
   index: number,
   startChunk: number,
-  connState: ConnState,
+  entry: ConnEntry,
   encryptKey: CryptoKey | null,
   aggregateUI: () => void
 ): Promise<void> {
   const file = files[index]
   if (!file) return
 
-  if (!connState.chunker) connState.chunker = new AdaptiveChunker()
-  if (!connState.progressThrottler) connState.progressThrottler = new ProgressThrottler(80)
+  const { session, meta } = entry
+
+  if (!meta.chunker) meta.chunker = new AdaptiveChunker()
+  if (!meta.progressThrottler) meta.progressThrottler = new ProgressThrottler(80)
 
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
 
-  connState.currentFileIndex = index
-  conn.send({ type: 'file-start', name: file.name, size: file.size, index, totalChunks, resumeFrom: startChunk } satisfies PortalMsg)
+  meta.currentFileIndex = index
+  // Register the transfer on the session so inbound pause/resume/cancel
+  // messages route to this handle via session.pauseTransfer / etc.
+  const transferId = `file-${index}`
+  const handle: TransferHandle = {
+    transferId,
+    direction: 'outbound',
+    aborted: false,
+    paused: false,
+  }
+  session.beginTransfer(handle)
 
-  let chunkIndex = 0
-  let fileSent = startChunk * CHUNK_SIZE
-  let chunkStartTime = 0
+  try {
+    conn.send({ type: 'file-start', name: file.name, size: file.size, index, totalChunks, resumeFrom: startChunk } satisfies PortalMsg)
 
-  for await (const { buffer: chunkData } of chunkFileAdaptive(file, connState.chunker)) {
-    if (connState.abort.aborted) return
-    if (connState.cancelledFiles?.has(index)) {
-      conn.send({ type: 'file-cancelled', index } satisfies PortalMsg)
-      connState.cancelledFiles.delete(index)
-      return
-    }
-    if (connState.pausedFiles?.has(index)) {
-      if (!connState.pauseResolvers) connState.pauseResolvers = {}
-      await new Promise<void>(r => { connState.pauseResolvers![index] = r })
-      delete connState.pauseResolvers![index]
-      if (connState.abort.aborted) return
-      if (connState.cancelledFiles?.has(index)) {
-        conn.send({ type: 'file-cancelled', index } satisfies PortalMsg)
-        connState.cancelledFiles.delete(index)
+    let chunkIndex = 0
+    let fileSent = startChunk * CHUNK_SIZE
+    let chunkStartTime = 0
+
+    for await (const { buffer: chunkData } of chunkFileAdaptive(file, meta.chunker)) {
+      if (meta.abort.aborted) return
+      if (handle.aborted) {
+        try { conn.send({ type: 'file-cancelled', index } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendSingleFile.cancelled.send', e) }
         return
+      }
+      if (handle.paused) {
+        await new Promise<void>(r => { handle.pauseResolver = r })
+        handle.pauseResolver = undefined
+        if (meta.abort.aborted) return
+        if (handle.aborted) {
+          try { conn.send({ type: 'file-cancelled', index } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendSingleFile.cancelled.send', e) }
+          return
+        }
+      }
+
+      if (chunkIndex < startChunk) {
+        chunkIndex++
+        continue
+      }
+
+      chunkStartTime = Date.now()
+
+      const dataToSend: ArrayBuffer = encryptKey
+        ? await encryptChunk(encryptKey, chunkData)
+        : chunkData
+
+      const packet = buildChunkPacket(index, chunkIndex, dataToSend)
+      conn.send(packet)
+      await waitForBufferDrain(conn)
+
+      const transferTime = Date.now() - chunkStartTime
+      meta.chunker.recordTransfer(chunkData.byteLength, transferTime)
+
+      chunkIndex++
+      fileSent += chunkData.byteLength
+      meta.totalSent += chunkData.byteLength
+      meta.progress[file.name] = Math.round((fileSent / file.size) * 100)
+
+      if (meta.progressThrottler.shouldUpdate()) {
+        const now = Date.now()
+        const elapsed = (now - meta.startTime!) / 1000
+        if (elapsed > 0.5) meta.speed = meta.totalSent / elapsed
+        aggregateUI()
       }
     }
 
-    if (chunkIndex < startChunk) {
-      chunkIndex++
-      continue
-    }
-
-    chunkStartTime = Date.now()
-
-    const dataToSend: ArrayBuffer = encryptKey
-      ? await encryptChunk(encryptKey, chunkData)
-      : chunkData
-
-    const packet = buildChunkPacket(index, chunkIndex, dataToSend)
-    conn.send(packet)
-    await waitForBufferDrain(conn)
-
-    const transferTime = Date.now() - chunkStartTime
-    connState.chunker.recordTransfer(chunkData.byteLength, transferTime)
-
-    chunkIndex++
-    fileSent += chunkData.byteLength
-    connState.totalSent += chunkData.byteLength
-    connState.progress[file.name] = Math.round((fileSent / file.size) * 100)
-
-    if (connState.progressThrottler.shouldUpdate()) {
-      const now = Date.now()
-      const elapsed = (now - connState.startTime!) / 1000
-      if (elapsed > 0.5) connState.speed = connState.totalSent / elapsed
+    if (!meta.abort.aborted && !handle.aborted) {
+      conn.send({ type: 'file-end', index } satisfies PortalMsg)
+      meta.progress[file.name] = 100
+      meta.progressThrottler!.forceUpdate()
       aggregateUI()
     }
-  }
-
-  if (!connState.abort.aborted) {
-    conn.send({ type: 'file-end', index } satisfies PortalMsg)
-    connState.progress[file.name] = 100
-    connState.progressThrottler!.forceUpdate()
-    aggregateUI()
+  } finally {
+    const reason = handle.aborted ? 'cancelled' : (meta.abort.aborted ? 'error' : 'complete')
+    session.endTransfer(transferId, reason)
   }
 }
 
 // ── handleHostChunk ───────────────────────────────────────────────────────
 
-async function handleHostChunk(connState: ConnState, rawData: ArrayBuffer | ArrayBufferView): Promise<void> {
-  if (!connState.encryptKey) return
+async function handleHostChunk(entry: ConnEntry, rawData: ArrayBuffer | ArrayBufferView): Promise<void> {
+  const { session } = entry
+  if (!session.encryptKey) return
   const buffer = rawData instanceof ArrayBuffer
     ? rawData
     : ((rawData as ArrayBufferView).buffer as ArrayBuffer)
@@ -1034,24 +1047,24 @@ async function handleHostChunk(connState: ConnState, rawData: ArrayBuffer | Arra
   // connection. A peer spamming stray chat-image chunks without a matching
   // `chat-image-start-enc` used to make us do AES-GCM work per chunk only
   // to drop the plaintext on the floor. Cheap check first.
-  if (!connState.inProgressImage) return
+  if (!session.inProgressImage) return
   let plain: ArrayBuffer | Uint8Array
-  try { plain = await decryptChunk(connState.encryptKey, parsed.data) }
+  try { plain = await decryptChunk(session.encryptKey, parsed.data) }
   catch (e) {
     // Decrypt failure — drop the in-flight image to prevent memory buildup
     console.warn('handleHostChunk decrypt failed:', e)
-    connState.inProgressImage = null
+    session.inProgressImage = null
     return
   }
   // Re-read after the awaited decrypt — another message could have cleared
   // it (chat-image-end-enc, size-cap abort, etc.) while we were decrypting.
-  const inFlight = connState.inProgressImage
+  const inFlight = session.inProgressImage
   if (!inFlight) return
   const bytes = plain instanceof Uint8Array ? plain : new Uint8Array(plain)
   // Enforce size cap even on the relay path to prevent a malicious peer from exhausting host memory
   if (inFlight.receivedBytes + bytes.byteLength > MAX_CHAT_IMAGE_SIZE) {
     console.warn('handleHostChunk: chat image exceeds size cap, dropping')
-    connState.inProgressImage = null
+    session.inProgressImage = null
     return
   }
   inFlight.chunks.push(bytes)
