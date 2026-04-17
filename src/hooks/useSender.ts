@@ -161,12 +161,16 @@ export function useSender() {
       function announceJoin(cs: ConnState, cId: string): void {
         dispatchConn({ type: 'SET', payload: { status: 'connected', recipientCount: connectionsRef.current.size } })
         refreshParticipants()
-        setMessages(prev => [...prev, { text: `${cs.nickname} joined`, from: 'system', time: Date.now(), self: false }].slice(-500))
+        // Fall back to 'Anon' when the peer hasn't sent a `nickname` yet —
+        // reconnect / password-gate paths can announce before the join
+        // message lands, which used to render as "  joined".
+        const name = cs.nickname || 'Anon'
+        setMessages(prev => [...prev, { text: `${name} joined`, from: 'system', time: Date.now(), self: false }].slice(-500))
         const count = connectionsRef.current.size + 1
         connectionsRef.current.forEach((other, id) => {
           try { other.conn.send({ type: 'online-count', count }) } catch (e) { log.warn('useSender.announceJoin.onlineCount', e) }
           if (id !== cId) {
-            try { other.conn.send({ type: 'system-msg', text: `${cs.nickname} joined`, time: Date.now() }) } catch (e) { log.warn('useSender.announceJoin.systemMsg', e) }
+            try { other.conn.send({ type: 'system-msg', text: `${name} joined`, time: Date.now() }) } catch (e) { log.warn('useSender.announceJoin.systemMsg', e) }
           }
         })
       }
@@ -1003,6 +1007,11 @@ async function handleHostChunk(connState: ConnState, rawData: ArrayBuffer | Arra
   let parsed: { fileIndex: number; chunkIndex: number; data: ArrayBuffer }
   try { parsed = parseChunkPacket(buffer) } catch (e) { log.warn('handleHostChunk.parse', e); return }
   if (parsed.fileIndex !== CHAT_IMAGE_FILE_INDEX) return
+  // Refuse to pay the decrypt cost if no image is in progress for this
+  // connection. A peer spamming stray chat-image chunks without a matching
+  // `chat-image-start-enc` used to make us do AES-GCM work per chunk only
+  // to drop the plaintext on the floor. Cheap check first.
+  if (!connState.inProgressImage) return
   let plain: ArrayBuffer | Uint8Array
   try { plain = await decryptChunk(connState.encryptKey, parsed.data) }
   catch (e) {
@@ -1011,6 +1020,8 @@ async function handleHostChunk(connState: ConnState, rawData: ArrayBuffer | Arra
     connState.inProgressImage = null
     return
   }
+  // Re-read after the awaited decrypt — another message could have cleared
+  // it (chat-image-end-enc, size-cap abort, etc.) while we were decrypting.
   const inFlight = connState.inProgressImage
   if (!inFlight) return
   const bytes = plain instanceof Uint8Array ? plain : new Uint8Array(plain)

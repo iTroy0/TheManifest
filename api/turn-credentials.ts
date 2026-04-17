@@ -61,6 +61,15 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
   if (!secret || !turnUrl) {
     return res.status(503).json({ error: 'TURN not configured' })
   }
+  // Refuse to sign ephemeral credentials with a weak secret. HMAC-SHA1 is
+  // the coturn REST authentication protocol; the output is recoverable if
+  // the pre-shared key is guessable. Require at least 32 chars (≈128 bits
+  // of entropy for base64/hex secrets). Log loudly so the operator notices
+  // the 503s in the function log instead of wondering why calls fail.
+  if (secret.length < 32) {
+    console.error('TURN_SECRET is shorter than 32 chars — refusing to issue credentials')
+    return res.status(503).json({ error: 'TURN secret misconfigured' })
+  }
 
   // Ephemeral credentials valid for 2 hours (enough for any realistic transfer)
   const ttl = 2 * 3600

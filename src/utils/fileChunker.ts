@@ -55,10 +55,11 @@ export class AdaptiveChunker {
     if (this.measurements.length < 3) return // Need at least 3 samples
 
     const recentMeasurements = this.measurements.slice(-5)
-    const avgThroughput = recentMeasurements.reduce((sum, m) => sum + m.throughput, 0) / recentMeasurements.length
     const avgTransferTime = recentMeasurements.reduce((sum, m) => sum + m.transferTimeMs, 0) / recentMeasurements.length
 
-    // Target: chunks should take 50-200ms to transfer for responsive progress
+    // Target: chunks should take 50-200ms to transfer for responsive progress.
+    // `avgThroughput` is computed inside `getStats()` when needed; no need
+    // to keep a dead copy here.
     if (avgTransferTime < 30 && this.currentChunkSize < MAX_CHUNK_SIZE) {
       // Transfers too fast - increase chunk size for efficiency
       this.currentChunkSize = Math.min(this.currentChunkSize * 1.5, MAX_CHUNK_SIZE)
@@ -66,9 +67,6 @@ export class AdaptiveChunker {
       // Transfers too slow - decrease chunk size for better progress feedback
       this.currentChunkSize = Math.max(this.currentChunkSize * 0.7, MIN_CHUNK_SIZE)
     }
-
-    // suppress unused variable warning — avgThroughput is computed for future use
-    void avgThroughput
 
     // Round to nearest 64KB for alignment, clamped to MIN_CHUNK_SIZE
     this.currentChunkSize = Math.max(MIN_CHUNK_SIZE, Math.round(this.currentChunkSize / (64 * 1024)) * (64 * 1024))

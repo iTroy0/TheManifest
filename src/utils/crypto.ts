@@ -8,8 +8,27 @@ export function uint8ToBase64(bytes: Uint8Array): string {
   return btoa(binary)
 }
 
+// Typed error thrown by `base64ToUint8` on malformed input. Callers that
+// want to branch on decode failure (as opposed to any other thrown error)
+// can `instanceof CryptoDecodeError` instead of sniffing the message.
+export class CryptoDecodeError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CryptoDecodeError'
+  }
+}
+
 export function base64ToUint8(b64: string): Uint8Array {
-  const binary = atob(b64)
+  if (typeof b64 !== 'string') {
+    throw new CryptoDecodeError('base64 input is not a string')
+  }
+  // `atob` throws `DOMException` on malformed input. Normalize to
+  // `CryptoDecodeError` so every call site can catch a single error type.
+  let binary: string
+  try { binary = atob(b64) }
+  catch (e) {
+    throw new CryptoDecodeError(`base64 decode failed: ${(e as Error)?.message || 'invalid input'}`)
+  }
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
   return bytes
@@ -51,11 +70,18 @@ export async function importPublicKey(rawBytes: Uint8Array | ArrayBuffer): Promi
 // concatenation, then SHA-256 it. Used for both the fingerprint and the
 // HKDF salt so each session derives a unique, session-bound key.
 async function sortedKeyDigest(a: Uint8Array, b: Uint8Array): Promise<Uint8Array> {
-  let first = a, second = b
-  for (let i = 0; i < Math.min(a.length, b.length); i++) {
-    if (a[i] < b[i]) break
-    if (a[i] > b[i]) { first = b; second = a; break }
+  // Lexicographic byte compare with an explicit length tie-breaker so the
+  // output is deterministic even if the two inputs differ in length. The
+  // old loop skipped the tie-break and silently left `first = a, second = b`
+  // whenever every common-prefix byte was equal — safe today because we
+  // only pass 65-byte P-256 pub keys, but a footgun for any future caller.
+  let cmp = 0
+  const minLen = Math.min(a.length, b.length)
+  for (let i = 0; i < minLen; i++) {
+    if (a[i] !== b[i]) { cmp = a[i] < b[i] ? -1 : 1; break }
   }
+  if (cmp === 0) cmp = a.length - b.length
+  const [first, second] = cmp <= 0 ? [a, b] : [b, a]
   const combined = new Uint8Array(first.length + second.length)
   combined.set(first, 0)
   combined.set(second, first.length)

@@ -66,13 +66,13 @@ verified each one in the tree. Fix them in whichever phase fits.
 
 | # | File / line | Issue |
 |---|-------------|-------|
-| M1 | `utils/crypto.ts:53-63` `sortedKeyDigest` | Tie-breaking on equal-prefix bytes doesn't account for length difference. Safe for 65-byte P-256 pubkeys today (length always equal). Becomes a bug if any future caller uses variable-length inputs. Fix: return -1/0/+1 compare loop with length tie-breaker. |
-| M2 | `utils/crypto.ts:11-16` `base64ToUint8` | No validation; `atob` throws `DOMException` on malformed input. Some call sites catch, some don't. Fix: wrap and return `null`, or throw a typed `CryptoDecodeError`. |
+| ~~M1~~ | ~~`utils/crypto.ts:53-63`~~ `sortedKeyDigest` | **DONE** — replaced the ambiguous two-branch loop with a proper `cmp = -1/0/+1` compare and an explicit `cmp === 0 ? cmp = a.length - b.length` tie-breaker. Defensive for any future variable-length caller; no change to current P-256 behaviour. |
+| ~~M2~~ | ~~`utils/crypto.ts:11-16`~~ `base64ToUint8` | **DONE** — non-string inputs and `atob` failures now throw a typed `CryptoDecodeError` (exported). Existing try/catch sites still work because we still throw; new sites can branch on `instanceof CryptoDecodeError` if they need to distinguish decode failure from other errors. |
 | M3 | `utils/fileChunker.ts:205-211` | 15 s drain timeout rejects mid-transfer on slow cellular. Fix: scale to `max(15s, bufferedAmount / observedThroughput * 2)` or make configurable via `config.ts`. |
 | M4 | `utils/connectionHelpers.ts:50-55` | `consecutivePingFailures` only resets on `visibilitychange` / `markAlive`. A short network blip during 3 consecutive pings force-kills the connection. Fix: also reset on successful `conn.send` (pre-blip). |
 | M5 | `api/turn-credentials.ts` rate limiter | Per-instance on Vercel → advisory only. Already documented in the code. Upgrade path: Vercel KV / Upstash Redis keyed by the same IP. |
-| M6 | `api/turn-credentials.ts:44-55` | `TURN_SECRET` length not validated at startup. Fix: refuse to start if `secret.length < 32`. |
-| M7 | `useSender.ts:981-987` `handleHostChunk` | Decrypts chat-image chunks before checking `inProgressImage` exists. A peer sending stray chat-image chunks without a start still pays the decrypt cost. Fix: reorder — check first, decrypt second. |
+| ~~M6~~ | ~~`api/turn-credentials.ts:44-55`~~ | **DONE** — handler refuses to sign and returns 503 when `TURN_SECRET.length < 32`, with a loud `console.error` so the operator sees the 503s in the Vercel function log. L2 is rolled into this fix. |
+| ~~M7~~ | ~~`useSender.ts:981-987`~~ `handleHostChunk` | **DONE** — added an early `if (!connState.inProgressImage) return` before `decryptChunk`. Stray chat-image chunks from a peer without a matching start no longer burn AES-GCM cycles. The post-await re-check stays so we still handle the race where `inProgressImage` got cleared while we were decrypting. |
 | M8 | `useSender.ts:580-597` `conn.on('data')` | `startTransfer` / `endTransfer` declared inside the handler → new closure per message. GC pressure on an active chat channel. Fix: hoist to `conn.on('open')` or module scope. |
 | ~~M9~~ | ~~`useSender.ts:439, 797`~~ | **VERIFIED-NOT-A-BUG** — every outbound `senderName` read lives inside a `useCallback` whose deps include `senderName` (sendMessage 816, sendTyping 822, sendReaction 842, changeSenderName 853). Long-lived `conn.on('data')` handler only relays `msg.nickname` from the original sender, never our own name. Re-check after each refactor; current tree is clean. |
 | ~~M10~~ | ~~`useReceiver.ts:311-322`~~ | **DONE** (during P2.1) — `pendingManifestRef.current = null` now set in the key-exchange catch. |
@@ -92,14 +92,14 @@ verified each one in the tree. Fix them in whichever phase fits.
 ### Low / nit
 
 L1 `iceServers.ts` — TURN fetch has no backoff between the 2 retries (500 ms jitter would help).
-L2 `api/turn-credentials.ts` — HMAC secret length not validated (see M6).
+~~L2~~ `api/turn-credentials.ts` — **DONE with M6.**
 L3 `useReceiver.ts:150` — inner `conn` shadows outer param; rename for readability.
 ~~L4~~ `useSender.ts:624` — **DONE.** Both `request-all` and `ready` loops now emit `{ type: 'file-skipped', index, reason }` to the receiver on per-file send failure. `useReceiver.ts` handles the message: dispatches `CANCEL_FILE` so the pending row disappears from the UI and appends a system message `"<name> skipped: <reason>"`. Before this the pending row sat at 0% forever and `batch-done` arrived with completedFiles < requested.
-L5 `useSender.ts:159-170` `announceJoin` — uses `gs.name` which may still be `'Anon'` if join arrived pre-rename. Read latest with `|| 'Anon'`.
+~~L5~~ `useSender.ts:159-170` `announceJoin` — **DONE.** `cs.nickname || 'Anon'` fallback applied to both the local system-msg and the fan-out `system-msg` broadcast. No more "  joined" when the reconnect/password-gate path fires the announce before the nickname lands.
 L6 `useCollabHost.ts:844-855` — add comment documenting the `collab-peer-renamed` trust model (host rewrites `peerId` to the authenticated gs.peerId).
 L7 `useCollabGuest.ts:442` `teardownMesh` — dispatches `UPDATE_PARTICIPANT` even if participant already gone. Reducer is a no-op; still creates a new array. Micro-optimization.
 L8 `useCall.ts:45` `TAB_ID` — not unique across hot-reload in dev. Acknowledged in comment; leave.
-L9 Dead `avgThroughput` compute in `utils/fileChunker.ts:58-71`. Delete or use.
+~~L9~~ **DONE.** Removed the `avgThroughput` compute + `void avgThroughput` suppression from `AdaptiveChunker.adjustChunkSize`. The `ChunkerStats.avgThroughput` field still exists — `getStats()` recomputes it on demand, which is the only caller.
 
 ---
 
