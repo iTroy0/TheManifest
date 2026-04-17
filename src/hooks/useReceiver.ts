@@ -6,6 +6,8 @@ import { finalizeKeyExchange } from '../net/keyExchange'
 import { createSession, type Session } from '../net/session'
 import { createFileStream } from '../utils/streamWriter'
 import { createStreamingZip } from '../utils/zipBuilder'
+import { createFileReceiver, portalWire } from '../net/transferEngine'
+import type { FileReceiver } from '../net/transferEngine'
 import { STUN_ONLY, getWithTurn } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { ChatMessage, ManifestData } from '../types'
@@ -63,7 +65,8 @@ export function useReceiver(peerId: string) {
 
   // Receiver-side file bookkeeping — these are hook-lifetime (file state
   // must survive a reconnect; the Session is per-connection).
-  const streamsRef = useRef<Record<number, ReturnType<typeof createFileStream> | null>>({})
+  // receiverRef manages StreamSaver sinks via transferEngine (decrypt + write).
+  const receiverRef = useRef<FileReceiver | null>(null)
   const chunksRef = useRef<Record<number, Uint8Array[] | null>>({})
   const zipWriterRef = useRef<ReturnType<typeof createStreamingZip> | null>(null)
   const fileMetaRef = useRef<Record<number, FileMeta>>({})
@@ -84,7 +87,6 @@ export function useReceiver(peerId: string) {
 
   const transferTotalRef = useRef<number>(0)
   const lastFileIndexRef = useRef<number>(0)
-  const lastChunkIndexRef = useRef<number>(0)
   const wasTransferringRef = useRef<boolean>(false)
   const reconnectCountRef = useRef<number>(0)
   const useTurnRef = useRef<boolean>(false)
@@ -184,8 +186,10 @@ export function useReceiver(peerId: string) {
             // transfers. Idempotent — safe if a parallel path already closed.
             sess.close('peer-disconnect')
             if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
-              Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
-              streamsRef.current = {}
+              if (receiverRef.current) {
+                // Abort all active engine-managed streams before reconnect
+                receiverRef.current = null
+              }
               chunksRef.current = {}
               reconnectCountRef.current++
               peer.destroy()
@@ -195,7 +199,7 @@ export function useReceiver(peerId: string) {
                 startConnection(useTurnRef.current, true)
               }, RECONNECT_DELAY)
             } else {
-              Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
+              receiverRef.current = null
               dispatchConn({ type: 'SET_STATUS', payload: 'closed' })
             }
           }
@@ -229,7 +233,10 @@ export function useReceiver(peerId: string) {
           if (isReconnect && wasTransferringRef.current) {
             dispatchConn({ type: 'SET_STATUS', payload: 'manifest-received' })
             // Defer file request until new key exchange completes
-            pendingResumeRef.current = { index: lastFileIndexRef.current, resumeChunk: lastChunkIndexRef.current }
+            pendingResumeRef.current = {
+              index: lastFileIndexRef.current,
+              resumeChunk: receiverRef.current?.getResumeCursor(`file-${lastFileIndexRef.current}`) ?? 0,
+            }
             dispatchTransfer({ type: 'ADD_PENDING', index: lastFileIndexRef.current })
           } else {
             dispatchConn({ type: 'SET_STATUS', payload: 'connected' })
@@ -306,6 +313,8 @@ export function useReceiver(peerId: string) {
               // fingerprint on the session, disarms keyExchangeTimeout.
               sess.dispatch({ type: 'keys-derived', encryptKey, fingerprint: fp })
               dispatchConn({ type: 'SET', payload: { fingerprint: fp } })
+              // Initialise the engine-backed receiver for the new session.
+              receiverRef.current = createFileReceiver(sess, portalWire)
 
               // Fingerprint rotation warning — surface any change to the user
               // so a silent mid-session MitM swap is visible.
@@ -479,9 +488,9 @@ export function useReceiver(peerId: string) {
 
           if (msg.type === 'file-cancelled') {
             const idx = msg.index as number
-            if (streamsRef.current[idx]) {
-              streamsRef.current[idx]!.abort()
-              streamsRef.current[idx] = null
+            const fileId = portalWire.fileIdForPacketIndex(idx) ?? `file-${idx}`
+            if (receiverRef.current?.has(fileId)) {
+              await receiverRef.current.abort(fileId, 'cancelled')
             }
             dispatchTransfer({ type: 'REMOVE_PENDING', index: idx })
             wasTransferringRef.current = false
@@ -501,9 +510,35 @@ export function useReceiver(peerId: string) {
             if (!startTimeRef.current) startTimeRef.current = Date.now()
 
             if (!zipModeRef.current || !zipWriterRef.current) {
-              const stream = createFileStream(sanitizeFileName(msg.name as string), msg.size as number)
-              if (stream) {
-                streamsRef.current[idx] = stream
+              // Attempt StreamSaver path — createFileStream returns null when
+              // the browser doesn't support WritableStream (mobile, Firefox).
+              // On success, hand the native WritableStream to the engine so it
+              // owns decrypt + write.  On failure fall back to in-memory buffer.
+              const streamHandle = createFileStream(sanitizeFileName(msg.name as string), msg.size as number)
+              if (streamHandle && receiverRef.current) {
+                // Wrap the FileStreamHandle in a native WritableStream so the
+                // engine can call .getWriter() on it.
+                const nativeSink = new WritableStream<Uint8Array>({
+                  write(chunk) { return streamHandle.write(chunk) },
+                  close() { return streamHandle.close() },
+                  abort(_reason) { return streamHandle.abort() },
+                })
+                await receiverRef.current.onFileStart({
+                  fileId: `file-${idx}`,
+                  totalBytes: msg.size as number,
+                  totalChunks: msg.totalChunks as number,
+                  sink: nativeSink,
+                  onProgress: (written, total) => {
+                    const meta = fileMetaRef.current[idx]
+                    if (meta) meta.received = written
+                    const now = Date.now()
+                    if (now - lastChunkUIUpdateRef.current >= 100 && meta && meta.size > 0) {
+                      lastChunkUIUpdateRef.current = now
+                      const pct = Math.min(100, Math.round((written / total) * 100))
+                      dispatchTransfer({ type: 'FILE_PROGRESS', name: meta.name, value: pct })
+                    }
+                  },
+                })
               } else {
                 chunksRef.current[idx] = []
               }
@@ -523,9 +558,8 @@ export function useReceiver(peerId: string) {
 
             if (zipModeRef.current && zipWriterRef.current) {
               zipWriterRef.current.endFile()
-            } else if (streamsRef.current[idx]) {
-              streamsRef.current[idx]!.close()
-              streamsRef.current[idx] = null
+            } else if (receiverRef.current?.has(`file-${idx}`)) {
+              await receiverRef.current.onFileEnd(`file-${idx}`)
             } else if (chunksRef.current[idx]) {
               const mimeType = manifestRef.current?.files?.[idx]?.type || 'application/octet-stream'
               const blob = new Blob(chunksRef.current[idx] as unknown as BlobPart[], { type: mimeType })
@@ -597,8 +631,7 @@ export function useReceiver(peerId: string) {
           if (!wasTransferringRef.current) pendingResumeRef.current = null
           sess.close('peer-disconnect')
           if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
-            Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
-            streamsRef.current = {}
+            receiverRef.current = null
             chunksRef.current = {}
             reconnectCountRef.current++
             peer.destroy()
@@ -609,7 +642,7 @@ export function useReceiver(peerId: string) {
             }, RECONNECT_DELAY)
             return
           }
-          Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
+          receiverRef.current = null
           setRtt(null)
           setMessages(prev => [...prev, { text: 'Sender disconnected', from: 'system', time: Date.now(), self: false }])
           dispatchConn({ type: 'SET_STATUS', payload: (prev: string) => (prev === 'done' || prev === 'rejected') ? prev : 'closed' })
@@ -711,7 +744,7 @@ export function useReceiver(peerId: string) {
       clearTimeout(manifestTimeoutRef.current!)
       imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch (e) { log.warn('useReceiver.unmount.revokeBlob', e) } })
       imageBlobUrlsRef.current = []
-      Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
+      receiverRef.current = null
       if (zipWriterRef.current) { zipWriterRef.current.abort(); zipWriterRef.current = null }
       if (peerRef.current) peerRef.current.destroy()
       setPeerInstance(null)
@@ -745,9 +778,9 @@ export function useReceiver(peerId: string) {
     const sess = sessionRef.current
     if (!sess) return
     try { sess.send({ type: 'cancel-file', index } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.cancelFile', e) }
-    if (streamsRef.current[index]) {
-      streamsRef.current[index]!.abort()
-      streamsRef.current[index] = null
+    const cancelFileId = `file-${index}`
+    if (receiverRef.current?.has(cancelFileId)) {
+      void receiverRef.current.abort(cancelFileId, 'cancelled')
     }
     if (chunksRef.current[index]) chunksRef.current[index] = null
     delete fileMetaRef.current[index]
@@ -766,8 +799,7 @@ export function useReceiver(peerId: string) {
       zipModeRef.current = false
       dispatchConn({ type: 'SET', payload: { zipMode: false } })
     }
-    Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
-    streamsRef.current = {}
+    receiverRef.current = null
     fileMetaRef.current = {}
     dispatchTransfer({ type: 'RESET' })
     wasTransferringRef.current = false
@@ -857,8 +889,47 @@ export function useReceiver(peerId: string) {
 
   async function handleChunk(rawData: ArrayBuffer | ArrayBufferView, sess: Session): Promise<void> {
     const buffer = rawData instanceof ArrayBuffer ? rawData : ((rawData as ArrayBufferView).buffer as ArrayBuffer)
-    const { fileIndex, chunkIndex, data } = parseChunkPacket(buffer)
+    const packet = parseChunkPacket(buffer)
+    const { fileIndex, chunkIndex, data } = packet
 
+    // Chat-image chunks need decrypt first (engine doesn't own image path).
+    // Decrypt once here for chat-image and for zip/in-memory fallback paths.
+    // For the StreamSaver path the engine decrypts internally via portalWire.
+    const fileId = portalWire.fileIdForPacketIndex(fileIndex)
+    if (fileIndex !== CHAT_IMAGE_FILE_INDEX && fileId && receiverRef.current?.has(fileId)) {
+      // Engine-managed StreamSaver path: delegate raw packet (engine decrypts internally).
+      lastFileIndexRef.current = fileIndex
+      try {
+        await receiverRef.current.onChunk(packet)
+      } catch (e) {
+        log.warn('useReceiver.handleChunk.engine', e)
+      }
+      // Update overall progress counters (engine's onProgress only fires per-file pct).
+      // We approximate totalReceivedRef using fileMetaRef.received which onProgress
+      // already updates via the callback wired in file-start.
+      const metaE = fileMetaRef.current[fileIndex]
+      if (metaE) {
+        totalReceivedRef.current = Object.values(fileMetaRef.current).reduce((s, m) => s + (m?.received || 0), 0)
+        const now = Date.now()
+        if (now - lastChunkUIUpdateRef.current >= 100) {
+          lastChunkUIUpdateRef.current = now
+          const totalSize = transferTotalRef.current || manifestRef.current?.totalSize || 0
+          if (totalSize > 0) {
+            const overall = Math.min(100, Math.round((totalReceivedRef.current / totalSize) * 100))
+            const elapsed = (now - startTimeRef.current!) / 1000
+            if (elapsed > 0.5) {
+              const currentSpeed = totalReceivedRef.current / elapsed
+              dispatchTransfer({ type: 'SET', payload: { overallProgress: overall, speed: currentSpeed, eta: Math.max(0, (totalSize - totalReceivedRef.current) / currentSpeed) } })
+            } else {
+              dispatchTransfer({ type: 'SET', payload: { overallProgress: overall } })
+            }
+          }
+        }
+      }
+      return
+    }
+
+    // Non-engine paths: decrypt here (chat-image, zip, in-memory fallback).
     let plainData: ArrayBuffer | Uint8Array
     try {
       plainData = sess.encryptKey
@@ -866,10 +937,6 @@ export function useReceiver(peerId: string) {
         : data
     } catch (decryptErr) {
       console.error('Chunk decryption failed for file', fileIndex, 'chunk', chunkIndex, decryptErr)
-      if (streamsRef.current[fileIndex]) {
-        try { streamsRef.current[fileIndex]!.abort() } catch (e) { log.warn('useReceiver.handleChunk.streamAbort', e) }
-        streamsRef.current[fileIndex] = null
-      }
       if (chunksRef.current[fileIndex]) chunksRef.current[fileIndex] = null
       const fileName = manifestRef.current?.files?.[fileIndex]?.name || `file ${fileIndex}`
       dispatchTransfer({ type: 'CANCEL_FILE', index: fileIndex, name: fileName })
@@ -895,9 +962,6 @@ export function useReceiver(peerId: string) {
     if (!manifestFiles || fileIndex >= manifestFiles.length) return
 
     lastFileIndexRef.current = fileIndex
-    // Take the max so out-of-order chunk arrival (slow or malicious sender)
-    // can't roll the resume cursor backwards.
-    lastChunkIndexRef.current = Math.max(lastChunkIndexRef.current, chunkIndex + 1)
     totalReceivedRef.current += (plainData as { byteLength: number }).byteLength
     const metaForBytes = fileMetaRef.current[fileIndex]
     if (metaForBytes) metaForBytes.received = (metaForBytes.received || 0) + (plainData as { byteLength: number }).byteLength
@@ -906,8 +970,6 @@ export function useReceiver(peerId: string) {
       const plainBytes = plainData instanceof Uint8Array ? plainData : new Uint8Array(plainData)
       if (zipModeRef.current && zipWriterRef.current) {
         zipWriterRef.current.writeChunk(plainBytes)
-      } else if (streamsRef.current[fileIndex]) {
-        await streamsRef.current[fileIndex]!.write(plainBytes)
       } else {
         if (!chunksRef.current[fileIndex]) chunksRef.current[fileIndex] = []
         chunksRef.current[fileIndex]!.push(plainData instanceof Uint8Array ? plainData : new Uint8Array(plainData))
