@@ -339,24 +339,27 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
           <div
             className={focusedTile ? 'relative' : 'grid gap-2 items-center'}
             style={focusedTile ? undefined : {
-              gridTemplateColumns: videoTiles.length === 1 ? '1fr' : videoTiles.length === 2 ? '1fr 1fr' : 'repeat(2, 1fr)',
+              gridTemplateColumns: videoTiles.length === 1 ? '1fr' : 'repeat(2, 1fr)',
             }}
           >
             {videoTiles.map(v => {
               const isFocused = focusedTile?.id === v.id
               const isMini = !!focusedTile && !isFocused
-              // Stable mini stacking: predictable top offset per mini tile.
               const miniIdx = isMini ? (miniIndexById.get(v.id) ?? -1) : -1
-              // MINI_SLOT is the per-tile vertical footprint (tile height +
-              // gap). Width is fixed at 96px, mini aspect is 16/9 → height
-              // ≈ 54, plus 6px gap ≈ 60.
+              // Mini tile layout: width 96px, height ≈ 54 (16/9), vertical
+              // footprint 60px (tile + gap). Wrap to a new column every
+              // MINI_PER_COL tiles so a crowded focus view doesn't escape
+              // the parent's vertical bounds.
+              const MINI_PER_COL = 4
+              const miniCol = isMini ? Math.floor(miniIdx / MINI_PER_COL) : 0
+              const miniRow = isMini ? miniIdx % MINI_PER_COL : 0
               const wrapperStyle: React.CSSProperties | undefined = focusedTile
                 ? (isFocused
                     ? { position: 'relative', zIndex: 1, width: '100%' }
                     : {
                         position: 'absolute',
-                        top: `${8 + miniIdx * 60}px`,
-                        left: '8px',
+                        top: `${8 + miniRow * 60}px`,
+                        left: `${8 + miniCol * 104}px`,
                         width: '96px',
                         zIndex: 10,
                       })

@@ -128,6 +128,10 @@ interface RosterEntry {
   mode: CallMode
 }
 
+function asPeerId(v: unknown): string | null {
+  return typeof v === 'string' && v.length > 0 ? v : null
+}
+
 function parseRosterSnapshot(input: unknown): RosterEntry[] {
   if (!Array.isArray(input)) return []
   const out: RosterEntry[] = []
@@ -169,6 +173,15 @@ export function useCall(options: UseCallOptions) {
     sendToHost, sendToPeer, broadcast, setMessageHandler,
     localMedia,
   } = options
+  // Stable method handles so effect/callback dep lists don't depend on
+  // `localMedia` identity (useLocalMedia returns a fresh object literal
+  // each render, so whole-object deps would thrash downstream effects).
+  const {
+    stop: localMediaStop,
+    start: localMediaStart,
+    toggleMic: localMediaToggleMic,
+    toggleCamera: localMediaToggleCamera,
+  } = localMedia
 
   const [joined, setJoined] = useState<boolean>(false)
   const [joining, setJoining] = useState<boolean>(false)
@@ -590,16 +603,22 @@ export function useCall(options: UseCallOptions) {
         return
       }
 
-      // S5 — Rate-limit call-track-state per peer. Humans toggle mute at
-      // human speed; anything faster is noise or abuse and is dropped
-      // before it reaches the roster setState path.
+      // S5 — Rate-limit call-track-state per ORIGINATING peer. Humans
+      // toggle mute at human speed; anything faster is noise or abuse.
+      // Key on `msg.peerId` when the host is relaying on behalf of
+      // another guest — otherwise N peers toggling within the window
+      // collapse into one bucket on the host id and N-1 legit updates
+      // get silently dropped.
       if (type === 'call-track-state') {
+        const isFromHostRelay = fromPeerId === hostPeerIdRef.current
+        const embeddedId = asPeerId((msg as { peerId?: unknown }).peerId)
+        const originatorId = isFromHostRelay && embeddedId ? embeddedId : fromPeerId
         const now = performance.now()
-        const last = lastTrackStateAtRef.current.get(fromPeerId) ?? 0
+        const last = lastTrackStateAtRef.current.get(originatorId) ?? 0
         if (now - last < TRACK_STATE_MIN_INTERVAL_MS) {
           return
         }
-        lastTrackStateAtRef.current.set(fromPeerId, now)
+        lastTrackStateAtRef.current.set(originatorId, now)
       }
 
       // ── Host-side ─────────────────────────────────────────────────────
@@ -661,10 +680,11 @@ export function useCall(options: UseCallOptions) {
           console.warn('Ignoring call-peer-joined from non-host', fromPeerId)
           return
         }
-        const peerId = msg.peerId as string
-        const name = (msg.name as string) || 'Anon'
-        const joinedMode = (msg.mode as CallMode) || 'audio'
-        if (peerId && peerId !== myPeerId) {
+        const peerId = asPeerId(msg.peerId)
+        if (!peerId) return
+        const name = (typeof msg.name === 'string' && msg.name) || 'Anon'
+        const joinedMode: CallMode = msg.mode === 'video' ? 'video' : 'audio'
+        if (peerId !== myPeerId) {
           upsertRoster(peerId, { name, mode: joinedMode, cameraOff: joinedMode !== 'video' })
         }
         return
@@ -675,11 +695,10 @@ export function useCall(options: UseCallOptions) {
           console.warn('Ignoring call-peer-left from non-host', fromPeerId)
           return
         }
-        const peerId = msg.peerId as string
-        if (peerId) {
-          closeMediaConn(peerId)
-          removeFromRoster(peerId)
-        }
+        const peerId = asPeerId(msg.peerId)
+        if (!peerId) return
+        closeMediaConn(peerId)
+        removeFromRoster(peerId)
         return
       }
 
@@ -689,8 +708,9 @@ export function useCall(options: UseCallOptions) {
         // peerId only when the relayer is the host. If we got it from
         // anyone else, fall back to fromPeerId (a peer reporting itself).
         const isFromHost = fromPeerId === hostPeerIdRef.current
-        const peerId = isFromHost ? ((msg.peerId as string) || fromPeerId) : fromPeerId
-        const reportedMode = (msg.mode as CallMode | undefined)
+        const embeddedId = asPeerId(msg.peerId)
+        const peerId = isFromHost && embeddedId ? embeddedId : fromPeerId
+        const reportedMode: CallMode | undefined = msg.mode === 'video' ? 'video' : msg.mode === 'audio' ? 'audio' : undefined
         const cameraOff = !!msg.cameraOff
         const nextMode: CallMode = reportedMode || (cameraOff ? 'audio' : 'video')
         upsertRoster(peerId, { micMuted: !!msg.micMuted, cameraOff, mode: nextMode })
@@ -708,9 +728,7 @@ export function useCall(options: UseCallOptions) {
         setEndReason('rejected')
         setJoining(false)
         if (modeRef.current !== 'none') {
-          // Read localMedia.stop through a ref so this effect doesn't
-          // depend on the (unstable-identity) localMedia return object.
-          try { localMediaStopRef.current() } catch {}
+          try { localMediaStop() } catch {}
           setMode('none')
         }
         return
@@ -718,7 +736,7 @@ export function useCall(options: UseCallOptions) {
     }
     setMessageHandler(handler)
     return () => { setMessageHandler(null) }
-  }, [isHost, myPeerId, sendToPeer, broadcast, setMessageHandler, upsertRoster, removeFromRoster, closeMediaConn, callPeerWithStream])
+  }, [isHost, myPeerId, sendToPeer, broadcast, setMessageHandler, upsertRoster, removeFromRoster, closeMediaConn, callPeerWithStream, localMediaStop])
 
   // ── Actions ────────────────────────────────────────────────────────────
 
@@ -789,7 +807,7 @@ export function useCall(options: UseCallOptions) {
     }
 
     try {
-      const stream = await localMedia.start('audio')
+      const stream = await localMediaStart('audio')
       // If a newer attempt or a leave/unmount has happened during the
       // permission prompt, abort cleanly.
       if (joinAttemptRef.current !== attempt) {
@@ -832,7 +850,7 @@ export function useCall(options: UseCallOptions) {
     } finally {
       if (joinAttemptRef.current === attempt) setJoining(false)
     }
-  }, [peer, myPeerId, joining, localMedia, isHost, hostPeerId, broadcast, sendToHost, callPeerWithStream])
+  }, [peer, myPeerId, joining, localMediaStart, isHost, hostPeerId, broadcast, sendToHost, callPeerWithStream])
 
   const leave = useCallback((reason: CallEndReason = 'user-left'): void => {
     // Invalidate any in-flight join attempt.
@@ -864,12 +882,12 @@ export function useCall(options: UseCallOptions) {
       try { tabChannelRef.current.close() } catch {}
       tabChannelRef.current = null
     }
-    localMedia.stop()
+    localMediaStop()
     setMode('none')
     modeRef.current = 'none'
     setRoster(new Map())
     setEndReason(reason)
-  }, [isHost, broadcast, sendToHost, myPeerId, localMedia])
+  }, [isHost, broadcast, sendToHost, myPeerId, localMediaStop])
 
   const dismissEndReason = useCallback((): void => {
     setEndReason(null)
@@ -889,12 +907,12 @@ export function useCall(options: UseCallOptions) {
   // ── Track-state broadcast on local mic toggle ──────────────────────────
 
   const toggleMic = useCallback((): void => {
-    localMedia.toggleMic()
-  }, [localMedia])
+    localMediaToggleMic()
+  }, [localMediaToggleMic])
 
   const toggleCamera = useCallback((): void => {
-    void localMedia.toggleCamera()
-  }, [localMedia])
+    void localMediaToggleCamera()
+  }, [localMediaToggleCamera])
 
   // Involuntary media loss: if useLocalMedia transitions to 'none' while
   // we're joined, the device died on us (mic unplugged, permission revoked,
@@ -981,18 +999,14 @@ export function useCall(options: UseCallOptions) {
   // Receiver reconnects swap the Peer instance. When that happens the
   // existing media connections are on a dead peer — close them, wipe the
   // roster, and surface a connection-lost reason if we were mid-call.
-  const localMediaStopRef = useRef<() => void>(localMedia.stop)
-  useEffect(() => { localMediaStopRef.current = localMedia.stop }, [localMedia.stop])
   useEffect(() => {
     return () => {
       mediaConnsRef.current.forEach(mc => { try { mc.close() } catch {} })
       mediaConnsRef.current.clear()
-      // Cancel any in-flight media-conn retry timers.
       mediaConnRetryRef.current.forEach(slot => {
         if (slot.timer) { try { clearTimeout(slot.timer) } catch {} }
       })
       mediaConnRetryRef.current.clear()
-      // Cancel any in-flight ghost-prune timers.
       pruneTimersRef.current.forEach(timer => { try { clearTimeout(timer) } catch {} })
       pruneTimersRef.current.clear()
       lastTrackStateAtRef.current.clear()
@@ -1001,7 +1015,7 @@ export function useCall(options: UseCallOptions) {
         tabChannelRef.current = null
       }
       if (joinedRef.current) {
-        try { localMediaStopRef.current() } catch {}
+        try { localMediaStop() } catch {}
         setMode('none')
         modeRef.current = 'none'
         setJoined(false)
@@ -1010,7 +1024,7 @@ export function useCall(options: UseCallOptions) {
         setEndReason('connection-lost')
       }
     }
-  }, [peer])
+  }, [peer, localMediaStop])
 
   return {
     joined,
