@@ -207,7 +207,7 @@ export function useCollabHost() {
     const targetGs = connectionsRef.current.get(targetPeerId)
     if (targetGs) {
       try {
-        targetGs.conn.send({ type: 'collab-signal', from: fromPeerId, signal })
+        targetGs.conn.send({ type: 'collab-signal', from: fromPeerId, signal } satisfies CollabUnencryptedMsg)
       } catch (e) { log.warn('useCollabHost.relaySignal', e) }
     }
   }, [])
@@ -232,7 +232,7 @@ export function useCollabHost() {
     // during the 100ms grace period between notifying the peer and closing.
     connectionsRef.current.delete(peerId)
     refreshParticipantsList()
-    try { gs.conn.send({ type: 'kicked' }) } catch (e) { log.warn('useCollabHost.kickUser.send', e) }
+    try { gs.conn.send({ type: 'kicked' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.kickUser.send', e) }
     setTimeout(() => {
       try { gs.conn.close() } catch (e) { log.warn('useCollabHost.kickUser.close', e) }
     }, 100)
@@ -254,8 +254,8 @@ export function useCollabHost() {
     for (const gs of connectionsRef.current.values()) {
       if (!gs.encryptKey || (!gs.passwordVerified && passwordRef.current)) continue
       try {
-        const encrypted = await encryptJSON(gs.encryptKey, { type: 'collab-file-removed', fileId, from: room.myPeerId || '' })
-        gs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+        const encrypted = await encryptJSON(gs.encryptKey, { type: 'collab-file-removed', fileId, from: room.myPeerId || '' } satisfies CollabInnerMsg)
+        gs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
       } catch (e) { log.warn('useCollabHost.removeFile.broadcast', e) }
     }
   }, [room.myPeerId])
@@ -309,8 +309,8 @@ export function useCollabHost() {
     scheduleDownloadTimeout(fileId)
 
     try {
-      const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-request-file', fileId })
-      ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+      const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-request-file', fileId } satisfies CollabInnerMsg)
+      ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
     } catch (e) { log.warn('useCollabHost.requestFile', e) }
   }, [scheduleDownloadTimeout])
 
@@ -323,8 +323,8 @@ export function useCollabHost() {
     if (!ownerGs?.encryptKey) return
 
     try {
-      const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-pause-file', fileId })
-      ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+      const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-pause-file', fileId } satisfies CollabInnerMsg)
+      ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
       dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'paused' } })
     } catch (e) { log.warn('useCollabHost.pauseFile', e) }
   }, [])
@@ -338,8 +338,8 @@ export function useCollabHost() {
     if (!ownerGs?.encryptKey) return
 
     try {
-      const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-resume-file', fileId })
-      ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+      const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-resume-file', fileId } satisfies CollabInnerMsg)
+      ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
       dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'downloading' } })
     } catch (e) { log.warn('useCollabHost.resumeFile', e) }
   }, [])
@@ -352,8 +352,8 @@ export function useCollabHost() {
     const ownerGs = connectionsRef.current.get(file.owner)
     if (ownerGs?.encryptKey) {
       try {
-        const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-cancel-file', fileId })
-        ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+        const encrypted = await encryptJSON(ownerGs.encryptKey, { type: 'collab-cancel-file', fileId } satisfies CollabInnerMsg)
+        ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
       } catch (e) { log.warn('useCollabHost.cancelFile.send', e) }
     }
 
@@ -374,7 +374,7 @@ export function useCollabHost() {
 
   // Close the room
   const closeRoom = useCallback((): void => {
-    broadcast({ type: 'room-closed' })
+    broadcast({ type: 'room-closed' } satisfies CollabUnencryptedMsg)
     setTimeout(() => {
       connectionsRef.current.forEach(gs => {
         try { gs.conn.close() } catch (e) { log.warn('useCollabHost.closeRoom.closeConn', e) }
@@ -431,13 +431,13 @@ export function useCollabHost() {
     const msg = {
       type: 'collab-file-shared',
       file: sharedFile,
-    }
+    } satisfies CollabInnerMsg
 
     for (const gs of connectionsRef.current.values()) {
       if (!gs.encryptKey || (!gs.passwordVerified && passwordRef.current)) continue
       try {
         const encrypted = await encryptJSON(gs.encryptKey, msg)
-        gs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+        gs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
       } catch (e) { log.warn('useCollabHost.shareFile.broadcast', e) }
     }
   }, [room.myPeerId, room.myName])
@@ -470,8 +470,8 @@ export function useCollabHost() {
           name: file.name,
           size: file.size,
           totalChunks,
-        })
-        gs.conn.send({ type: 'collab-msg-enc', data: startMsg })
+        } satisfies CollabInnerMsg)
+        gs.conn.send({ type: 'collab-msg-enc', data: startMsg } satisfies CollabUnencryptedMsg)
       } catch (e) {
         log.warn('useCollabHost.sendFileToRequester.start', e)
         gs.activeTransfers.delete(fileId)
@@ -519,8 +519,8 @@ export function useCollabHost() {
 
       if (!transfer.aborted) {
         try {
-          const endMsg = await encryptJSON(encryptKey, { type: 'collab-file-end', fileId })
-          gs.conn.send({ type: 'collab-msg-enc', data: endMsg })
+          const endMsg = await encryptJSON(encryptKey, { type: 'collab-file-end', fileId } satisfies CollabInnerMsg)
+          gs.conn.send({ type: 'collab-msg-enc', data: endMsg } satisfies CollabUnencryptedMsg)
         } catch (e) { log.warn('useCollabHost.sendFileToRequester.end', e) }
       }
 
@@ -597,8 +597,8 @@ export function useCollabHost() {
 
         // Notify all other guests. Count + 1 to include host.
         const count = connectionsRef.current.size + 1
-        broadcast({ type: 'online-count', count }, gs.peerId)
-        broadcast({ type: 'collab-peer-joined', peerId: gs.peerId, name: gs.name }, gs.peerId)
+        broadcast({ type: 'online-count', count } satisfies CollabUnencryptedMsg, gs.peerId)
+        broadcast({ type: 'collab-peer-joined', peerId: gs.peerId, name: gs.name } satisfies CollabUnencryptedMsg, gs.peerId)
 
         // Send current file list and participant list to new guest.
         sendFileListToGuest(gs)
@@ -620,8 +620,8 @@ export function useCollabHost() {
           addedAt: f.addedAt,
         }))
         try {
-          const encrypted = await encryptJSON(guest.encryptKey, { type: 'collab-file-list', files: fileList })
-          guest.conn.send({ type: 'collab-msg-enc', data: encrypted })
+          const encrypted = await encryptJSON(guest.encryptKey, { type: 'collab-file-list', files: fileList } satisfies CollabInnerMsg)
+          guest.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
         } catch (e) { log.warn('useCollabHost.sendFileListToGuest', e) }
       }
 
@@ -635,8 +635,8 @@ export function useCollabHost() {
             .map(g => ({ peerId: g.peerId, name: g.name, isHost: false })),
         ]
         try {
-          const encrypted = await encryptJSON(guest.encryptKey, { type: 'collab-participant-list', participants: pList })
-          guest.conn.send({ type: 'collab-msg-enc', data: encrypted })
+          const encrypted = await encryptJSON(guest.encryptKey, { type: 'collab-participant-list', participants: pList } satisfies CollabInnerMsg)
+          guest.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
         } catch (e) { log.warn('useCollabHost.sendParticipantListToGuest', e) }
       }
 
@@ -670,8 +670,8 @@ export function useCollabHost() {
           setMessages(prev => [...prev, { text: `${name} ${reason}`, from: 'system', time: Date.now(), self: false }].slice(-500))
 
           const count = connectionsRef.current.size + 1
-          broadcast({ type: 'online-count', count })
-          broadcast({ type: 'collab-peer-left', peerId: gs.peerId, name })
+          broadcast({ type: 'online-count', count } satisfies CollabUnencryptedMsg)
+          broadcast({ type: 'collab-peer-left', peerId: gs.peerId, name } satisfies CollabUnencryptedMsg)
 
           if (connectionsRef.current.size === 0) {
             setRtt(null)
@@ -698,7 +698,7 @@ export function useCollabHost() {
         // Start key exchange
         gs.keyPair = await generateKeyPair()
         const pubKeyBytes = await exportPublicKey(gs.keyPair.publicKey)
-        conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
+        conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies CollabUnencryptedMsg)
 
         gs.keyExchangeTimeout = setTimeout(() => {
           if (!gs.encryptKey) {
@@ -720,7 +720,7 @@ export function useCollabHost() {
             gs.fingerprint = fingerprint
             gs.pendingRemoteKey = null
             if (passwordRef.current) {
-              conn.send({ type: 'password-required' })
+              conn.send({ type: 'password-required' } satisfies CollabUnencryptedMsg)
             } else {
               gs.passwordVerified = true
               announceJoin()
@@ -767,7 +767,7 @@ export function useCollabHost() {
 
         if (msg.type === 'pong') return
         if (msg.type === 'ping') {
-          try { conn.send({ type: 'pong', ts: msg.ts }) } catch (e) { log.warn('useCollabHost.sendPong', e) }
+          try { conn.send({ type: 'pong', ts: msg.ts } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.sendPong', e) }
           return
         }
 
@@ -790,7 +790,7 @@ export function useCollabHost() {
             gs.fingerprint = fingerprint
 
             if (passwordRef.current) {
-              conn.send({ type: 'password-required' })
+              conn.send({ type: 'password-required' } satisfies CollabUnencryptedMsg)
             } else {
               gs.passwordVerified = true
               announceJoin()
@@ -813,27 +813,27 @@ export function useCollabHost() {
             log.warn('useCollabHost.password.decrypt', e)
             gs.passwordAttempts++
             if (gs.passwordAttempts >= MAX_PASSWORD_ATTEMPTS) {
-              try { conn.send({ type: 'password-rate-limited' }) } catch (e2) { log.warn('useCollabHost.password.rateLimitSend', e2) }
+              try { conn.send({ type: 'password-rate-limited' } satisfies CollabUnencryptedMsg) } catch (e2) { log.warn('useCollabHost.password.rateLimitSend', e2) }
               setTimeout(() => { try { conn.close() } catch (e2) { log.warn('useCollabHost.password.lockClose', e2) } }, 1000)
               return
             }
-            conn.send({ type: 'password-wrong' })
+            conn.send({ type: 'password-wrong' } satisfies CollabUnencryptedMsg)
             return
           }
 
           if (timingSafeEqual(password, passwordRef.current ?? '')) {
-            conn.send({ type: 'password-accepted' })
+            conn.send({ type: 'password-accepted' } satisfies CollabUnencryptedMsg)
             gs.passwordVerified = true
             gs.passwordAttempts = 0
             announceJoin()
           } else {
             gs.passwordAttempts++
             if (gs.passwordAttempts >= MAX_PASSWORD_ATTEMPTS) {
-              try { conn.send({ type: 'password-rate-limited' }) } catch (e) { log.warn('useCollabHost.password.rateLimitSend', e) }
+              try { conn.send({ type: 'password-rate-limited' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.password.rateLimitSend', e) }
               setTimeout(() => { try { conn.close() } catch (e) { log.warn('useCollabHost.password.lockClose', e) } }, 1000)
               return
             }
-            conn.send({ type: 'password-wrong' })
+            conn.send({ type: 'password-wrong' } satisfies CollabUnencryptedMsg)
           }
           return
         }
@@ -850,7 +850,7 @@ export function useCollabHost() {
         // Typing indicator
         if (msg.type === 'typing') {
           handleTypingMessage(msg.nickname as string, setTypingUsers, typingTimeouts.current)
-          broadcast({ type: 'typing', nickname: msg.nickname }, gs.peerId)
+          broadcast({ type: 'typing', nickname: msg.nickname } satisfies CollabUnencryptedMsg, gs.peerId)
           return
         }
 
@@ -897,7 +897,7 @@ export function useCollabHost() {
             if (!otherGs.passwordVerified && passwordRef.current) continue
             try {
               const encrypted = await encryptChunk(otherGs.encryptKey, new TextEncoder().encode(relayPayload))
-              otherGs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: gs.name, time: msg.time })
+              otherGs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: gs.name, time: msg.time } satisfies CollabUnencryptedMsg)
             } catch (e) { log.warn('useCollabHost.chatEncrypted.relay', e) }
           }
           return
@@ -918,7 +918,7 @@ export function useCollabHost() {
           // cannot rename a different participant by forging `peerId`. Do
           // not change this to echo `msg.peerId` without a new validation
           // step — that would reopen the impersonation path.
-          broadcast({ type: 'collab-peer-renamed', peerId: gs.peerId, oldName, newName }, gs.peerId)
+          broadcast({ type: 'collab-peer-renamed', peerId: gs.peerId, oldName, newName } satisfies CollabUnencryptedMsg, gs.peerId)
           setMessages(prev => [...prev, { text: `${oldName} renamed to ${newName}`, from: 'system', time: Date.now(), self: false }].slice(-500))
           return
         }
@@ -961,8 +961,8 @@ export function useCollabHost() {
                     type: 'collab-request-file',
                     fileId,
                     requesterPeerId: gs.peerId,
-                  })
-                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+                  } satisfies CollabInnerMsg)
+                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
                 } catch (e) { log.warn('useCollabHost.relayRequestFile', e) }
               }
             }
@@ -1008,8 +1008,8 @@ export function useCollabHost() {
                   type: 'collab-file-shared',
                   file: bound,
                   from: gs.peerId,
-                })
-                otherGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+                } satisfies CollabInnerMsg)
+                otherGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
               } catch (e) { log.warn('useCollabHost.relayFileShared', e) }
             }
             return
@@ -1027,8 +1027,8 @@ export function useCollabHost() {
                 if (otherId === gs.peerId || !otherGs.encryptKey) continue
                 if (!otherGs.passwordVerified && passwordRef.current) continue
                 try {
-                  const encrypted = await encryptJSON(otherGs.encryptKey, { type: 'collab-file-removed', fileId, from: gs.peerId })
-                  otherGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+                  const encrypted = await encryptJSON(otherGs.encryptKey, { type: 'collab-file-removed', fileId, from: gs.peerId } satisfies CollabInnerMsg)
+                  otherGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
                 } catch (e) { log.warn('useCollabHost.relayFileRemoved', e) }
               }
             }
@@ -1061,8 +1061,8 @@ export function useCollabHost() {
                     type: 'collab-pause-file',
                     fileId,
                     requesterPeerId: gs.peerId,
-                  })
-                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+                  } satisfies CollabInnerMsg)
+                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
                 } catch (e) { log.warn('useCollabHost.relayPauseFile', e) }
               }
             }
@@ -1094,8 +1094,8 @@ export function useCollabHost() {
                     type: 'collab-resume-file',
                     fileId,
                     requesterPeerId: gs.peerId,
-                  })
-                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+                  } satisfies CollabInnerMsg)
+                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
                 } catch (e) { log.warn('useCollabHost.relayResumeFile', e) }
               }
             }
@@ -1129,8 +1129,8 @@ export function useCollabHost() {
                     type: 'collab-cancel-file',
                     fileId,
                     requesterPeerId: gs.peerId,
-                  })
-                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted })
+                  } satisfies CollabInnerMsg)
+                  ownerGs.conn.send({ type: 'collab-msg-enc', data: encrypted } satisfies CollabUnencryptedMsg)
                 } catch (e) { log.warn('useCollabHost.relayCancelFile', e) }
               }
             }
@@ -1334,8 +1334,8 @@ export function useCollabHost() {
         refreshParticipantsList()
         setMessages(prev => [...prev, { text: `${name} left`, from: 'system', time: Date.now(), self: false }].slice(-500))
 
-        broadcast({ type: 'online-count', count: connectionsRef.current.size + 1 })
-        broadcast({ type: 'collab-peer-left', peerId: gs.peerId, name })
+        broadcast({ type: 'online-count', count: connectionsRef.current.size + 1 } satisfies CollabUnencryptedMsg)
+        broadcast({ type: 'collab-peer-left', peerId: gs.peerId, name } satisfies CollabUnencryptedMsg)
 
         if (connectionsRef.current.size === 0) {
           setRtt(null)
@@ -1394,7 +1394,7 @@ export function useCollabHost() {
     document.addEventListener('visibilitychange', handleVisibility)
 
     function handleBeforeUnload(): void {
-      broadcast({ type: 'room-closed' })
+      broadcast({ type: 'room-closed' } satisfies CollabUnencryptedMsg)
     }
     window.addEventListener('beforeunload', handleBeforeUnload)
     window.addEventListener('pagehide', handleBeforeUnload)
@@ -1462,8 +1462,8 @@ export function useCollabHost() {
             dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: currentFileId, payload: { status: 'error', error: FALLBACK_TOO_LARGE_MSG } })
             // M7 — tell the sender to stop.
             try {
-              const enc = await encryptJSON(gs.encryptKey, { type: 'collab-cancel-file', fileId: currentFileId })
-              gs.conn.send({ type: 'collab-msg-enc', data: enc })
+              const enc = await encryptJSON(gs.encryptKey, { type: 'collab-cancel-file', fileId: currentFileId } satisfies CollabInnerMsg)
+              gs.conn.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
             } catch (e) { log.warn('handleGuestChunk.cancelTooLarge', e) }
             return
           }
@@ -1483,8 +1483,8 @@ export function useCollabHost() {
         peerCurrentFileRef.current.delete(gs.peerId)
         dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: currentFileId, payload: { status: 'error', error: 'decrypt failed' } })
         try {
-          const enc = await encryptJSON(gs.encryptKey, { type: 'collab-cancel-file', fileId: currentFileId })
-          gs.conn.send({ type: 'collab-msg-enc', data: enc })
+          const enc = await encryptJSON(gs.encryptKey, { type: 'collab-cancel-file', fileId: currentFileId } satisfies CollabInnerMsg)
+          gs.conn.send({ type: 'collab-msg-enc', data: enc } satisfies CollabUnencryptedMsg)
         } catch (e2) { log.warn('handleGuestChunk.cancelAfterDecryptFail', e2) }
       }
       return
@@ -1529,13 +1529,13 @@ export function useCollabHost() {
       if (!gs.passwordVerified && passwordRef.current) continue
       try {
         const encrypted = await encryptChunk(gs.encryptKey, new TextEncoder().encode(payload))
-        gs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: room.myName, time })
+        gs.conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: room.myName, time } satisfies CollabUnencryptedMsg)
       } catch (e) { log.warn('useCollabHost.sendMessage.chatEncrypt', e) }
     }
   }, [room.myName])
 
   const sendTyping = useCallback((): void => {
-    broadcast({ type: 'typing', nickname: room.myName })
+    broadcast({ type: 'typing', nickname: room.myName } satisfies CollabUnencryptedMsg)
   }, [broadcast, room.myName])
 
   const sendReaction = useCallback((msgId: string, emoji: string): void => {
@@ -1553,7 +1553,7 @@ export function useCollabHost() {
       }
       return m
     }))
-    broadcast({ type: 'reaction', msgId, emoji, nickname: room.myName })
+    broadcast({ type: 'reaction', msgId, emoji, nickname: room.myName } satisfies CollabUnencryptedMsg)
   }, [broadcast, room.myName])
 
   const setMyName = useCallback((name: string): void => {
@@ -1565,7 +1565,7 @@ export function useCollabHost() {
       dispatchFiles({ type: 'UPDATE_SHARED_FILE_OWNER_NAME', ownerId: myId, newName })
     }
     // Broadcast rename to all guests so they can update their participant list.
-    broadcast({ type: 'collab-peer-renamed', peerId: myId || '', oldName: room.myName, newName })
+    broadcast({ type: 'collab-peer-renamed', peerId: myId || '', oldName: room.myName, newName } satisfies CollabUnencryptedMsg)
   }, [broadcast, room.myName])
 
   const clearMessages = useCallback((): void => {
@@ -1675,7 +1675,7 @@ async function streamImageToConn(
 ): Promise<void> {
   const meta = { id, mime, size: bytes.byteLength, text, replyTo, time, duration }
   const encMeta = await encryptJSON(key, meta)
-  conn.send({ type: 'chat-image-start-enc', data: encMeta, from })
+  conn.send({ type: 'chat-image-start-enc', data: encMeta, from } satisfies CollabUnencryptedMsg)
 
   const CHUNK_SIZE = 64 * 1024
   try {
@@ -1686,13 +1686,13 @@ async function streamImageToConn(
       conn.send(packet)
       await waitForBufferDrain(conn)
     }
-    conn.send({ type: 'chat-image-end-enc' })
+    conn.send({ type: 'chat-image-end-enc' } satisfies CollabUnencryptedMsg)
   } catch (e) {
     // Emit abort so the receiver clears its gs.inProgressImage slot;
     // without this, a mid-stream drain timeout left accumulated bytes
     // parked until the next start message.
     log.warn('useCollabHost.streamImageToConn', e)
-    try { conn.send({ type: 'chat-image-abort' }) } catch (ne) { log.warn('useCollabHost.streamImageToConn.notifyAbort', ne) }
+    try { conn.send({ type: 'chat-image-abort' } satisfies CollabUnencryptedMsg) } catch (ne) { log.warn('useCollabHost.streamImageToConn.notifyAbort', ne) }
     throw e
   }
 }

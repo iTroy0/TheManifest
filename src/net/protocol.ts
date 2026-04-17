@@ -173,7 +173,11 @@ export type CollabUnencryptedMsg =
   | ChatEncryptedMsg | RelayChatEncryptedMsg
   | ChatImageStartEncMsg | ChatImageEndEncMsg | ChatImageAbortMsg
   | JoinMsg | TypingMsg | ReactionMsg
-  | { type: 'collab-signal'; target: string; signal: unknown }
+  // Two shapes on the wire: guest→host carries `target` (the intended
+  // destination); host→target-guest carries `from` (the originator, since
+  // the destination is already implied by the DataConnection). Both fields
+  // are optional in the type; senders always populate exactly one.
+  | { type: 'collab-signal'; target?: string; from?: string; signal: unknown }
   | { type: 'collab-peer-joined'; peerId: string; name: string }
   | { type: 'collab-peer-left'; peerId: string; name?: string }
   | { type: 'collab-peer-renamed'; peerId: string; oldName: string; newName: string }
