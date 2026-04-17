@@ -581,8 +581,8 @@ export function useCall(options: UseCallOptions) {
       micMuted: micMutedRef.current,
       cameraOff: newMode !== 'video',
       mode: newMode,
-      from: myPeerId,
-    }
+      from: myPeerId!,
+    } satisfies CallMsg
     if (isHost) broadcast?.(payload)
     else sendToHost?.(payload)
   }, [localMedia.mode, isHost, broadcast, sendToHost, myPeerId, callPeerWithStream, clearRetryState])
@@ -634,15 +634,15 @@ export function useCall(options: UseCallOptions) {
         if (joinedRef.current && myPeerId && modeRef.current !== 'none') {
           snapshot.push({ peerId: myPeerId, name: myNameRef.current, mode: modeRef.current as CallMode })
         }
-        sendToPeer?.(fromPeerId, { type: 'call-roster', peers: snapshot, from: myPeerId })
-        broadcast?.({ type: 'call-peer-joined', peerId: fromPeerId, name: incomingName, mode: incomingMode, from: myPeerId }, fromPeerId)
+        sendToPeer?.(fromPeerId, { type: 'call-roster', peers: snapshot, from: myPeerId! } satisfies CallMsg)
+        broadcast?.({ type: 'call-peer-joined', peerId: fromPeerId, name: incomingName, mode: incomingMode, from: myPeerId! } satisfies CallMsg, fromPeerId)
         return
       }
 
       if (type === 'call-leave' && isHost) {
         removeFromRoster(fromPeerId)
         closeMediaConn(fromPeerId)
-        broadcast?.({ type: 'call-peer-left', peerId: fromPeerId, from: myPeerId }, fromPeerId)
+        broadcast?.({ type: 'call-peer-left', peerId: fromPeerId, from: myPeerId! } satisfies CallMsg, fromPeerId)
         return
       }
 
@@ -654,7 +654,7 @@ export function useCall(options: UseCallOptions) {
         const reportedMode = (msg.mode as CallMode | undefined)
         const nextMode: CallMode = reportedMode || (cameraOff ? 'audio' : 'video')
         upsertRoster(fromPeerId, { micMuted, cameraOff, mode: nextMode })
-        broadcast?.({ type: 'call-track-state', peerId: fromPeerId, micMuted, cameraOff, mode: nextMode, from: myPeerId }, fromPeerId)
+        broadcast?.({ type: 'call-track-state', peerId: fromPeerId, micMuted, cameraOff, mode: nextMode, from: myPeerId! } satisfies CallMsg, fromPeerId)
         return
       }
 
@@ -821,9 +821,9 @@ export function useCall(options: UseCallOptions) {
       if (isHost) {
         const existingPeerIds: string[] = Array.from(rosterRef.current.keys())
         existingPeerIds.forEach(pid => callPeerWithStream(pid, stream, 'audio'))
-        broadcast?.({ type: 'call-peer-joined', peerId: myPeerId, name: myNameRef.current, mode: 'audio', from: myPeerId })
+        broadcast?.({ type: 'call-peer-joined', peerId: myPeerId!, name: myNameRef.current, mode: 'audio', from: myPeerId! } satisfies CallMsg)
       } else {
-        sendToHost?.({ type: 'call-join', mode: 'audio', name: myNameRef.current, from: myPeerId })
+        sendToHost?.({ type: 'call-join', mode: 'audio', name: myNameRef.current, from: myPeerId! } satisfies CallMsg)
       }
 
       setJoined(true)
@@ -862,9 +862,9 @@ export function useCall(options: UseCallOptions) {
     pruneTimersRef.current.clear()
     if (joinedRef.current) {
       if (isHost) {
-        broadcast?.({ type: 'call-peer-left', peerId: myPeerId, from: myPeerId })
+        broadcast?.({ type: 'call-peer-left', peerId: myPeerId!, from: myPeerId! } satisfies CallMsg)
       } else {
-        sendToHost?.({ type: 'call-leave', from: myPeerId })
+        sendToHost?.({ type: 'call-leave', from: myPeerId! } satisfies CallMsg)
       }
     }
     // Flip joinedRef BEFORE calling localMedia.stop() so the mode-watcher
@@ -967,7 +967,7 @@ export function useCall(options: UseCallOptions) {
         closeMediaConn(pid)
         removeFromRoster(pid)
         // Tell remaining peers so their rosters also prune.
-        broadcast?.({ type: 'call-peer-left', peerId: pid, from: myPeerId })
+        broadcast?.({ type: 'call-peer-left', peerId: pid, from: myPeerId! } satisfies CallMsg)
       }, GHOST_PRUNE_GRACE_MS)
       timers.set(pid, timer)
     })
@@ -984,9 +984,9 @@ export function useCall(options: UseCallOptions) {
       type: 'call-track-state',
       micMuted: localMedia.micMuted,
       cameraOff: localMedia.mode !== 'video',
-      mode: localMedia.mode === 'video' ? 'video' : 'audio',
-      from: myPeerId,
-    }
+      mode: (localMedia.mode === 'video' ? 'video' : 'audio') as CallMode,
+      from: myPeerId!,
+    } satisfies CallMsg
     if (isHost) broadcast?.(payload)
     else sendToHost?.(payload)
   }, [localMedia.micMuted, localMedia.mode, isHost, broadcast, sendToHost, myPeerId])

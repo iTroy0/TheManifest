@@ -216,7 +216,10 @@ export type CallMsg =
     }
   | {
       type: 'call-track-state'
-      peerId: string
+      // Guest self-reports omit peerId; the host pins it to the
+      // authenticated sender id before re-broadcasting. Optional so both
+      // wire shapes typecheck.
+      peerId?: string
       micMuted: boolean
       cameraOff: boolean
       mode: CallMode
