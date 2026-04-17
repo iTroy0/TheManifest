@@ -1829,18 +1829,42 @@ export function useCollabGuest(roomId: string) {
   }, [])
 
   // M4 — don't wipe sharedFiles; only clear `downloads`.
+  //
+  // The earlier implementation fired a plaintext `collab-cancel-all` straight
+  // over the host channel, but the host only handles control messages out of
+  // the `collab-msg-enc` envelope — the message was dropped and the owner
+  // kept streaming bytes even though the downloader side cleared its
+  // progress chips. Route a per-file encrypted cancel through
+  // sendFileControl so the owner actually stops (and so active mesh peers
+  // also get notified).
   const cancelAll = useCallback((): void => {
-    sendToHost({ type: 'collab-cancel-all' })
-    // Abort every in-progress stream.
+    const snap = filesRef.current
+    for (const [fileId, dl] of Object.entries(snap.downloads)) {
+      if (dl.status === 'complete' || dl.status === 'error') continue
+      void sendFileControl(fileId, 'collab-cancel-file')
+    }
+
+    // Abort every in-progress stream on the host-relay path.
     inProgressFilesRef.current.forEach(f => {
       if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.cancelAll.streamAbort', e) } }
     })
     inProgressFilesRef.current.clear()
     currentDownloadFileIdRef.current = null
+
+    // Abort every in-progress stream on each mesh peer we were pulling from.
+    peerConnectionsRef.current.forEach(entry => {
+      if (!entry.inProgressFiles) return
+      entry.inProgressFiles.forEach(f => {
+        if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.cancelAll.meshStreamAbort', e) } }
+      })
+      entry.inProgressFiles.clear()
+      entry.currentDownloadFileId = null
+    })
+
     downloadTimeoutsRef.current.forEach(t => clearTimeout(t))
     downloadTimeoutsRef.current.clear()
     dispatchFiles({ type: 'CANCEL_ALL_DOWNLOADS' })
-  }, [sendToHost])
+  }, [sendFileControl])
 
   // H1 — derived uploading flag.
   const uploading = Object.keys(transfer.uploads).length > 0
