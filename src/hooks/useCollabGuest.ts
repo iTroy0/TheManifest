@@ -1615,6 +1615,20 @@ export function useCollabGuest(roomId: string) {
     for (const [fileId, dl] of Object.entries(snap.downloads)) {
       if (dl.status === 'complete' || dl.status === 'error') continue
       void sendFileControl(fileId, 'collab-cancel-file')
+
+      // Abort the local receiver writer on whichever path owns this fileId.
+      // Without this the StreamSaver service worker keeps the browser's
+      // partial download alive even after our UI clears the download chip.
+      // Per-file cancelFile does the same — cancelAll has to mirror it.
+      const hm = hostMetaRef.current
+      if (hm?.receiver.has(fileId)) {
+        void hm.receiver.abort(fileId, 'cancelled')
+      }
+      const file = snap.sharedFiles.find(f => f.id === fileId)
+      const meshEntry = file?.owner ? peerConnectionsRef.current.get(file.owner) : undefined
+      if (meshEntry?.meta.receiver.has(fileId)) {
+        void meshEntry.meta.receiver.abort(fileId, 'cancelled')
+      }
     }
 
     downloadTimeoutsRef.current.forEach(t => clearTimeout(t))

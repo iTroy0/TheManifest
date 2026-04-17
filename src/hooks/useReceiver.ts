@@ -799,6 +799,20 @@ export function useReceiver(peerId: string) {
       zipModeRef.current = false
       dispatchConn({ type: 'SET', payload: { zipMode: false } })
     }
+    // Abort every live engine sink BEFORE nulling receiverRef — without
+    // this, StreamSaver's service worker keeps each browser-side partial
+    // download alive after the UI reset. Walk the current manifest indices
+    // that still have active engine state and issue abort() per fileId.
+    const recv = receiverRef.current
+    if (recv) {
+      const total = manifestRef.current?.files.length ?? 0
+      for (let i = 0; i < total; i++) {
+        const fileId = `file-${i}`
+        if (recv.has(fileId)) {
+          void recv.abort(fileId, 'cancelled')
+        }
+      }
+    }
     receiverRef.current = null
     fileMetaRef.current = {}
     dispatchTransfer({ type: 'RESET' })
