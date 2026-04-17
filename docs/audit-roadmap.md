@@ -645,6 +645,20 @@ V2 needs targeted `data-testid` attributes on `CollabFileList` +
 tweaks. Not a blocker to V1 — V1 uses role + text matching that
 survives copy changes.
 
+**Local run status:** 8/8 tests passing on Windows Chromium after
+two selector-iteration rounds (`fix(e2e): chat focus, error copy,
+fingerprint separator`). First run hit four failures on:
+1. `<code>` locator assumption for share URLs (collab URL lives in
+   a `<div>`, not `<code>`).
+2. `input[type="file"]` aria-label mismatch (DropZone's input has
+   no aria-label; Home's gated behind `isActive`).
+3. Chat input `.click()` intercepted by overlapping glow-card —
+   swapped to `.focus()`.
+4. Error copy regex too narrow; fingerprint renders with space
+   separator, not colon.
+
+All four resolved; helpers are now tolerant of both states.
+
 **CI:**
 
 - `test.yml` gains an `e2e` job that depends on the unit-test job,
