@@ -187,7 +187,16 @@ export function useSender() {
         })
       }
 
-      function aggregateUI(): void {
+      // Closure-scoped throttle. onProgress fires per chunk (many Hz on a
+      // fast link) which would burn the React reducer. Force=true bypasses
+      // the throttle for terminal events (endTransfer, cancel-all) so the
+      // UI snaps to the final state instead of stalling at a stale sample.
+      let lastAggregateAt = 0
+      function aggregateUI(force = false): void {
+        const now = Date.now()
+        if (!force && now - lastAggregateAt < 100) return
+        lastAggregateAt = now
+
         const entries = Array.from(connectionsRef.current.values())
         const active = entries.filter(e => e.meta.transferring)
 
@@ -235,7 +244,7 @@ export function useSender() {
       function endTransfer(): void {
         meta.transferring = false
         meta.currentFileIndex = -1
-        aggregateUI()
+        aggregateUI(true)
         const anyActive = Array.from(connectionsRef.current.values()).some(e => e.meta.transferring)
         if (!anyActive) dispatchConn({ type: 'SET_STATUS', payload: 'connected' })
       }
@@ -615,7 +624,7 @@ export function useSender() {
           // Abort every in-flight file-transfer handle on this session so
           // pausedFile awaits unblock and the sender loop exits.
           session.cancelAllTransfers()
-          aggregateUI()
+          aggregateUI(true)
           const anyActive = Array.from(connectionsRef.current.values()).some(e => e.meta.transferring)
           if (!anyActive) dispatchConn({ type: 'SET_STATUS', payload: 'connected' })
           return
