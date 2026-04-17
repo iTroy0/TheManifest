@@ -3,8 +3,6 @@ import Peer, { MediaConnection } from 'peerjs'
 import { UseLocalMediaReturn, LocalMediaMode } from './useLocalMedia'
 import type { CallMsg } from '../net/protocol'
 
-// ── Types ────────────────────────────────────────────────────────────────
-
 export type CallMode = 'audio' | 'video'
 
 // Per-peer roster entry. `mode` is the current publishing mode, updated
@@ -69,8 +67,6 @@ export interface UseCallOptions {
 }
 
 const SOFT_VIDEO_CAP = 4
-
-// ── Helpers ──────────────────────────────────────────────────────────────
 
 // Single table of known media-error variants. Both the raw DOMException
 // `name` from getUserMedia and the normalized `code` produced by
@@ -166,8 +162,6 @@ const GHOST_PRUNE_GRACE_MS = 3_000
 // hostile (or buggy) peer from flooding the host with re-renders.
 const TRACK_STATE_MIN_INTERVAL_MS = 100
 
-// ── Hook ─────────────────────────────────────────────────────────────────
-
 export function useCall(options: UseCallOptions) {
   const {
     peer, myPeerId, myName, isHost, hostPeerId,
@@ -179,8 +173,6 @@ export function useCall(options: UseCallOptions) {
   const [joined, setJoined] = useState<boolean>(false)
   const [joining, setJoining] = useState<boolean>(false)
   const [mode, setMode] = useState<LocalMediaMode>('none')
-  // Call-layer errors only. Local-media errors are merged into the public
-  // `error` field below via liftLocalMediaError.
   const [callError, setCallError] = useState<CallError | null>(null)
   const [endReason, setEndReason] = useState<CallEndReason | null>(null)
   const [roster, setRoster] = useState<Map<string, RemotePeer>>(new Map())
@@ -226,8 +218,6 @@ export function useCall(options: UseCallOptions) {
   useEffect(() => { micMutedRef.current = localMedia.micMuted }, [localMedia.micMuted])
   useEffect(() => { hostPeerIdRef.current = hostPeerId }, [hostPeerId])
 
-  // ── Roster helpers ─────────────────────────────────────────────────────
-
   const upsertRoster = useCallback((peerId: string, patch: Partial<RemotePeer>): void => {
     setRoster(prev => {
       const next = new Map(prev)
@@ -252,7 +242,6 @@ export function useCall(options: UseCallOptions) {
       next.delete(peerId)
       return next
     })
-    // Drop the rate-limit bookkeeping for this peer.
     lastTrackStateAtRef.current.delete(peerId)
   }, [])
 
@@ -271,11 +260,6 @@ export function useCall(options: UseCallOptions) {
     clearRetryState(peerId)
   }, [clearRetryState])
 
-  // ── Memoized derivations — avoid a new array on every parent render ───
-  // P1/P2: `roster` is a Map whose identity only changes on actual
-  // mutation, so memoizing the derived array and counts keeps downstream
-  // `useMemo`s (notably `speakingEntries` in CallPanel) stable.
-
   const remotePeers = useMemo(() => Array.from(roster.values()), [roster])
 
   const videoTileCount = useMemo(() => {
@@ -286,8 +270,6 @@ export function useCall(options: UseCallOptions) {
   }, [roster, mode])
 
   const overSoftVideoCap = videoTileCount > SOFT_VIDEO_CAP
-
-  // ── Outgoing: call a specific peer ─────────────────────────────────────
 
   // Ref to the latest `callPeerWithStream` so the retry timer scheduled
   // inside `mc.on('error')` can re-invoke it without capturing a stale
@@ -304,7 +286,6 @@ export function useCall(options: UseCallOptions) {
       const mc = peer.call(peerId, stream, { metadata: { kind: 'manifest-call', mode: myMode, name: myNameRef.current } })
       mediaConnsRef.current.set(peerId, mc)
       mc.on('stream', (remoteStream: MediaStream) => {
-        // A successful stream clears any prior retry state for this peer.
         clearRetryState(peerId)
         upsertRoster(peerId, {
           stream: remoteStream,

@@ -83,7 +83,6 @@ export default function DropZone({ onFiles, disabled }: DropZoneProps) {
           }
         `}
       >
-        {/* Subtle gradient overlay on hover */}
         {!disabled && (
           <div className={`absolute inset-0 transition-opacity duration-500 pointer-events-none
             ${dragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}
@@ -94,7 +93,6 @@ export default function DropZone({ onFiles, disabled }: DropZoneProps) {
         )}
 
         <div className={`relative transition-transform duration-300 ${dragging ? 'scale-105' : ''}`}>
-          {/* Icon container with ring effect */}
           <div className={`
             relative w-14 h-14 mx-auto mb-4 rounded-2xl flex items-center justify-center transition-all duration-400
             ${dragging

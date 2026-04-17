@@ -52,14 +52,11 @@ export const log = {
   },
 }
 
-// Redact a peerId / fileId / connId to its first 8 chars. Keeps the log
-// useful for correlation without full-length identifiers.
 export function redactId(id: string | null | undefined): string {
   if (!id) return '-'
   return id.length > 8 ? id.slice(0, 8) + '…' : id
 }
 
-// Snapshot copy for the user to paste into a bug report. No PII, no content.
 export function copyDiagnostics(): string {
   const lines = buffer.map(e => {
     const ts = new Date(e.t).toISOString()

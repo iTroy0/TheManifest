@@ -348,7 +348,6 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
         </div>
       )}
 
-      {/* Name + mute badge overlay */}
       <div className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent flex items-center justify-between gap-2 ${
         mini ? 'px-2 py-1' : 'px-3 py-2'
       }`}>

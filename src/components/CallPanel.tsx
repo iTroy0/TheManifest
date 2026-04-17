@@ -168,7 +168,6 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         <p className="font-mono text-[10px] text-muted mt-1">Mic on, camera off — toggle anytime.</p>
       </div>
 
-      {/* Post-call reason banner — only for unexpected ends. */}
       {showEndReason && lastReason && (
         <div className="flex items-start gap-2 max-w-[300px] w-full bg-surface-2/60 border border-border rounded-lg px-3 py-2 text-left">
           <div className="shrink-0 mt-0.5">
@@ -191,7 +190,6 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         </div>
       )}
 
-      {/* Structured error from a failed start. */}
       {call.error && (
         <div className="flex items-start gap-2 max-w-[300px] w-full bg-danger/10 border border-danger/30 rounded-lg px-3 py-2 text-left">
           <AlertTriangle className="w-3.5 h-3.5 text-danger shrink-0 mt-0.5" />
@@ -387,10 +385,8 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         </div>
       )}
 
-      {/* Audio tiles */}
       <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-2">
         <div className="grid grid-cols-2 sm:grid-cols-2 gap-1.5">
-          {/* Local audio-only tile: show only when not publishing video */}
           {call.mode === 'audio' && (
             <AudioTile
               stream={call.localStream}
@@ -420,7 +416,6 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         )}
       </div>
 
-      {/* Error banner */}
       {call.error && (
         <div className="px-3 pb-2">
           <div className="flex items-start gap-2 rounded-lg bg-danger/10 border border-danger/30 px-3 py-2">
@@ -438,7 +433,6 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         </div>
       )}
 
-      {/* Controls bar */}
       <div className="border-t border-border bg-surface-2/40 px-3 py-2">
         <div className="flex items-center justify-center gap-1.5 flex-wrap">
           <ControlButton
@@ -653,8 +647,6 @@ function joinDisabledTooltip(disabled: boolean, joining: boolean, connectionDead
   if (disabled) return 'Not available right now'
   return undefined
 }
-
-// ── Internal components ──────────────────────────────────────────────────
 
 interface ControlButtonProps {
   icon: React.ComponentType<{ className?: string }>

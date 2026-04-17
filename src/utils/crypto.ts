@@ -38,23 +38,20 @@ const ALGO = 'AES-GCM'
 const KEY_LENGTH = 256
 const IV_LENGTH = 12 // 96 bits for AES-GCM
 
-// Generate an ECDH keypair
 export async function generateKeyPair(): Promise<CryptoKeyPair> {
   const keyPair = await crypto.subtle.generateKey(
     { name: 'ECDH', namedCurve: 'P-256' },
-    false, // private key stays in WebCrypto, public key exported separately
+    false,
     ['deriveBits']
   )
   return keyPair
 }
 
-// Export public key to raw bytes for transmission
 export async function exportPublicKey(publicKey: CryptoKey): Promise<Uint8Array> {
   const raw = await crypto.subtle.exportKey('raw', publicKey)
   return new Uint8Array(raw)
 }
 
-// Import a raw public key from the other peer
 export async function importPublicKey(rawBytes: Uint8Array | ArrayBuffer): Promise<CryptoKey> {
   const buffer: ArrayBuffer = rawBytes instanceof ArrayBuffer ? rawBytes : (rawBytes.buffer as ArrayBuffer).slice(rawBytes.byteOffset, rawBytes.byteOffset + rawBytes.byteLength)
   return crypto.subtle.importKey(
@@ -126,14 +123,12 @@ export async function encryptChunk(key: CryptoKey, data: Uint8Array | ArrayBuffe
     key,
     plaintext as BufferSource
   )
-  // [IV (12 bytes)][ciphertext]
   const output = new Uint8Array(IV_LENGTH + ciphertext.byteLength)
   output.set(iv, 0)
   output.set(new Uint8Array(ciphertext), IV_LENGTH)
   return output.buffer
 }
 
-// Decrypt a chunk: reads IV from first 12 bytes
 export async function decryptChunk(key: CryptoKey, data: Uint8Array | ArrayBuffer): Promise<ArrayBuffer> {
   const input = data instanceof Uint8Array ? data : new Uint8Array(data)
   const iv = input.slice(0, IV_LENGTH)
@@ -146,16 +141,11 @@ export async function decryptChunk(key: CryptoKey, data: Uint8Array | ArrayBuffe
   return plaintext
 }
 
-// Decrypt a base64-encoded encrypted JSON payload and return the parsed object.
-// Consolidates the decryptChunk → decode → JSON.parse boilerplate that was
-// duplicated 5+ times across useReceiver and useSender.
 export async function decryptJSON<T = unknown>(key: CryptoKey, base64Data: string): Promise<T> {
   const decrypted = await decryptChunk(key, base64ToUint8(base64Data))
   return JSON.parse(new TextDecoder().decode(decrypted)) as T
 }
 
-// Encrypt a JS object as a base64 string ready for conn.send().
-// Inverse of decryptJSON.
 export async function encryptJSON(key: CryptoKey, obj: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify(obj))
   const encrypted = await encryptChunk(key, bytes)
@@ -178,7 +168,10 @@ export function timingSafeEqual(a: string, b: string): boolean {
 
 // Generate a shared fingerprint from both public keys for visual verification.
 // Both sides produce the same fingerprint by sorting keys before hashing.
-export async function getKeyFingerprint(localPubBytes: Uint8Array, remotePubBytes: Uint8Array): Promise<string> {
+export async function getKeyFingerprint(
+  localPubBytes: Uint8Array,
+  remotePubBytes: Uint8Array
+): Promise<string> {
   const digest = await sortedKeyDigest(new Uint8Array(localPubBytes), new Uint8Array(remotePubBytes))
   return Array.from(digest.slice(0, 16))
     .map(b => b.toString(16).padStart(2, '0'))

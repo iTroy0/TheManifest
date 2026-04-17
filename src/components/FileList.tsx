@@ -169,7 +169,6 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, i
         ${isDragging ? 'sortable-placeholder' : ''}
       `}
     >
-      {/* Drag handle */}
       {canDrag && (
         <div
           {...attributes}
@@ -181,7 +180,6 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, i
         </div>
       )}
 
-      {/* File icon/thumbnail with progress ring */}
       <div className="relative shrink-0">
         {showThumb ? (
           <div className="relative">
@@ -224,7 +222,6 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, i
         )}
       </div>
 
-      {/* File info */}
       <div className="flex-1 min-w-0">
         <p className={`text-xs sm:text-sm font-mono truncate transition-colors ${isDone ? 'text-accent' : 'text-text'}`}>
           {file.name}
@@ -256,12 +253,10 @@ function SortableFileItem({ id, file, index, pct, isDone, isPending, isActive, i
         </div>
       </div>
 
-      {/* Progress percentage */}
       {pct != null && !isDone && (
         <span className="font-mono text-xs sm:text-sm tabular-nums text-info font-medium">{pct}%</span>
       )}
 
-      {/* Actions */}
       <div className="flex items-center gap-1.5">
         {onRequest && !isPending && !isDone && pct == null && (
           <button
@@ -405,7 +400,6 @@ export default function FileList({ files, onRemove, canRemove, onReorder, progre
     const isPaused = pausedFiles ? pausedFiles[i] : undefined
     const isActive = currentFileIndex === i && pct != null && !isDone
     const showThumb = isImageType(file.type) && file instanceof window.File
-    // If canRemove not provided, default to true for all when onRemove exists
     const canRemoveItem = canRemove ? !!canRemove[i] : true
 
     return (

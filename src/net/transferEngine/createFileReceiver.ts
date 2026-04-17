@@ -30,11 +30,6 @@ export function createFileReceiver(
         writer,
         totalChunks: opts.totalChunks,
         totalBytes: opts.totalBytes,
-        // Resume seeds: when non-zero, caller is resuming a transfer and the
-        // peer has already written this many bytes (or received this many
-        // chunks) to its prior sink. Seeding here keeps progress UI and the
-        // monotonic cursor in sync with the real on-disk state from the
-        // very first inbound chunk.
         bytesWritten: opts.resumedBytes ?? 0,
         lastIdx: opts.resumedChunks ?? 0,
         onProgress: opts.onProgress,

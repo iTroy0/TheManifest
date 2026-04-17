@@ -52,7 +52,6 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
 }
 
 // ── Component-level error boundary for graceful degradation ─────────────────
-// Usage: <ComponentErrorBoundary name="FileList"><FileList /></ComponentErrorBoundary>
 
 interface ComponentErrorBoundaryProps {
   children: React.ReactNode
@@ -116,7 +115,6 @@ export class ComponentErrorBoundary extends Component<ComponentErrorBoundaryProp
 }
 
 // ── Inline error boundary for critical but small components ──────────────────
-// Shows a minimal error indicator that doesn't disrupt layout
 
 interface InlineErrorBoundaryProps {
   children: React.ReactNode

@@ -1,4 +1,3 @@
-// TURN URL is safe to expose (just a hostname, no credentials)
 const TURN_URL = import.meta.env.VITE_TURN_URL as string | undefined
 const SIGNAL_HOST = import.meta.env.VITE_SIGNAL_HOST as string | undefined
 const SIGNAL_PATH = (import.meta.env.VITE_SIGNAL_PATH as string | undefined) || '/'
@@ -16,8 +15,6 @@ interface SignalConfig {
   path: string
 }
 
-// Shape of the config object passed to `new Peer(...)`. Includes the optional
-// iceTransportPolicy so callers that force relay (TURN-only) typecheck.
 export interface PeerConfig {
   host?: string
   port?: number
@@ -29,7 +26,6 @@ export interface PeerConfig {
   }
 }
 
-// Self-hosted PeerJS signaling config (falls back to PeerJS cloud if not set)
 const signalConfig: SignalConfig | Record<string, never> = SIGNAL_HOST ? {
   host: SIGNAL_HOST,
   port: SIGNAL_PORT,
@@ -47,7 +43,6 @@ const googleStun: RTCIceServer[] = [
 ]
 const stunServers: RTCIceServer[] = [...selfHostedStun, ...googleStun]
 
-// Direct P2P only — no relay
 export const STUN_ONLY: PeerConfig = {
   ...signalConfig,
   config: {
@@ -55,9 +50,7 @@ export const STUN_ONLY: PeerConfig = {
   },
 }
 
-// Fetch ephemeral TURN credentials from the server-side API.
-// Credentials are HMAC-based and expire after 2 hours.
-// Retries once on transient failure, then falls back to STUN-only.
+// Fetches ephemeral HMAC-based TURN credentials (expire after 2 hours).
 async function fetchTurnCredentials(signal: AbortSignal): Promise<{ username: string; credential: string; urls: string[] } | null> {
   try {
     const res = await fetch('/api/turn-credentials', { signal })
@@ -90,15 +83,12 @@ export async function getWithTurn(): Promise<PeerConfig> {
         return {
           ...signalConfig,
           config: {
-            // Force all ICE candidates through TURN when the user opted into
-            // relay. Without this flag the browser still gathers direct
-            // host/srflx candidates and may leak the user's IP despite the
-            // explicit relay request.
+            // Force relay so the browser doesn't gather host/srflx candidates
+            // and leak the user's IP despite the explicit relay request.
             iceTransportPolicy: 'relay' as RTCIceTransportPolicy,
-            // Under relay-only we deliberately omit Google STUN. The ICE
-            // agent still probes STUN during gathering even though only
-            // relay candidates are used — probing Google would reveal the
-            // user's public IP to a third party despite the privacy opt-in.
+            // Omit Google STUN under relay-only: the ICE agent probes STUN
+            // during gathering even when only relay candidates are used —
+            // that would reveal the user's public IP to a third party.
             // Self-hosted STUN is kept (same trust domain as TURN).
             iceServers: [
               ...selfHostedStun,

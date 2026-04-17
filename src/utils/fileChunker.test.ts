@@ -44,7 +44,7 @@ describe('Chunk Packet Build/Parse', () => {
   it('packet size is header + data', () => {
     const data: Uint8Array = new Uint8Array(100)
     const packet: ArrayBuffer = buildChunkPacket(0, 0, data.buffer as ArrayBuffer)
-    expect(new Uint8Array(packet).length).toBe(6 + 100) // 6-byte header
+    expect(new Uint8Array(packet).length).toBe(6 + 100)
   })
 })
 
@@ -159,10 +159,6 @@ describe('ProgressThrottler', () => {
 describe('Chunk Packet edge cases', () => {
   it('throws when parsing a buffer shorter than 6 bytes', () => {
     const short: ArrayBuffer = new Uint8Array([0x00, 0x01, 0x00]).buffer
-    // DataView will still read but slice(-3 past end) is empty — verify the
-    // packet at least doesn't crash the fileIndex/chunkIndex parse
-    // A buffer of 3 bytes means chunkIndex read crosses the boundary — WebCrypto
-    // DataView throws a RangeError when offset + size exceeds buffer length
     expect(() => parseChunkPacket(short)).toThrow()
   })
 
@@ -176,7 +172,6 @@ describe('Chunk Packet edge cases', () => {
   })
 
   it('parses a truncated packet (6-byte header, data region is empty slice)', () => {
-    // Build a 6-byte packet explicitly
     const header = new ArrayBuffer(6)
     const view = new DataView(header)
     view.setUint16(0, 3, false)
@@ -202,15 +197,12 @@ describe('AdaptiveChunker additional edge cases', () => {
     const c: AdaptiveChunker = new AdaptiveChunker()
     const sizes: number[] = []
 
-    // 5 fast transfers -> chunk grows
     for (let i = 0; i < 5; i++) c.recordTransfer(CHUNK_SIZE, 10)
     sizes.push(c.getChunkSize())
 
-    // 5 slow transfers -> chunk shrinks back
     for (let i = 0; i < 5; i++) c.recordTransfer(c.getChunkSize(), 500)
     sizes.push(c.getChunkSize())
 
-    // Chunk size should have moved in both directions
     expect(sizes[0]).toBeGreaterThan(CHUNK_SIZE)
     expect(sizes[1]).toBeLessThan(sizes[0])
   })

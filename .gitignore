@@ -7,4 +7,4 @@ dist
 CLAUDE.md
 playwright-report
 test-results
-.playwright
+.playwright.vite/

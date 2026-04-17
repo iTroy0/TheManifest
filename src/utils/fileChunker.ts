@@ -1,4 +1,3 @@
-// Chunk size bounds — used internally by AdaptiveChunker.
 const MIN_CHUNK_SIZE = 64 * 1024   // 64KB - for poor connections
 const MAX_CHUNK_SIZE = 1024 * 1024 // 1MB - for excellent connections
 export const CHUNK_SIZE = 256 * 1024 // 256KB default
@@ -40,7 +39,6 @@ export class AdaptiveChunker {
     this.maxMeasurements = 10
   }
 
-  // Record a chunk transfer measurement
   recordTransfer(chunkSize: number, transferTimeMs: number): void {
     if (transferTimeMs <= 0) return
     const throughput = (chunkSize / transferTimeMs) * 1000 // bytes per second
@@ -58,13 +56,9 @@ export class AdaptiveChunker {
     const avgTransferTime = recentMeasurements.reduce((sum, m) => sum + m.transferTimeMs, 0) / recentMeasurements.length
 
     // Target: chunks should take 50-200ms to transfer for responsive progress.
-    // `avgThroughput` is computed inside `getStats()` when needed; no need
-    // to keep a dead copy here.
     if (avgTransferTime < 30 && this.currentChunkSize < MAX_CHUNK_SIZE) {
-      // Transfers too fast - increase chunk size for efficiency
       this.currentChunkSize = Math.min(this.currentChunkSize * 1.5, MAX_CHUNK_SIZE)
     } else if (avgTransferTime > 300 && this.currentChunkSize > MIN_CHUNK_SIZE) {
-      // Transfers too slow - decrease chunk size for better progress feedback
       this.currentChunkSize = Math.max(this.currentChunkSize * 0.7, MIN_CHUNK_SIZE)
     }
 
@@ -92,7 +86,6 @@ export class AdaptiveChunker {
   }
 }
 
-// Progress throttler to limit UI updates
 export class ProgressThrottler {
   private updateIntervalMs: number
   private lastUpdate: number
@@ -111,7 +104,6 @@ export class ProgressThrottler {
     return false
   }
 
-  // Force update (for final chunk, file end, etc.)
   forceUpdate(): boolean {
     this.lastUpdate = Date.now()
     return true
@@ -138,8 +130,8 @@ export async function* chunkFileAdaptive(file: File, chunker: AdaptiveChunker | 
 export function buildChunkPacket(fileIndex: number, chunkIndex: number, data: ArrayBuffer): ArrayBuffer {
   const header = new ArrayBuffer(HEADER_SIZE)
   const view = new DataView(header)
-  view.setUint16(0, fileIndex, false) // 2 bytes, big-endian
-  view.setUint32(2, chunkIndex, false) // 4 bytes, big-endian
+  view.setUint16(0, fileIndex, false)
+  view.setUint32(2, chunkIndex, false)
   const packet = new Uint8Array(HEADER_SIZE + data.byteLength)
   packet.set(new Uint8Array(header), 0)
   packet.set(new Uint8Array(data), HEADER_SIZE)
@@ -174,28 +166,19 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
     let settled = false
     const done = () => { if (!settled) { settled = true; cleanup(); resolve() } }
 
-    // Race 1: buffer drains normally.
-    // `typeof dc.onbufferedamountlow !== 'undefined'` is always true on
-    // modern browsers (the event handler slot exists but defaults to null,
-    // and `typeof null === 'object'`), which left the polling path dead.
-    // Use `in` to check the prototype chain for the event instead, and
-    // keep a low-rate poll as a safety net in case the event fires slowly
-    // on a stalled channel (Chrome has had bugs here with very large buffers).
-    // Cast to `object` so the `in` check doesn't narrow `dc` to `never` in
-    // the else branch — lib-types claim the slot always exists, but we
-    // still want the runtime fallback for exotic environments.
+    // Use `in` rather than `typeof dc.onbufferedamountlow !== 'undefined'` — the
+    // handler slot always exists (defaults to null, `typeof null === 'object'`),
+    // which would leave the polling path dead. Cast to `object` so the `in` check
+    // doesn't narrow `dc` to `never` in the else branch.
     const useLowEvent = 'onbufferedamountlow' in (dc as object)
     let pollTimer: ReturnType<typeof setTimeout> | null = null
     let drainTimeout: ReturnType<typeof setTimeout> | null = null
 
-    // `dc` is already narrowed to a non-null `RTCDataChannel` by the guard
-    // at the top of the function. Don't re-check — TS narrows it to `never`
-    // after `!dc` and the build fails.
     if (useLowEvent) {
       dc.bufferedAmountLowThreshold = BUFFER_THRESHOLD
       dc.addEventListener('bufferedamountlow', done, { once: true })
-      // Belt-and-braces: also poll at a low rate so we notice if the event
-      // never fires (readyState transitions can swallow it).
+      // Belt-and-braces: poll at a low rate in case the event never fires
+      // (readyState transitions can swallow it).
       const poll = (): void => {
         if (settled) return
         if (dc.readyState === 'closed' || dc.bufferedAmount <= BUFFER_THRESHOLD) done()
@@ -211,22 +194,15 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
       poll()
     }
 
-    // Race 2: channel dies — resolve so the sender loop can exit
-    // instead of hanging forever.
     const onClose = () => done()
     dc.addEventListener('close', onClose)
     dc.addEventListener('error', onClose)
 
-    // Race 3: timeout to prevent infinite hang on zombie channels.
-    // Rejects (not resolves) so the caller can detect the stalled channel
-    // and abort the file transfer instead of piling chunks into a dead buffer.
-    //
-    // Scale the ceiling to how much is actually queued, assuming a slow-
-    // cellular floor of 128 KB/s: (bufferedAmount / 128KB) * 2000ms gives
-    // the time needed to drain at 2× that floor. A flat 15 s used to kill
-    // big transfers on weak links mid-file — a 4 MB buffer at 256 KB/s
-    // needs ~16 s to drain, hitting the old cap before progress could
-    // surface. Clamp between 15 s (fast path floor) and 60 s (safety).
+    // Timeout rejects (not resolves) so callers can detect a stalled channel
+    // and abort rather than piling chunks into a dead buffer.
+    // Scale to actual bufferedAmount at 128 KB/s floor — a flat 15 s cap
+    // killed big transfers on slow links before the buffer could drain.
+    // Clamped between 15 s and 60 s.
     const MIN_THROUGHPUT_BPS = 128 * 1024
     const scaled = Math.ceil((dc.bufferedAmount / MIN_THROUGHPUT_BPS) * 2000)
     const drainTimeoutMs = Math.min(60_000, Math.max(15_000, scaled))
