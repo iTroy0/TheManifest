@@ -629,16 +629,51 @@ runs without depending on the public PeerJS cloud.
   system-msg surfaces for host, navigating to a non-existent
   room shows an error, call panel structural smoke.
 
-**V2 tests (deferred — tracked here, not written yet):**
+**V2 tests [DONE]:**
 
-- Portal pause / resume / cancel mid-file.
-- Portal reconnect (offline → online event).
-- Portal password gate (rate-limit + correct unlock).
-- Collab file share via host-relay (host owns file) and mesh
-  (guest owns file, second guest downloads direct).
-- Collab kick (host removes guest, guest sees banner).
-- Collab nickname rename propagates.
-- Collab room-close broadcast.
+- Portal password gate — wrong password shows error, correct
+  unlocks manifest, file downloads with byte-level verification.
+  Waits 1200ms between attempts to clear the sender's 1s
+  backoff.
+- Portal receiver cancel — 10 MB fixture gives a real mid-stream
+  window; click Download then Cancel before completion; sender
+  leaves `transferring` state.
+- Collab kick — host clicks kick, guest sees terminal banner.
+  Test accepts either "removed from the room" (kicked status
+  message) or "Room Closed" (conn.on('close') overwrites
+  status='kicked' with 'closed'). Both are valid evidence.
+- Collab close-room — host clicks Close Room, guest sees
+  "Room Closed".
+- Collab rename — host clicks edit-name pencil, fills new name,
+  submits. Guest chat receives "renamed to <newName>" system
+  message. Follow-up chat from renamed host still propagates.
+- Collab guest→host file share — guest's file input (aria-label
+  "Share files with the room", className="hidden") accepts
+  setInputFiles; host's shared-file list renders the filename.
+
+Data-testid attrs added to keep selectors stable across UI
+copy changes:
+- `portal-password-submit` (Portal password form)
+- `collab-kick-${peerId}` (per-guest kick button)
+- `collab-close-room`
+- `collab-edit-name` (pencil next to host's own name)
+
+**V2 tests still deferred (lower ROI / harder to assert):**
+
+- Portal reconnect (offline → online event). Playwright has
+  `context.setOffline(true)` but the assertion surface is fuzzy;
+  reconnect success relies on PeerJS's ReconnectToken path that
+  takes 2-3 s even on loopback.
+- Collab mesh file share (guest1 owns, guest2 downloads direct).
+  Byte-level verify is the same on mesh vs host-relay; DOM doesn't
+  distinguish which route carried the chunks. A useful assertion
+  would require a data-testid on the participant's
+  `directConnection: true` chip and one guest seeing it for the
+  other.
+
+Full local run (Windows Chromium): **12/12 passing** after two
+iteration rounds — one on V1 selectors, one on V2 timing +
+hidden-input edge cases.
 
 V2 needs targeted `data-testid` attributes on `CollabFileList` +
 `FileList` + `ChatPanel` to be selector-stable across future UI
