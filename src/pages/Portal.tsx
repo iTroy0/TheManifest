@@ -1,7 +1,5 @@
 import { useParams, Link } from 'react-router-dom'
 import { useReceiver } from '../hooks/useReceiver'
-import { useLocalMedia } from '../hooks/useLocalMedia'
-import { useCall } from '../hooks/useCall'
 import { formatBytes, formatSpeed, formatTime } from '../utils/formatBytes'
 import { usePageTitle } from '../hooks/usePageTitle'
 import { useElapsedTime, formatElapsed } from '../hooks/useElapsedTime'
@@ -9,7 +7,7 @@ import FileList from '../components/FileList'
 import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import ChatPanel from '../components/ChatPanel'
-import CallPanel from '../components/CallPanel'
+import CallPanelLazy from '../components/CallPanelLazy'
 import AppFooter from '../components/AppFooter'
 import { ComponentErrorBoundary } from '../components/ErrorBoundary'
 import { useState, useEffect, type ChangeEvent } from 'react'
@@ -26,18 +24,6 @@ export default function Portal() {
     typingUsers, sendTyping, sendReaction, cancelFile, cancelAll, pauseFile, resumeFile, pausedFiles,
     peer: receiverPeer, hostPeerId, sendCallMessage, setCallMessageHandler,
   } = useReceiver(peerId ?? '')
-  const localMedia = useLocalMedia()
-  const call = useCall({
-    peer: receiverPeer,
-    myPeerId: receiverPeer?.id ?? null,
-    myName: nickname,
-    isHost: false,
-    hostPeerId,
-    participants: [],
-    sendToHost: sendCallMessage,
-    setMessageHandler: setCallMessageHandler,
-    localMedia,
-  })
   const [passwordInput, setPasswordInput] = useState<string>('')
   const [passwordLoading, setPasswordLoading] = useState<boolean>(false)
   const [showPassword, setShowPassword] = useState<boolean>(false)
@@ -392,7 +378,21 @@ export default function Portal() {
         {/* Call — only while live (no point showing after disconnect) */}
         {showManifest && !isDead && (
           <ComponentErrorBoundary name="Call">
-            <CallPanel call={call} myName={nickname} disabled={isDead} connectionStatus={status} />
+            <CallPanelLazy
+              callOptions={{
+                peer: receiverPeer,
+                myPeerId: receiverPeer?.id ?? null,
+                myName: nickname,
+                isHost: false,
+                hostPeerId,
+                participants: [],
+                sendToHost: sendCallMessage,
+                setMessageHandler: setCallMessageHandler,
+              }}
+              myName={nickname}
+              disabled={isDead}
+              connectionStatus={status}
+            />
           </ComponentErrorBoundary>
         )}
 

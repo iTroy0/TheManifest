@@ -18,31 +18,16 @@ import {
   Pencil,
 } from 'lucide-react'
 import { useCollabHost } from '../../hooks/useCollabHost'
-import { useLocalMedia } from '../../hooks/useLocalMedia'
-import { useCall } from '../../hooks/useCall'
 import { formatBytes } from '../../utils/formatBytes'
 import CollabFileList from '../../components/CollabFileList'
 import ChatPanel from '../../components/ChatPanel'
-import CallPanel from '../../components/CallPanel'
+import CallPanelLazy from '../../components/CallPanelLazy'
 import AppFooter from '../../components/AppFooter'
 import { ComponentErrorBoundary } from '../../components/ErrorBoundary'
 import { ConnectionChips, UploadsSummary, VerifyConnectionsPanel, type FingerprintEntry } from './CollabShared'
 
 export default function CollabHostView() {
   const host = useCollabHost()
-  const localMedia = useLocalMedia()
-  const call = useCall({
-    peer: host.peer,
-    myPeerId: host.myPeerId,
-    myName: host.myName,
-    isHost: true,
-    hostPeerId: host.myPeerId,
-    participants: host.participantsList,
-    broadcast: host.broadcastCallMessage,
-    sendToPeer: host.sendCallMessage,
-    setMessageHandler: host.setCallMessageHandler,
-    localMedia,
-  })
 
   const [copied, setCopied] = useState(false)
   const [passwordInput, setPasswordInput] = useState('')
@@ -443,8 +428,18 @@ export default function CollabHostView() {
         {isConnected && (
           <>
             <ComponentErrorBoundary name="Call">
-              <CallPanel
-                call={call}
+              <CallPanelLazy
+                callOptions={{
+                  peer: host.peer,
+                  myPeerId: host.myPeerId,
+                  myName: host.myName,
+                  isHost: true,
+                  hostPeerId: host.myPeerId,
+                  participants: host.participantsList,
+                  broadcast: host.broadcastCallMessage,
+                  sendToPeer: host.sendCallMessage,
+                  setMessageHandler: host.setCallMessageHandler,
+                }}
                 myName={host.myName}
                 disabled={isDead}
                 connectionStatus={connectionStatus}

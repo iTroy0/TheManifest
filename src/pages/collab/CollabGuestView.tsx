@@ -19,31 +19,17 @@ import {
   EyeOff,
 } from 'lucide-react'
 import { useCollabGuest } from '../../hooks/useCollabGuest'
-import { useLocalMedia } from '../../hooks/useLocalMedia'
-import { useCall } from '../../hooks/useCall'
 import { formatBytes } from '../../utils/formatBytes'
 import StatusIndicator from '../../components/StatusIndicator'
 import CollabFileList from '../../components/CollabFileList'
 import ChatPanel from '../../components/ChatPanel'
-import CallPanel from '../../components/CallPanel'
+import CallPanelLazy from '../../components/CallPanelLazy'
 import AppFooter from '../../components/AppFooter'
 import { ComponentErrorBoundary } from '../../components/ErrorBoundary'
 import { ConnectionChips, UploadsSummary, VerifyConnectionsPanel, type FingerprintEntry } from './CollabShared'
 
 export default function CollabGuestView({ roomId }: { roomId: string }) {
   const guest = useCollabGuest(roomId)
-  const localMedia = useLocalMedia()
-  const call = useCall({
-    peer: guest.peer,
-    myPeerId: guest.myPeerId,
-    myName: guest.myName,
-    isHost: false,
-    hostPeerId: guest.hostPeerId,
-    participants: guest.participantsList,
-    sendToHost: guest.sendCallMessage,
-    setMessageHandler: guest.setCallMessageHandler,
-    localMedia,
-  })
 
   const [passwordInput, setPasswordInput] = useState('')
   const [passwordLoading, setPasswordLoading] = useState(false)
@@ -467,8 +453,17 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
         {isConnected && (
           <>
             <ComponentErrorBoundary name="Call">
-              <CallPanel
-                call={call}
+              <CallPanelLazy
+                callOptions={{
+                  peer: guest.peer,
+                  myPeerId: guest.myPeerId,
+                  myName: guest.myName,
+                  isHost: false,
+                  hostPeerId: guest.hostPeerId,
+                  participants: guest.participantsList,
+                  sendToHost: guest.sendCallMessage,
+                  setMessageHandler: guest.setCallMessageHandler,
+                }}
                 myName={guest.myName}
                 disabled={isDead}
                 connectionStatus={guest.status}

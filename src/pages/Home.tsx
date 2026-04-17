@@ -12,29 +12,14 @@ import PortalLink from '../components/PortalLink'
 import ProgressBar from '../components/ProgressBar'
 import StatusIndicator from '../components/StatusIndicator'
 import ChatPanel from '../components/ChatPanel'
-import CallPanel from '../components/CallPanel'
+import CallPanelLazy from '../components/CallPanelLazy'
 import AppFooter from '../components/AppFooter'
-import { useLocalMedia } from '../hooks/useLocalMedia'
-import { useCall } from '../hooks/useCall'
 import { ComponentErrorBoundary } from '../components/ErrorBoundary'
 
 export default function Home() {
   const [files, setFilesState] = useState<File[]>([])
   const [error, setError] = useState<string | null>(null)
   const { peerId, status, progress, overallProgress, speed, eta, setFiles, reset, currentFileIndex, totalSent, fingerprint, recipientCount, setPassword, setChatOnly, peer, participants, sendCallMessage, broadcastCallMessage, setCallMessageHandler, broadcastManifest, messages, sendMessage, clearMessages, rtt, senderName, changeSenderName, typingUsers, sendTyping, sendReaction } = useSender()
-  const localMedia = useLocalMedia()
-  const call = useCall({
-    peer,
-    myPeerId: peerId,
-    myName: senderName,
-    isHost: true,
-    hostPeerId: null,
-    participants,
-    sendToPeer: sendCallMessage,
-    broadcast: broadcastCallMessage,
-    setMessageHandler: setCallMessageHandler,
-    localMedia,
-  })
   const addInputRef = useRef<HTMLInputElement>(null)
   const resetModalRef = useRef<HTMLDivElement>(null)
   const [passwordInput, setPasswordInput] = useState<string>('')
@@ -405,7 +390,22 @@ export default function Home() {
             {/* Call — separate, appears above chat */}
             {(recipientCount > 0 || chatMode) && !isFinished && (
               <ComponentErrorBoundary name="Call">
-                <CallPanel call={call} myName={senderName} disabled={recipientCount === 0} connectionStatus={status} />
+                <CallPanelLazy
+                  callOptions={{
+                    peer,
+                    myPeerId: peerId,
+                    myName: senderName,
+                    isHost: true,
+                    hostPeerId: null,
+                    participants,
+                    sendToPeer: sendCallMessage,
+                    broadcast: broadcastCallMessage,
+                    setMessageHandler: setCallMessageHandler,
+                  }}
+                  myName={senderName}
+                  disabled={recipientCount === 0}
+                  connectionStatus={status}
+                />
               </ComponentErrorBoundary>
             )}
 
