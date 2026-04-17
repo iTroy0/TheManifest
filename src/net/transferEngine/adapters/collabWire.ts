@@ -17,6 +17,10 @@ export function createCollabWire(): CollabWire {
     while (next <= 0xFFFE && (fromIdx.has(next) || next === 0xFFFF)) {
       next++
     }
+    // Exhaustion path: 65535 live fileIds on one session. Sender's sendFile
+    // catches this throw, converts to 'error' result, and session.endTransfer
+    // cleans up. buildFileCancelled/buildFileEnd don't allocate — they key
+    // off the already-registered fileId — so the tail send still works.
     if (next > 0xFFFE) throw new Error('collabWire: packet-index exhausted')
     const idx = next++
     toIdx.set(fileId, idx)

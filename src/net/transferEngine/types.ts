@@ -22,6 +22,12 @@ export interface RecvOpts {
   totalBytes: number
   totalChunks: number
   sink: WritableStream<Uint8Array>
+  // Optional resume seeds. When a transfer resumes mid-file, the caller
+  // (hook) should read `FileStartMsg.resumeFrom` (or the equivalent wire
+  // field) and pass the pre-skipped byte + chunk counts so progress and
+  // getResumeCursor report accurate values from the first inbound chunk.
+  resumedBytes?: number
+  resumedChunks?: number
   onProgress?: (bytesWritten: number, totalBytes: number) => void
 }
 

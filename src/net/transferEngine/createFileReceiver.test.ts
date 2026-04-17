@@ -140,4 +140,28 @@ describe('createFileReceiver', () => {
     expect(progress).toHaveBeenNthCalledWith(1, 3, 6)
     expect(progress).toHaveBeenNthCalledWith(2, 6, 6)
   })
+
+  it('resumedBytes + resumedChunks seed the entry on onFileStart', async () => {
+    const session = mockSession()
+    const adapter = mockAdapter()
+    const recv = createFileReceiver(session, adapter)
+    const sink = accumulatingSink()
+    const progress = vi.fn()
+
+    // Resume scenario: peer already wrote 100 bytes across chunks 0..4.
+    // First inbound chunk here is chunk index 5. Engine should report
+    // 103 bytes (100 seed + 3 new) and resume cursor = 6.
+    await recv.onFileStart({
+      fileId: 'file-0', totalBytes: 200, totalChunks: 10,
+      sink: sink.stream,
+      resumedBytes: 100,
+      resumedChunks: 5,
+      onProgress: progress,
+    })
+    expect(recv.getResumeCursor('file-0')).toBe(5)
+
+    await recv.onChunk(pkt(5, new Uint8Array([1, 2, 3])))
+    expect(recv.getResumeCursor('file-0')).toBe(6)
+    expect(progress).toHaveBeenCalledWith(103, 200)
+  })
 })

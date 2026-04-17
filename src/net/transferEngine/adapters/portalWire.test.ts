@@ -31,6 +31,25 @@ describe('portalWire', () => {
     expect(msg.name).toBe('a.txt')
     expect(msg.size).toBe(10)
     expect(msg.totalChunks).toBe(1)
+    // Absent startChunk => resumeFrom must NOT be emitted. Guards against
+    // a regression where the adapter emits `resumeFrom: 0` or `undefined`.
+    expect(msg).not.toHaveProperty('resumeFrom')
+  })
+
+  it('buildFileStart emits resumeFrom when startChunk > 0', async () => {
+    const s = makeSessionWithKey(key)
+    const msg = await portalWire.buildFileStart(s, {
+      fileId: 'file-0', name: 'a.txt', size: 10, totalChunks: 1, startChunk: 3,
+    }) as { type: string; resumeFrom?: number }
+    expect(msg.resumeFrom).toBe(3)
+  })
+
+  it('buildFileStart omits resumeFrom when startChunk is 0', async () => {
+    const s = makeSessionWithKey(key)
+    const msg = await portalWire.buildFileStart(s, {
+      fileId: 'file-0', name: 'a.txt', size: 10, totalChunks: 1, startChunk: 0,
+    }) as { type: string }
+    expect(msg).not.toHaveProperty('resumeFrom')
   })
 
   it('packetIndexFor strips file- prefix', () => {

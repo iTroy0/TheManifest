@@ -50,9 +50,20 @@ export async function sendFile(
 
   const startAt = opts.startChunk ?? 0
   let chunkIndex = 0
-  let bytesSent = 0
+  // Pre-seed bytesSent from the skipped prefix so onProgress reports accurate
+  // cumulative bytes during resume. Estimate via chunker's current chunk size;
+  // for an adaptive chunker the pre-skipped bytes may have used a different
+  // size, but the estimate is good enough for a UI progress bar (receiver's
+  // bytesWritten comes from the sink's actual writes, so the on-disk count is
+  // always exact).
+  let bytesSent = Math.min(file.size, startAt * chunkSize)
 
   if (result === 'complete' && file.size > 0) {
+    // chunkFileAdaptive is an AsyncGenerator with no try/finally and no
+    // disposable state (File slicing + arrayBuffer reads are GC-managed).
+    // A `break` out of this `for await` triggers the generator's return()
+    // which is a no-op here; no resource leak to worry about. Preserve
+    // that invariant if this generator ever grows a finalizer.
     for await (const { buffer } of chunkFileAdaptive(file, opts.chunker ?? null)) {
       if (chunkIndex < startAt) {
         chunkIndex++
