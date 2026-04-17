@@ -14,25 +14,28 @@ cross off.
 
 - **P0 is complete and shipped.** Seven high-severity issues fixed, logger
   utility added, constants centralized. See the "Already shipped" section.
-- **P1 is partially complete.** `src/net/config.ts` is live;
-  `src/net/keyExchange.ts` (P1.A) has landed with round-trip tests;
-  `src/net/protocol.ts` (P1.B) is now both-directions locked — all
-  five hooks dispatch inbound against the discriminated unions and
-  construct outbound literals with `satisfies`. `src/net/session.ts`
-  (P1.C) shipped with 38 unit tests; **all five hooks are now on
-  Session**: useReceiver collapses ten per-connection refs into a
-  single `sessionRef`; useSender splits every ConnState into
-  `ConnEntry = { session, meta }` with pause/resume/cancel driven
-  by `TransferHandle`; useCollabHost replaces `GuestConnection`
-  with `GuestEntry = { session, meta }` keyed by `session.peerId`
-  and preserves M12/M19/host-origin-rewrite invariants;
-  useCollabGuest carries a `hostSessionRef` plus a
-  `Map<peerId, MeshEntry>` for mesh peers, with a routing table
-  (`activeTransferRoutesRef`) that keeps the P0 fix #3 origin
-  check intact. `ConnState`, `GuestConnection`, `PeerConnection`,
-  and `ActiveTransfer` are all deleted. `tsc` clean; 309/309
-  tests pass. P1.C is complete; P1.D (`transferEngine.ts`) is
-  the next optional milestone.
+- **P1 is complete.** `src/net/config.ts`, `src/net/keyExchange.ts`
+  (P1.A), `src/net/protocol.ts` (P1.B), `src/net/session.ts`
+  (P1.C), and `src/net/transferEngine/` (P1.D) all shipped. P1.D
+  extracts the four parallel chunk send/recv paths into one engine
+  (`sendFile` + `createFileReceiver`) consumed via injected
+  `WireAdapter` (portalWire / collabWire). Per-session packet-index
+  allocator eliminates wire-index collision between guests. Triple-
+  abort on send (handle, session terminal, AbortSignal) converges
+  on one exit path. Receiver cursor monotonic (M11 enforced by
+  construction). All four hook migrations landed:
+  `useSender.sendSingleFile` deleted; `useReceiver.streamsRef` +
+  `lastChunkIndexRef` deleted (StreamSaver path via engine, zip +
+  in-memory fallback unchanged); `useCollabHost.inProgressDownloadsRef`
+  deleted; `useCollabGuest.inProgressFilesRef` +
+  `currentDownloadFileIdRef` deleted. Host relay path (bytes-
+  forwarding for mesh-E2E chunks the host cannot decrypt) kept
+  hand-written with INTENTIONAL comment. 29 new engine tests; 359
+  total unit tests passing; `tsc --noEmit` clean. Hook deltas:
+  useSender 1126→1117, useReceiver 1056→1118 (+62 from zip/fallback
+  path carrying on), useCollabHost 1636→1541 (−95), useCollabGuest
+  1975→1757 (−218). Net −258 in hooks + ~800 in engine = duplication
+  eliminated.
 - **P2.1 done.** All ~200 silent `catch {}` in the four hooks migrated to
   `log.warn()` — 191 log sites across useSender/useReceiver/useCollabHost/
   useCollabGuest. Diagnostics buffer captures everything. "Copy diagnostics"

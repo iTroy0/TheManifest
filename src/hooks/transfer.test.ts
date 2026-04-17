@@ -34,7 +34,7 @@ async function makeSharedKeys(): Promise<SharedKeys> {
   return { senderKey, receiverKey }
 }
 
-// Simulate chunking a file's bytes into packets (mirrors sendSingleFile)
+// Simulate chunking a file's bytes into packets (mirrors transferEngine.sendFile)
 async function chunkAndEncrypt(bytes: Uint8Array, fileIndex: number, key: CryptoKey): Promise<ArrayBuffer[]> {
   const packets: ArrayBuffer[] = []
   let offset = 0
