@@ -79,6 +79,10 @@ export interface RejectedMsg { type: 'rejected'; reason?: string }
 export interface ClosingMsg { type: 'closing' }
 // Participant metadata (portal also has chat).
 export interface JoinMsg { type: 'join'; nickname: string }
+// Portal rename message. Differs from the collab equivalent in that the
+// old name travels in the payload (portal has no authenticated peerId
+// the sender can use to look up the previous name server-side).
+export interface NicknameChangeMsg { type: 'nickname-change'; oldName?: string; newName: string }
 export interface TypingMsg { type: 'typing'; nickname: string }
 export interface ReactionMsg {
   type: 'reaction'
@@ -108,7 +112,7 @@ export type PortalMsg =
   | PauseFileMsg | ResumeFileMsg | CancelFileMsg | CancelAllMsg
   | FileSkippedMsg | FileCancelledMsg | BatchDoneMsg | DoneMsg
   | CancelAllAckMsg | RejectedMsg | ClosingMsg
-  | JoinMsg | TypingMsg | ReactionMsg
+  | JoinMsg | NicknameChangeMsg | TypingMsg | ReactionMsg
   | ChatEncryptedMsg | RelayChatEncryptedMsg
   | ChatImageStartEncMsg | ChatImageEndEncMsg | ChatImageAbortMsg
 

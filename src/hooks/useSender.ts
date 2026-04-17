@@ -14,6 +14,7 @@ import {
 } from './state/senderState'
 import { ChatMessage } from '../types'
 import { MAX_CONNECTIONS, MAX_CHAT_IMAGE_SIZE } from '../net/config'
+import type { PortalMsg } from '../net/protocol'
 import { log } from '../utils/logger'
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -337,25 +338,38 @@ export function useSender() {
         if (destroyed) return
         if (connState.heartbeat) connState.heartbeat.markAlive()
 
-        const msg = data as Record<string, unknown>
-
-        if (data instanceof ArrayBuffer || (data && (data as ArrayBuffer).byteLength !== undefined && !(typeof data === 'object' && msg.type))) {
+        // Binary chunk packet — routed through the chunk queue. Must come
+        // before the PortalMsg cast: ArrayBuffers don't have a `type` field
+        // and shouldn't be treated as JSON messages.
+        if (data instanceof ArrayBuffer || (data && (data as ArrayBuffer).byteLength !== undefined && !(typeof data === 'object' && (data as { type?: unknown }).type))) {
           connState.chunkQueue = connState.chunkQueue
             .then(() => handleHostChunk(connState, data as ArrayBuffer))
             .catch(e => log.warn('useSender.chunkQueue', e))
           return
         }
 
-        if (msg.type === 'pong') return
-        if (msg.type === 'ping') {
-          try { conn.send({ type: 'pong', ts: msg.ts }) } catch (e) { log.warn('useSender.sendPong', e) }
+        // Call messages (call-*) route through to useCall — they aren't
+        // part of PortalMsg. Pull them off before the union cast so the
+        // narrowing switch below isn't confused by call-* literals.
+        const raw = data as { type?: unknown }
+        if (typeof raw.type === 'string' && raw.type.startsWith('call-')) {
+          if (callMessageHandlerRef.current) {
+            try { callMessageHandlerRef.current(conn.peer, raw as Record<string, unknown>) }
+            catch (e) { log.warn('useSender.callMessageHandler', e) }
+          }
           return
         }
 
-        if (typeof msg.type === 'string' && (msg.type as string).startsWith('call-')) {
-          if (callMessageHandlerRef.current) {
-            try { callMessageHandlerRef.current(conn.peer, msg) } catch (e) { log.warn('useSender.callMessageHandler', e) }
-          }
+        // Trust boundary — a peer can send any JSON, but after the binary
+        // check every valid payload should match PortalMsg. Each branch
+        // below narrows the union via `msg.type === 'X'`. Fields that
+        // aren't on the union (defensive reads of unknown shapes from
+        // buggy or hostile peers) still compile via `as` casts.
+        const msg = data as PortalMsg
+
+        if (msg.type === 'pong') return
+        if (msg.type === 'ping') {
+          try { conn.send({ type: 'pong', ts: msg.ts }) } catch (e) { log.warn('useSender.sendPong', e) }
           return
         }
 
