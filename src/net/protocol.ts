@@ -184,7 +184,7 @@ export type CollabUnencryptedMsg =
   | { type: 'collab-participant-list'; participants: Array<{ peerId: string; name: string }> }
   | { type: 'room-closed' }
   | { type: 'kicked' }
-  | { type: 'nickname-change'; newName: string }
+  | { type: 'nickname-change'; oldName?: string; newName: string }
   | { type: 'password-required' }
   | { type: 'password-encrypted'; data: string }
   | { type: 'password-accepted' }
