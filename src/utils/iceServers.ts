@@ -2,6 +2,12 @@
 const TURN_URL = import.meta.env.VITE_TURN_URL as string | undefined
 const SIGNAL_HOST = import.meta.env.VITE_SIGNAL_HOST as string | undefined
 const SIGNAL_PATH = (import.meta.env.VITE_SIGNAL_PATH as string | undefined) || '/'
+// Port + secure default to 443 / true so production deploys keep the
+// existing behaviour. The test harness overrides both to point at a
+// local peerjs-server over plain HTTP.
+const SIGNAL_PORT_ENV = import.meta.env.VITE_SIGNAL_PORT as string | undefined
+const SIGNAL_PORT = SIGNAL_PORT_ENV ? parseInt(SIGNAL_PORT_ENV, 10) : 443
+const SIGNAL_SECURE = (import.meta.env.VITE_SIGNAL_SECURE as string | undefined) !== 'false'
 
 interface SignalConfig {
   host: string
@@ -26,8 +32,8 @@ export interface PeerConfig {
 // Self-hosted PeerJS signaling config (falls back to PeerJS cloud if not set)
 const signalConfig: SignalConfig | Record<string, never> = SIGNAL_HOST ? {
   host: SIGNAL_HOST,
-  port: 443,
-  secure: true,
+  port: SIGNAL_PORT,
+  secure: SIGNAL_SECURE,
   path: SIGNAL_PATH,
 } : {}
 

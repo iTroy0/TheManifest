@@ -5,3 +5,6 @@ dist
 .env
 .omc
 CLAUDE.md
+playwright-report
+test-results
+.playwright

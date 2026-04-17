@@ -597,12 +597,64 @@ Glitchtip or a minimal self-hosted Sentry. **Must be opt-in** and must
 not log message content or file names. Only errors, stack traces, and
 redacted peerIds. Document in the privacy page.
 
-### P3.3 — Playwright / integration harness
+### P3.3 — Playwright / integration harness **[DONE (V1)]**
 
-`ChatPanel.tsx` (63 KB), `CallPanel.tsx` (31 KB), and `CollabFileList.tsx`
-(32 KB) are un-unit-testable. Add a Playwright suite that boots two
-headless browsers and drives a real portal + collab flow. Even one golden
-path per entry hook catches 80% of future regressions.
+Playwright harness landed against a local `peerjs-server` so E2E
+runs without depending on the public PeerJS cloud.
+
+**Scaffold shipped:**
+
+- `docs/plan-playwright.md` — design doc (scope, selectors,
+  transport, CI integration, known risks, acceptance).
+- `@playwright/test` + `peer` added as devDeps.
+- `playwright.config.ts` — Chromium project, workers=1 (one
+  signaling server per run), trace/video on failure, fake media
+  devices so call-panel smoke doesn't prompt for mic/cam.
+- `.env.test` — points the app at `localhost:9000` over plain
+  HTTP; production defaults (port 443, secure) preserved.
+- `src/utils/iceServers.ts` — added `VITE_SIGNAL_PORT` +
+  `VITE_SIGNAL_SECURE` env hooks (default 443 / true).
+- `e2e/global-setup.ts` / `global-teardown.ts` — in-process
+  `peerjs-server` on port 9000.
+- `e2e/helpers.ts` — shared page actions (getPortalUrl, uploadFile,
+  sendChatMessage, expectDownloadMatches, etc.).
+
+**V1 tests (shipped):**
+
+- `portal.spec.ts` — 1:1 file round-trip with deterministic byte
+  verification; chat round-trip (sender ↔ receiver); 1:N transfer
+  to two concurrent receivers; fingerprint visibility on both
+  sides.
+- `collab.spec.ts` — host + guest admit, chat round-trip, join
+  system-msg surfaces for host, navigating to a non-existent
+  room shows an error, call panel structural smoke.
+
+**V2 tests (deferred — tracked here, not written yet):**
+
+- Portal pause / resume / cancel mid-file.
+- Portal reconnect (offline → online event).
+- Portal password gate (rate-limit + correct unlock).
+- Collab file share via host-relay (host owns file) and mesh
+  (guest owns file, second guest downloads direct).
+- Collab kick (host removes guest, guest sees banner).
+- Collab nickname rename propagates.
+- Collab room-close broadcast.
+
+V2 needs targeted `data-testid` attributes on `CollabFileList` +
+`FileList` + `ChatPanel` to be selector-stable across future UI
+tweaks. Not a blocker to V1 — V1 uses role + text matching that
+survives copy changes.
+
+**CI:**
+
+- `test.yml` gains an `e2e` job that depends on the unit-test job,
+  installs Chromium with `npx playwright install --with-deps
+  chromium`, runs `npm run test:e2e`, and uploads the
+  `playwright-report` artifact on failure.
+
+**Acceptance (partial):** V1 tests listed above are in the repo.
+Full acceptance (every scope bullet) lives in the V2 list and will
+land in a follow-up as data-testid attributes settle.
 
 ### P3.4 — Self-host runbook
 
