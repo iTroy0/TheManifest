@@ -14,11 +14,12 @@ cross off.
 
 - **P0 is complete and shipped.** Seven high-severity issues fixed, logger
   utility added, constants centralized. See the "Already shipped" section.
-- **P1 is partially started.** `src/net/config.ts` is live, and
-  `src/net/keyExchange.ts` (P1.A) has landed with round-trip tests — all
-  seven ECDH derive call sites in the four hooks now funnel through
-  `finalizeKeyExchange`. The remaining P1 pieces (protocol, session,
-  transferEngine) are staged as independent commits.
+- **P1 is partially complete.** `src/net/config.ts` is live;
+  `src/net/keyExchange.ts` (P1.A) has landed with round-trip tests;
+  `src/net/protocol.ts` (P1.B) is now both-directions locked — all
+  five hooks dispatch inbound against the discriminated unions and
+  construct outbound literals with `satisfies`. The remaining P1
+  pieces (session, transferEngine) are staged as independent commits.
 - **P2.1 done.** All ~200 silent `catch {}` in the four hooks migrated to
   `log.warn()` — 191 log sites across useSender/useReceiver/useCollabHost/
   useCollabGuest. Diagnostics buffer captures everything. "Copy diagnostics"
@@ -127,9 +128,12 @@ Migrated call sites (all 7):
 Hooks no longer import `importPublicKey` / `deriveSharedKey` /
 `getKeyFingerprint` directly. 256/256 existing tests still pass.
 
-### P1.B — `src/net/protocol.ts` **[INBOUND DONE]**
+### P1.B — `src/net/protocol.ts` **[DONE]**
 
-Typed discriminated unions for every wire message landed as five commits:
+Typed discriminated unions for every wire message. Landed as nine
+commits — five inbound, four outbound.
+
+**Inbound (already shipped):**
 
 1. `6d5f8b5` — `src/net/protocol.ts` + round-trip tests. `PortalMsg`,
    `CollabEnvelope` + `CollabInnerMsg`, `CollabUnencryptedMsg`,
@@ -145,14 +149,36 @@ Typed discriminated unions for every wire message landed as five commits:
 4. `9161bd3` — useCall: `call = msg as CallMsg`, `call-rejected`
    added to the union.
 
-**Still open** (follow-up): outbound construction sites in all five
-hooks still use inline object literals. A `satisfies PortalMsg`
-(or `satisfies CallMsg` / `CollabInnerMsg`) pass — or a typed
-`send<M>(conn, m: M)` helper — would lock the other direction too.
-~35 call sites in useSender alone. Low risk, mechanical; defer to
-its own PR to keep bisect useful.
+**Outbound (this pass):**
 
-tsc: clean across all five commits. vitest: 271/271.
+5. useSender — 34 sites → `satisfies PortalMsg`.
+6. useReceiver — 18 sites → `satisfies PortalMsg`.
+7. useCollabHost — ~50 sites → `satisfies CollabUnencryptedMsg` on
+   outer DataConnection sends (including `collab-msg-enc` envelopes),
+   `satisfies CollabInnerMsg` on `encryptJSON` inner payloads.
+8. useCollabGuest — ~40 sites → same split as useCollabHost across
+   host-conn and mesh PeerJS connections.
+9. useCall — 11 sites → `satisfies CallMsg` via
+   broadcast/sendToHost/sendToPeer.
+
+Protocol adjustments picked up along the way:
+- `collab-signal` now models both wire shapes: guest→host carries
+  `target?`, host→target-guest carries `from?`.
+- `CollabUnencryptedMsg.nickname-change` carries optional `oldName` to
+  match guest/receiver senders.
+- `call-track-state.peerId` is optional — guest self-reports omit it,
+  host pins to the authenticated sender id on re-broadcast.
+- `myPeerId!` non-null assertions at the call sites in useCall — the
+  surrounding joinedRef / peer-connected guards already imply non-null;
+  the assertion is an intent statement, runtime bytes unchanged.
+
+`broadcast` / `sendToHost` / `sendToPeer` in the collab hooks still
+type their `msg` param as `Record<string, unknown>` so they can carry
+opaque CallMsg payloads from `setCallMessageHandler`. The lock-in sits
+on each constructed literal at the call site, not on the bus function
+itself — locks the shape where it matters, keeps the bus flexible.
+
+tsc: clean across all nine commits. vitest: 271/271.
 
 ---
 
