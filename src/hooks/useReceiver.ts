@@ -243,7 +243,7 @@ export function useReceiver(peerId: string) {
             }
             conn.on('data', origManifestHandler)
           }
-          conn.send({ type: 'join', nickname })
+          conn.send({ type: 'join', nickname } satisfies PortalMsg)
         })
 
         conn.on('data', async (data: unknown) => {
@@ -275,7 +275,7 @@ export function useReceiver(peerId: string) {
 
           if (msg.type === 'pong') return
           if (msg.type === 'ping') {
-            try { conn.send({ type: 'pong', ts: msg.ts }) } catch (e) { log.warn('useReceiver.sendPong', e) }
+            try { conn.send({ type: 'pong', ts: msg.ts } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendPong', e) }
             return
           }
 
@@ -297,7 +297,7 @@ export function useReceiver(peerId: string) {
                 keyPairRef.current = await generateKeyPair()
               }
               const pubKeyBytes = await exportPublicKey(keyPairRef.current.publicKey)
-              conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
+              conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies PortalMsg)
               const remoteKeyBytes = new Uint8Array(msg.key as number[])
               const { encryptKey, fingerprint: fp } = await finalizeKeyExchange({
                 localPrivate: keyPairRef.current.privateKey,
@@ -339,7 +339,7 @@ export function useReceiver(peerId: string) {
               if (pendingResumeRef.current) {
                 const { index, resumeChunk } = pendingResumeRef.current
                 pendingResumeRef.current = null
-                conn.send({ type: 'request-file', index, resumeChunk })
+                conn.send({ type: 'request-file', index, resumeChunk } satisfies PortalMsg)
               }
             } catch (e) {
               // M10 fix: don't leak the buffered manifest to a later connection
@@ -663,7 +663,7 @@ export function useReceiver(peerId: string) {
     reconnectTokenRef.current = Symbol('reconnect')
 
     const handleBeforeUnload = (): void => {
-      try { connRef.current?.send({ type: 'closing' }) } catch (e) { log.warn('useReceiver.sendClosing', e) }
+      try { connRef.current?.send({ type: 'closing' } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendClosing', e) }
     }
     window.addEventListener('beforeunload', handleBeforeUnload)
     // iOS Safari does not reliably fire beforeunload — pagehide is the correct event
@@ -749,7 +749,7 @@ export function useReceiver(peerId: string) {
   const cancelFile = useCallback((index: number): void => {
     const conn = connRef.current
     if (!conn) return
-    conn.send({ type: 'cancel-file', index })
+    conn.send({ type: 'cancel-file', index } satisfies PortalMsg)
     if (streamsRef.current[index]) {
       streamsRef.current[index]!.abort()
       streamsRef.current[index] = null
@@ -764,7 +764,7 @@ export function useReceiver(peerId: string) {
 
   const cancelAll = useCallback((): void => {
     const conn = connRef.current
-    if (conn) try { conn.send({ type: 'cancel-all' }) } catch (e) { log.warn('useReceiver.cancelAll', e) }
+    if (conn) try { conn.send({ type: 'cancel-all' } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.cancelAll', e) }
     if (zipWriterRef.current) {
       zipWriterRef.current.abort()
       zipWriterRef.current = null
@@ -782,20 +782,20 @@ export function useReceiver(peerId: string) {
   const pauseFile = useCallback((index: number): void => {
     const conn = connRef.current
     if (!conn) return
-    conn.send({ type: 'pause-file', index })
+    conn.send({ type: 'pause-file', index } satisfies PortalMsg)
     dispatchTransfer({ type: 'PAUSE_FILE', index })
   }, [])
 
   const resumeFile = useCallback((index: number): void => {
     const conn = connRef.current
     if (!conn) return
-    conn.send({ type: 'resume-file', index })
+    conn.send({ type: 'resume-file', index } satisfies PortalMsg)
     dispatchTransfer({ type: 'RESUME_FILE', index })
   }, [])
 
   const sendTyping = useCallback((): void => {
     const conn = connRef.current
-    if (conn) try { conn.send({ type: 'typing', nickname }) } catch (e) { log.warn('useReceiver.sendTyping', e) }
+    if (conn) try { conn.send({ type: 'typing', nickname } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendTyping', e) }
   }, [nickname])
 
   const sendReaction = useCallback((msgId: string, emoji: string): void => {
@@ -814,7 +814,7 @@ export function useReceiver(peerId: string) {
       return m
     }))
     const conn = connRef.current
-    if (conn) try { conn.send({ type: 'reaction', msgId, emoji, nickname }) } catch (e) { log.warn('useReceiver.sendReaction', e) }
+    if (conn) try { conn.send({ type: 'reaction', msgId, emoji, nickname } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendReaction', e) }
   }, [nickname])
 
   const changeNickname = useCallback((newName: string): void => {
@@ -822,7 +822,7 @@ export function useReceiver(peerId: string) {
     if (!conn || !newName.trim()) return
     const oldName = nickname
     setNickname(newName.trim())
-    try { conn.send({ type: 'nickname-change', oldName, newName: newName.trim() }) } catch (e) { log.warn('useReceiver.changeNickname', e) }
+    try { conn.send({ type: 'nickname-change', oldName, newName: newName.trim() } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.changeNickname', e) }
   }, [nickname])
 
   const sendMessage = useCallback(async (text: string, image?: { bytes: Uint8Array; mime: string } | string, replyTo?: ChatMessage['replyTo']): Promise<void> => {
@@ -856,7 +856,7 @@ export function useReceiver(peerId: string) {
     try {
       const payload = JSON.stringify({ text, image: imgStr, replyTo })
       const encrypted = await encryptChunk(key, new TextEncoder().encode(payload))
-      conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), nickname, time })
+      conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), nickname, time } satisfies PortalMsg)
     } catch (e) { console.warn('Failed to send chat message:', e) }
   }, [nickname])
 
@@ -956,7 +956,7 @@ export function useReceiver(peerId: string) {
     transferTotalRef.current = manifestRef.current.files[index]?.size || 0
     dispatchConn({ type: 'SET_STATUS', payload: 'receiving' })
     dispatchTransfer({ type: 'SET', payload: { progress: {}, overallProgress: 0, speed: 0, eta: null } })
-    conn.send({ type: 'request-file', index })
+    conn.send({ type: 'request-file', index } satisfies PortalMsg)
     dispatchTransfer({ type: 'ADD_PENDING', index })
   }, [])
 
@@ -976,7 +976,7 @@ export function useReceiver(peerId: string) {
     const indices = manifestRef.current.files.map((_, i) => i).filter(i => !transfer.completedFiles[i])
     transferTotalRef.current = indices.reduce((sum, i) => sum + (manifestRef.current!.files[i]?.size || 0), 0)
     dispatchTransfer({ type: 'SET', payload: { progress: {}, overallProgress: 0, speed: 0, eta: null } })
-    conn.send({ type: 'request-all', indices })
+    conn.send({ type: 'request-all', indices } satisfies PortalMsg)
     const pending: Record<number, boolean> = {}
     indices.forEach(i => { pending[i] = true })
     dispatchTransfer({ type: 'SET', payload: { pendingFiles: pending } })
@@ -988,7 +988,7 @@ export function useReceiver(peerId: string) {
     dispatchConn({ type: 'SET', payload: { passwordError: false } })
     try {
       const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(password))
-      conn.send({ type: 'password-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)) })
+      conn.send({ type: 'password-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)) } satisfies PortalMsg)
     } catch (e) { console.warn('Failed to submit password:', e) }
   }, [])
 
@@ -1027,7 +1027,7 @@ async function streamImageToHost(
   try {
     const startPayload = JSON.stringify({ mime, size: bytes.byteLength, text, replyTo, time, duration })
     const encStart = await encryptChunk(key, new TextEncoder().encode(startPayload))
-    conn.send({ type: 'chat-image-start-enc', data: uint8ToBase64(new Uint8Array(encStart)), from: nickname, time })
+    conn.send({ type: 'chat-image-start-enc', data: uint8ToBase64(new Uint8Array(encStart)), from: nickname, time } satisfies PortalMsg)
   } catch (e) { log.warn('streamImageToHost.start', e); return }
 
   const chunker = new AdaptiveChunker()
@@ -1053,7 +1053,7 @@ async function streamImageToHost(
   try {
     const endPayload = JSON.stringify({})
     const encEnd = await encryptChunk(key, new TextEncoder().encode(endPayload))
-    conn.send({ type: 'chat-image-end-enc', data: uint8ToBase64(new Uint8Array(encEnd)) })
+    conn.send({ type: 'chat-image-end-enc', data: uint8ToBase64(new Uint8Array(encEnd)) } satisfies PortalMsg)
   } catch (e) {
     // Receiver will time out the in-flight image
     log.warn('streamImageToHost.end', e)
