@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Peer, { MediaConnection } from 'peerjs'
 import { UseLocalMediaReturn, LocalMediaMode } from './useLocalMedia'
+import type { CallMsg } from '../net/protocol'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -590,7 +591,12 @@ export function useCall(options: UseCallOptions) {
 
   useEffect(() => {
     const handler = (fromPeerId: string, msg: Record<string, unknown>): void => {
-      const type = msg.type as string
+      // The setMessageHandler bus signature stays `Record<string, unknown>`
+      // because it's shared with the other hooks. Inside useCall we know
+      // every message is CallMsg shape — alias and narrow via `type` so
+      // typos in the dispatch strings fail at compile time.
+      const call = msg as CallMsg
+      const type = call.type
 
       // S4 — If the sender stamped a `from` field, it must match the
       // transport-layer peer id. A mismatch indicates a relay bug or a

@@ -218,6 +218,9 @@ export type CallMsg =
       mode: CallMode
       from: string
     }
+  // Host can reject a join after a call-join arrives (e.g., soft video
+  // cap exceeded). Carries no extra payload beyond `from`.
+  | { type: 'call-rejected'; from: string }
 
 // ── Encryption helpers ───────────────────────────────────────────────────
 // Thin wrappers around `encryptJSON` / `decryptJSON`. The win is that the
