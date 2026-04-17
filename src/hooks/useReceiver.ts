@@ -1,7 +1,8 @@
 import Peer, { DataConnection } from 'peerjs'
 import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
 import { parseChunkPacket, buildChunkPacket, waitForBufferDrain, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker } from '../utils/fileChunker'
-import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, getKeyFingerprint, uint8ToBase64 } from '../utils/crypto'
+import { generateKeyPair, exportPublicKey, encryptChunk, decryptChunk, decryptJSON, uint8ToBase64 } from '../utils/crypto'
+import { finalizeKeyExchange } from '../net/keyExchange'
 import { createFileStream } from '../utils/streamWriter'
 import { createStreamingZip } from '../utils/zipBuilder'
 import { STUN_ONLY, getWithTurn } from '../utils/iceServers'
@@ -9,6 +10,7 @@ import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/c
 import { ChatMessage, ManifestData } from '../types'
 import { sanitizeFileName } from '../utils/filename'
 import { generateNickname } from '../utils/nickname'
+import { log } from '../utils/logger'
 import {
   transferReducer,
   connectionReducer,
@@ -108,7 +110,7 @@ export function useReceiver(peerId: string) {
 
   const sendCallMessage = useCallback((msg: Record<string, unknown>): void => {
     const c = connRef.current
-    if (c && c.open) { try { c.send(msg) } catch {} }
+    if (c && c.open) { try { c.send(msg) } catch (e) { log.warn('useReceiver.sendCallMessage', e) } }
   }, [])
 
   const startConnection = useCallback((withTurn: boolean, isReconnect: boolean = false): void => {
@@ -168,10 +170,10 @@ export function useReceiver(peerId: string) {
             if (heartbeatRef.current) heartbeatRef.current.cleanup()
             if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
             if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
-            try { conn.removeAllListeners() } catch {}
+            try { conn.removeAllListeners() } catch (e) { log.warn('useReceiver.handleDisconnect.removeListeners', e) }
             // Null the ICE handler to release the closure
             if (conn.peerConnection) {
-              try { conn.peerConnection.oniceconnectionstatechange = null } catch {}
+              try { conn.peerConnection.oniceconnectionstatechange = null } catch (e) { log.warn('useReceiver.handleDisconnect.clearIce', e) }
             }
             // Clear stale pendingResume if the transfer completed between disconnects
             if (!wasTransferringRef.current) pendingResumeRef.current = null
@@ -248,7 +250,7 @@ export function useReceiver(peerId: string) {
           if (heartbeatRef.current) heartbeatRef.current.markAlive()
 
           if (data instanceof ArrayBuffer || (data && (data as ArrayBuffer).byteLength !== undefined && !(typeof data === 'object' && (data as Record<string, unknown>).type))) {
-            chunkQueueRef.current = chunkQueueRef.current.then(() => handleChunk(data as ArrayBuffer)).catch(() => {})
+            chunkQueueRef.current = chunkQueueRef.current.then(() => handleChunk(data as ArrayBuffer)).catch(e => log.warn('useReceiver.chunkQueue', e))
             return
           }
 
@@ -256,14 +258,14 @@ export function useReceiver(peerId: string) {
 
           if (msg.type === 'pong') return
           if (msg.type === 'ping') {
-            try { conn.send({ type: 'pong', ts: msg.ts }) } catch {}
+            try { conn.send({ type: 'pong', ts: msg.ts }) } catch (e) { log.warn('useReceiver.sendPong', e) }
             return
           }
 
           if (typeof msg.type === 'string' && (msg.type as string).startsWith('call-')) {
             if (callMessageHandlerRef.current) {
               const from = (msg.from as string) || conn.peer
-              try { callMessageHandlerRef.current(from, msg) } catch {}
+              try { callMessageHandlerRef.current(from, msg) } catch (e) { log.warn('useReceiver.callMessageHandler', e) }
             }
             return
           }
@@ -288,10 +290,13 @@ export function useReceiver(peerId: string) {
               const pubKeyBytes = await exportPublicKey(keyPairRef.current.publicKey)
               conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
               const remoteKeyBytes = new Uint8Array(msg.key as number[])
-              const remotePubKey = await importPublicKey(remoteKeyBytes)
-              decryptKeyRef.current = await deriveSharedKey(keyPairRef.current.privateKey, remotePubKey, pubKeyBytes, remoteKeyBytes)
+              const { encryptKey, fingerprint: fp } = await finalizeKeyExchange({
+                localPrivate: keyPairRef.current.privateKey,
+                localPublic: pubKeyBytes,
+                remotePublic: remoteKeyBytes,
+              })
+              decryptKeyRef.current = encryptKey
               if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
-              const fp = await getKeyFingerprint(pubKeyBytes, remoteKeyBytes)
               dispatchConn({ type: 'SET', payload: { fingerprint: fp } })
 
               // Fingerprint rotation warning — surface any change to the user so
@@ -327,7 +332,10 @@ export function useReceiver(peerId: string) {
                 pendingResumeRef.current = null
                 conn.send({ type: 'request-file', index, resumeChunk })
               }
-            } catch {
+            } catch (e) {
+              // M10 fix: don't leak the buffered manifest to a later connection
+              pendingManifestRef.current = null
+              log.warn('useReceiver.publicKey', e)
               dispatchConn({ type: 'SET_STATUS', payload: 'error' })
             }
             return
@@ -382,7 +390,7 @@ export function useReceiver(peerId: string) {
             let payload: Record<string, unknown> = {}
             if (decryptKeyRef.current && msg.data) {
               try { payload = await decryptJSON(decryptKeyRef.current, msg.data as string) }
-              catch { return }
+              catch (e) { log.warn('useReceiver.chatEncrypted.decrypt', e); return }
             }
             setMessages(prev => [...prev, { text: payload.text as string || '', image: payload.image as string | undefined, mime: payload.mime as string | undefined, replyTo: payload.replyTo as ChatMessage['replyTo'], from: msg.from as string || 'Sender', time: msg.time as number, self: false }])
             return
@@ -392,7 +400,7 @@ export function useReceiver(peerId: string) {
             if (!decryptKeyRef.current || !msg.data) return
             let meta: Record<string, unknown>
             try { meta = await decryptJSON(decryptKeyRef.current, msg.data as string) }
-            catch { return }
+            catch (e) { log.warn('useReceiver.chatImageStart.decrypt', e); return }
             inProgressImageRef.current = {
               mime: meta.mime as string || 'application/octet-stream',
               size: meta.size as number || 0,
@@ -551,9 +559,9 @@ export function useReceiver(peerId: string) {
           clearTimeout(timeoutRef.current!)
           if (disconnectHandled) return
           disconnectHandled = true
-          try { conn.removeAllListeners() } catch {}
+          try { conn.removeAllListeners() } catch (e) { log.warn('useReceiver.close.removeListeners', e) }
           if (conn.peerConnection) {
-            try { conn.peerConnection.oniceconnectionstatechange = null } catch {}
+            try { conn.peerConnection.oniceconnectionstatechange = null } catch (e) { log.warn('useReceiver.close.clearIce', e) }
           }
           if (heartbeatRef.current) heartbeatRef.current.cleanup()
           if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
@@ -624,7 +632,7 @@ export function useReceiver(peerId: string) {
     reconnectTokenRef.current = Symbol('reconnect')
 
     const handleBeforeUnload = (): void => {
-      try { connRef.current?.send({ type: 'closing' }) } catch {}
+      try { connRef.current?.send({ type: 'closing' }) } catch (e) { log.warn('useReceiver.sendClosing', e) }
     }
     window.addEventListener('beforeunload', handleBeforeUnload)
     // iOS Safari does not reliably fire beforeunload — pagehide is the correct event
@@ -647,7 +655,7 @@ export function useReceiver(peerId: string) {
       if (document.visibilityState !== 'visible') return
       if (heartbeatRef.current) heartbeatRef.current.markAlive()
       if (peerRef.current && peerRef.current.disconnected && !peerRef.current.destroyed) {
-        try { peerRef.current.reconnect() } catch {}
+        try { peerRef.current.reconnect() } catch (e) { log.warn('useReceiver.visibilityReconnect', e) }
       }
     }
     document.addEventListener('visibilitychange', handleVisibility)
@@ -664,7 +672,7 @@ export function useReceiver(peerId: string) {
       Object.values(typingTimeouts.current).forEach(clearTimeout)
       typingTimeouts.current = {}
       if (keyExchangeTimeoutRef.current) clearTimeout(keyExchangeTimeoutRef.current)
-      if (connRef.current) try { connRef.current.removeAllListeners() } catch {}
+      if (connRef.current) try { connRef.current.removeAllListeners() } catch (e) { log.warn('useReceiver.unmount.removeListeners', e) }
       destroyedRef.current = true
       clearTimeout(timeoutRef.current!)
       clearTimeout(manifestTimeoutRef.current!)
@@ -675,7 +683,7 @@ export function useReceiver(peerId: string) {
       chunkQueueRef.current = Promise.resolve()
       imageSendQueueRef.current = Promise.resolve()
       inProgressImageRef.current = null
-      imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch {} })
+      imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch (e) { log.warn('useReceiver.unmount.revokeBlob', e) } })
       imageBlobUrlsRef.current = []
       Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
       if (zipWriterRef.current) { zipWriterRef.current.abort(); zipWriterRef.current = null }
@@ -725,7 +733,7 @@ export function useReceiver(peerId: string) {
 
   const cancelAll = useCallback((): void => {
     const conn = connRef.current
-    if (conn) try { conn.send({ type: 'cancel-all' }) } catch {}
+    if (conn) try { conn.send({ type: 'cancel-all' }) } catch (e) { log.warn('useReceiver.cancelAll', e) }
     if (zipWriterRef.current) {
       zipWriterRef.current.abort()
       zipWriterRef.current = null
@@ -756,7 +764,7 @@ export function useReceiver(peerId: string) {
 
   const sendTyping = useCallback((): void => {
     const conn = connRef.current
-    if (conn) try { conn.send({ type: 'typing', nickname }) } catch {}
+    if (conn) try { conn.send({ type: 'typing', nickname }) } catch (e) { log.warn('useReceiver.sendTyping', e) }
   }, [nickname])
 
   const sendReaction = useCallback((msgId: string, emoji: string): void => {
@@ -775,7 +783,7 @@ export function useReceiver(peerId: string) {
       return m
     }))
     const conn = connRef.current
-    if (conn) try { conn.send({ type: 'reaction', msgId, emoji, nickname }) } catch {}
+    if (conn) try { conn.send({ type: 'reaction', msgId, emoji, nickname }) } catch (e) { log.warn('useReceiver.sendReaction', e) }
   }, [nickname])
 
   const changeNickname = useCallback((newName: string): void => {
@@ -783,7 +791,7 @@ export function useReceiver(peerId: string) {
     if (!conn || !newName.trim()) return
     const oldName = nickname
     setNickname(newName.trim())
-    try { conn.send({ type: 'nickname-change', oldName, newName: newName.trim() }) } catch {}
+    try { conn.send({ type: 'nickname-change', oldName, newName: newName.trim() }) } catch (e) { log.warn('useReceiver.changeNickname', e) }
   }, [nickname])
 
   const sendMessage = useCallback(async (text: string, image?: { bytes: Uint8Array; mime: string } | string, replyTo?: ChatMessage['replyTo']): Promise<void> => {
@@ -808,7 +816,7 @@ export function useReceiver(peerId: string) {
 
       imageSendQueueRef.current = imageSendQueueRef.current
         .then(() => streamImageToHost(conn, key, bytes, mime, text || '', replyTo ?? null, time, nickname, destroyedRef, duration))
-        .catch(() => {})
+        .catch(e => log.warn('useReceiver.imageSendQueue', e))
       return
     }
 
@@ -833,7 +841,7 @@ export function useReceiver(peerId: string) {
     } catch (decryptErr) {
       console.error('Chunk decryption failed for file', fileIndex, 'chunk', chunkIndex, decryptErr)
       if (streamsRef.current[fileIndex]) {
-        try { streamsRef.current[fileIndex]!.abort() } catch {}
+        try { streamsRef.current[fileIndex]!.abort() } catch (e) { log.warn('useReceiver.handleChunk.streamAbort', e) }
         streamsRef.current[fileIndex] = null
       }
       if (chunksRef.current[fileIndex]) chunksRef.current[fileIndex] = null
@@ -876,8 +884,9 @@ export function useReceiver(peerId: string) {
         if (!chunksRef.current[fileIndex]) chunksRef.current[fileIndex] = []
         chunksRef.current[fileIndex]!.push(plainData instanceof Uint8Array ? plainData : new Uint8Array(plainData))
       }
-    } catch {
+    } catch (e) {
       // Write failed (disk full, stream error) — skip chunk
+      log.warn('useReceiver.handleChunk.write', e)
     }
 
     const now = Date.now()
@@ -950,7 +959,7 @@ export function useReceiver(peerId: string) {
 
   const clearMessages = useCallback((): void => {
     setMessages([])
-    imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch {} })
+    imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch (e) { log.warn('useReceiver.clearMessages.revokeBlob', e) } })
     imageBlobUrlsRef.current = []
   }, [])
 
@@ -984,7 +993,7 @@ async function streamImageToHost(
     const startPayload = JSON.stringify({ mime, size: bytes.byteLength, text, replyTo, time, duration })
     const encStart = await encryptChunk(key, new TextEncoder().encode(startPayload))
     conn.send({ type: 'chat-image-start-enc', data: uint8ToBase64(new Uint8Array(encStart)), from: nickname, time })
-  } catch { return }
+  } catch (e) { log.warn('streamImageToHost.start', e); return }
 
   const chunker = new AdaptiveChunker()
   let offset = 0
@@ -997,10 +1006,10 @@ async function streamImageToHost(
     let encChunk: ArrayBuffer
     try {
       encChunk = await encryptChunk(key, slice)
-    } catch { return }
+    } catch (e) { log.warn('streamImageToHost.encrypt', e); return }
     const packet = buildChunkPacket(CHAT_IMAGE_FILE_INDEX, chunkIndex, encChunk)
-    try { conn.send(packet) } catch { return }
-    try { await waitForBufferDrain(conn) } catch { return }
+    try { conn.send(packet) } catch (e) { log.warn('streamImageToHost.sendPacket', e); return }
+    try { await waitForBufferDrain(conn) } catch (e) { log.warn('streamImageToHost.drain', e); return }
     chunker.recordTransfer(slice.byteLength, Date.now() - tStart)
     offset += chunkSize
     chunkIndex++
@@ -1010,5 +1019,8 @@ async function streamImageToHost(
     const endPayload = JSON.stringify({})
     const encEnd = await encryptChunk(key, new TextEncoder().encode(endPayload))
     conn.send({ type: 'chat-image-end-enc', data: uint8ToBase64(new Uint8Array(encEnd)) })
-  } catch { /* swallow — receiver will time out the in-flight image */ }
+  } catch (e) {
+    // Receiver will time out the in-flight image
+    log.warn('streamImageToHost.end', e)
+  }
 }

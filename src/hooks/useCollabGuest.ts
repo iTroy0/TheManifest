@@ -1,6 +1,7 @@
 import Peer, { DataConnection } from 'peerjs'
 import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
-import { generateKeyPair, exportPublicKey, importPublicKey, deriveSharedKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, getKeyFingerprint, uint8ToBase64 } from '../utils/crypto'
+import { generateKeyPair, exportPublicKey, encryptChunk, decryptChunk, decryptJSON, encryptJSON, uint8ToBase64 } from '../utils/crypto'
+import { finalizeKeyExchange } from '../net/keyExchange'
 import { STUN_ONLY, getWithTurn } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { chunkFileAdaptive, buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
@@ -30,6 +31,7 @@ import {
   FALLBACK_TOO_LARGE_MSG,
   DOWNLOAD_REQUEST_TIMEOUT_MS,
 } from '../net/config'
+import { log } from '../utils/logger'
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -167,13 +169,13 @@ export function useCollabGuest(roomId: string) {
 
   const sendCallMessage = useCallback((msg: Record<string, unknown>): void => {
     const c = hostConnRef.current
-    if (c && c.open) { try { c.send(msg) } catch {} }
+    if (c && c.open) { try { c.send(msg) } catch (e) { log.warn('useCollabGuest.sendCallMessage', e) } }
   }, [])
 
   // Send to host (for relaying or direct communication)
   const sendToHost = useCallback((msg: Record<string, unknown>): void => {
     const c = hostConnRef.current
-    if (c && c.open) { try { c.send(msg) } catch {} }
+    if (c && c.open) { try { c.send(msg) } catch (e) { log.warn('useCollabGuest.sendToHost', e) } }
   }, [])
 
   // M2 — request-timeout helpers.
@@ -209,14 +211,14 @@ export function useCollabGuest(roomId: string) {
         const encrypted = await encryptJSON(peerConn.encryptKey, { type: 'collab-request-file', fileId })
         peerConn.conn.send({ type: 'collab-msg-enc', data: encrypted })
         return
-      } catch {}
+      } catch (e) { log.warn('useCollabGuest.requestFile.mesh', e) }
     }
 
     // Fall back to host relay — include owner so host can relay to correct peer.
     try {
       const encrypted = await encryptJSON(decryptKeyRef.current, { type: 'collab-request-file', fileId, owner: ownerId })
       sendToHost({ type: 'collab-msg-enc', data: encrypted })
-    } catch {}
+    } catch (e) { log.warn('useCollabGuest.requestFile.viaHost', e) }
   }, [sendToHost, scheduleDownloadTimeout])
 
   // Share a file
@@ -236,15 +238,15 @@ export function useCollabGuest(roomId: string) {
     if (file.type.startsWith('image/') && file.size < 10 * 1024 * 1024) {
       try {
         thumbnail = await generateThumbnailAsync(file, 80)
-      } catch {}
+      } catch (e) { log.warn('useCollabGuest.shareFile.imageThumb', e) }
     } else if (file.type.startsWith('video/') && file.size < 50 * 1024 * 1024) {
       try {
         thumbnail = await generateVideoThumbnail(file, 80)
-      } catch {}
+      } catch (e) { log.warn('useCollabGuest.shareFile.videoThumb', e) }
     } else if (file.type === 'text/plain' || file.name.endsWith('.txt') || file.name.endsWith('.md')) {
       try {
         textPreview = (await generateTextPreview(file)) ?? undefined
-      } catch {}
+      } catch (e) { log.warn('useCollabGuest.shareFile.textPreview', e) }
     }
 
     const sharedFile: SharedFile = {
@@ -269,7 +271,7 @@ export function useCollabGuest(roomId: string) {
         file: sharedFile,
       })
       sendToHost({ type: 'collab-msg-enc', data: encrypted })
-    } catch {}
+    } catch (e) { log.warn('useCollabGuest.shareFile.announce', e) }
   }, [sendToHost, room.myPeerId])
 
   // Remove a file that I shared
@@ -291,7 +293,7 @@ export function useCollabGuest(roomId: string) {
         from: room.myPeerId,
       })
       sendToHost({ type: 'collab-msg-enc', data: encrypted })
-    } catch {}
+    } catch (e) { log.warn('useCollabGuest.removeFile.announce', e) }
   }, [sendToHost, room.myPeerId])
 
   // H7 — Send file to requester. Uses mesh key if a direct mesh connection
@@ -328,7 +330,7 @@ export function useCollabGuest(roomId: string) {
               requesterPeerId,
             })
             sendToHost({ type: 'collab-msg-enc', data: enc })
-          } catch {}
+          } catch (e) { log.warn('useCollabGuest.cancelFile.viaHost', e) }
         }
         return
       }
@@ -410,7 +412,7 @@ export function useCollabGuest(roomId: string) {
       try {
         const endMsg = await encryptJSON(key, { type: 'collab-file-end', fileId })
         conn.send({ type: 'collab-msg-enc', data: endMsg })
-      } catch {}
+      } catch (e) { log.warn('useCollabGuest.mesh.sendFileEnd', e) }
     }
 
     activeTransfersRef.current.delete(fileId)
@@ -425,10 +427,10 @@ export function useCollabGuest(roomId: string) {
     if (!entry) return
     peerConnectionsRef.current.delete(peerId)
     if (entry.keyExchangeTimeout) { clearTimeout(entry.keyExchangeTimeout); entry.keyExchangeTimeout = undefined }
-    if (entry.heartbeat) { try { entry.heartbeat.cleanup() } catch {} }
+    if (entry.heartbeat) { try { entry.heartbeat.cleanup() } catch (e) { log.warn('useCollabGuest.mesh.teardown.heartbeat', e) } }
     if (entry.inProgressFiles) {
       for (const f of entry.inProgressFiles.values()) {
-        if (f.stream) { try { f.stream.abort() } catch {} }
+        if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.mesh.teardown.streamAbort', e) } }
         dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: f.fileId, payload: { status: 'error', error: reason } })
       }
       entry.inProgressFiles.clear()
@@ -442,8 +444,8 @@ export function useCollabGuest(roomId: string) {
       if (t.pauseResolver) { t.pauseResolver(); t.pauseResolver = undefined }
     })
     if (entry.conn) {
-      try { entry.conn.removeAllListeners() } catch {}
-      try { entry.conn.close() } catch {}
+      try { entry.conn.removeAllListeners() } catch (e) { log.warn('useCollabGuest.mesh.teardown.removeListeners', e) }
+      try { entry.conn.close() } catch (e) { log.warn('useCollabGuest.mesh.teardown.close', e) }
     }
     dispatchParticipants({ type: 'UPDATE_PARTICIPANT', peerId, payload: { fingerprint: undefined, directConnection: false } })
   }, [])
@@ -452,11 +454,11 @@ export function useCollabGuest(roomId: string) {
   // responder). Mirrors the host-guest handshake: ECDH via 'public-key',
   // then expects 'collab-msg-enc' / chunk packets over the same conn.
   const setupMeshConnection = useCallback((conn: DataConnection, peerId: string, _isInitiator: boolean): void => {
-    if (destroyedRef.current) { try { conn.close() } catch {}; return }
+    if (destroyedRef.current) { try { conn.close() } catch (e) { log.warn('useCollabGuest.mesh.setup.closeDestroyed', e) }; return }
     // Double-connection prevention: if a live entry already exists, drop the new one.
     const existing = peerConnectionsRef.current.get(peerId)
     if (existing && existing.conn && existing.conn.open) {
-      try { conn.close() } catch {}
+      try { conn.close() } catch (e) { log.warn('useCollabGuest.mesh.setup.closeDup', e) }
       return
     }
 
@@ -477,7 +479,7 @@ export function useCollabGuest(roomId: string) {
     peerConnectionsRef.current.set(peerId, entry)
 
     conn.on('open', async () => {
-      if (destroyedRef.current) { try { conn.close() } catch {}; return }
+      if (destroyedRef.current) { try { conn.close() } catch (e) { log.warn('useCollabGuest.mesh.open.closeDestroyed', e) }; return }
       // Heartbeat for dead-mesh detection.
       entry.heartbeat = setupHeartbeat(conn, {
         onDead: () => teardownMesh(peerId, 'mesh connection lost'),
@@ -486,7 +488,7 @@ export function useCollabGuest(roomId: string) {
       try {
         entry.keyPair = await generateKeyPair()
         const pubKeyBytes = await exportPublicKey(entry.keyPair.publicKey)
-        try { conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) }) } catch {}
+        try { conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) }) } catch (e) { log.warn('useCollabGuest.mesh.sendPublicKey', e) }
 
         entry.keyExchangeTimeout = setTimeout(() => {
           if (!entry.encryptKey) {
@@ -505,10 +507,13 @@ export function useCollabGuest(roomId: string) {
         async function drainPendingRemoteKey(): Promise<void> {
           if (!entry.keyPair || !entry.pendingRemoteKey || entry.encryptKey) return
           try {
-            const remotePubKey = await importPublicKey(entry.pendingRemoteKey)
-            entry.encryptKey = await deriveSharedKey(entry.keyPair.privateKey, remotePubKey, pubKeyBytes, entry.pendingRemoteKey)
+            const { encryptKey, fingerprint: fp } = await finalizeKeyExchange({
+              localPrivate: entry.keyPair.privateKey,
+              localPublic: pubKeyBytes,
+              remotePublic: entry.pendingRemoteKey,
+            })
+            entry.encryptKey = encryptKey
             if (entry.keyExchangeTimeout) { clearTimeout(entry.keyExchangeTimeout); entry.keyExchangeTimeout = undefined }
-            const fp = await getKeyFingerprint(pubKeyBytes, entry.pendingRemoteKey)
             entry.fingerprint = fp
             entry.directConnection = true
             entry.pendingRemoteKey = null
@@ -541,14 +546,14 @@ export function useCollabGuest(roomId: string) {
       ) {
         current.chunkQueue = (current.chunkQueue ?? Promise.resolve())
           .then(() => handleMeshChunk(current, data as ArrayBuffer))
-          .catch(() => {})
+          .catch(e => log.warn('useCollabGuest.mesh.chunkQueue', e))
         return
       }
 
       const msg = data as Record<string, unknown>
       if (msg.type === 'pong') return
       if (msg.type === 'ping') {
-        try { conn.send({ type: 'pong', ts: msg.ts }) } catch {}
+        try { conn.send({ type: 'pong', ts: msg.ts }) } catch (e) { log.warn('useCollabGuest.mesh.sendPong', e) }
         return
       }
 
@@ -562,11 +567,14 @@ export function useCollabGuest(roomId: string) {
         }
         if (current.encryptKey) return
         try {
-          const remotePubKey = await importPublicKey(remoteKeyRaw)
           const localPubBytes = await exportPublicKey(current.keyPair.publicKey)
-          current.encryptKey = await deriveSharedKey(current.keyPair.privateKey, remotePubKey, localPubBytes, remoteKeyRaw)
+          const { encryptKey, fingerprint: fp } = await finalizeKeyExchange({
+            localPrivate: current.keyPair.privateKey,
+            localPublic: localPubBytes,
+            remotePublic: remoteKeyRaw,
+          })
+          current.encryptKey = encryptKey
           if (current.keyExchangeTimeout) { clearTimeout(current.keyExchangeTimeout); current.keyExchangeTimeout = undefined }
-          const fp = await getKeyFingerprint(localPubBytes, remoteKeyRaw)
           current.fingerprint = fp
           current.directConnection = true
           dispatchParticipants({ type: 'UPDATE_PARTICIPANT', peerId, payload: { fingerprint: fp, directConnection: true } })
@@ -581,7 +589,7 @@ export function useCollabGuest(roomId: string) {
         if (!current.encryptKey || !msg.data) return
         let payload: Record<string, unknown> = {}
         try { payload = await decryptJSON(current.encryptKey, msg.data as string) }
-        catch { return }
+        catch (e) { log.warn('useCollabGuest.mesh.decrypt', e); return }
 
         // collab-file-start (inbound download from mesh peer)
         if (payload.type === 'collab-file-start') {
@@ -612,7 +620,7 @@ export function useCollabGuest(roomId: string) {
           if (!inFlight) return
           current.inProgressFiles!.delete(fileId)
           if (current.currentDownloadFileId === fileId) current.currentDownloadFileId = null
-          if (inFlight.stream) { try { await inFlight.stream.close() } catch {} }
+          if (inFlight.stream) { try { await inFlight.stream.close() } catch (e) { log.warn('useCollabGuest.mesh.fileEnd.streamClose', e) } }
           else {
             const totalLen = inFlight.chunks.reduce((s, c) => s + c.byteLength, 0)
             const fullBytes = new Uint8Array(totalLen)
@@ -645,7 +653,7 @@ export function useCollabGuest(roomId: string) {
                 type: 'collab-file-unavailable', fileId, reason: 'unknown-file',
               })
               conn.send({ type: 'collab-msg-enc', data: enc })
-            } catch {}
+            } catch (e) { log.warn('useCollabGuest.mesh.requestRelay', e) }
           }
           return
         }
@@ -685,7 +693,7 @@ export function useCollabGuest(roomId: string) {
         if (payload.type === 'collab-cancel-all') {
           // Abort any inbound transfers from this mesh peer.
           for (const f of current.inProgressFiles!.values()) {
-            if (f.stream) { try { f.stream.abort() } catch {} }
+            if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.mesh.cancelAll.streamAbort', e) } }
             dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: f.fileId, payload: { status: 'error', error: 'cancelled' } })
           }
           current.inProgressFiles!.clear()
@@ -708,7 +716,7 @@ export function useCollabGuest(roomId: string) {
     if (!entry.encryptKey) return
     const buffer = rawData instanceof ArrayBuffer ? rawData : (rawData as ArrayBufferView).buffer as ArrayBuffer
     let parsed: { fileIndex: number; chunkIndex: number; data: ArrayBuffer }
-    try { parsed = parseChunkPacket(buffer) } catch { return }
+    try { parsed = parseChunkPacket(buffer) } catch (e) { log.warn('useCollabGuest.handleMeshChunk.parse', e); return }
     if (parsed.fileIndex !== 0xFFFE) return
     const currentFileId = entry.currentDownloadFileId
     if (!currentFileId) return
@@ -728,7 +736,7 @@ export function useCollabGuest(roomId: string) {
           try {
             const enc = await encryptJSON(entry.encryptKey, { type: 'collab-cancel-file', fileId: currentFileId })
             entry.conn?.send({ type: 'collab-msg-enc', data: enc })
-          } catch {}
+          } catch (e) { log.warn('useCollabGuest.handleMeshChunk.cancelTooLarge', e) }
           return
         }
         inFlight.chunks.push(bytes)
@@ -738,15 +746,16 @@ export function useCollabGuest(roomId: string) {
       const elapsed = (Date.now() - inFlight.startTime) / 1000
       const speed = elapsed > 0.5 ? inFlight.receivedBytes / elapsed : 0
       dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: inFlight.fileId, payload: { progress, speed } })
-    } catch {
-      if (inFlight.stream) { try { await inFlight.stream.abort() } catch {} }
+    } catch (e) {
+      log.warn('useCollabGuest.handleMeshChunk.decrypt', e)
+      if (inFlight.stream) { try { await inFlight.stream.abort() } catch (e2) { log.warn('useCollabGuest.handleMeshChunk.streamAbort', e2) } }
       entry.inProgressFiles!.delete(currentFileId)
       if (entry.currentDownloadFileId === currentFileId) entry.currentDownloadFileId = null
       dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId: inFlight.fileId, payload: { status: 'error', progress: 0, error: 'decrypt failed' } })
       try {
         const enc = await encryptJSON(entry.encryptKey, { type: 'collab-cancel-file', fileId: inFlight.fileId })
         entry.conn?.send({ type: 'collab-msg-enc', data: enc })
-      } catch {}
+      } catch (e) { log.warn('useCollabGuest.handleMeshChunk.cancelAfterFail', e) }
     }
   }
 
@@ -795,9 +804,9 @@ export function useCollabGuest(roomId: string) {
       // never initiates to us, so any incoming conn here is a mesh connection
       // by construction. Still, guard against self and stale state.
       peer.on('connection', (incoming: DataConnection) => {
-        if (destroyedRef.current) { try { incoming.close() } catch {}; return }
+        if (destroyedRef.current) { try { incoming.close() } catch (e) { log.warn('useCollabGuest.peer.incomingDestroyed', e) }; return }
         const myId = peer.id ?? myPeerIdRef.current
-        if (incoming.peer === myId) { try { incoming.close() } catch {}; return }
+        if (incoming.peer === myId) { try { incoming.close() } catch (e) { log.warn('useCollabGuest.peer.incomingSelf', e) }; return }
         // Admission gate: only accept mesh connections from peerIds that
         // the host has announced as participants. Without this check any
         // party who guesses a peerId can open a DataConnection, run the
@@ -807,13 +816,13 @@ export function useCollabGuest(roomId: string) {
         // separate concern handled by roomId routing.
         const known = participantsRef.current.participants.some(p => p.peerId === incoming.peer)
         if (!known) {
-          try { incoming.close() } catch {}
+          try { incoming.close() } catch (e) { log.warn('useCollabGuest.peer.incomingUnknown', e) }
           return
         }
         // Tie-break: responder is the higher peerId. If we happen to be the
         // lower id, prefer our outgoing attempt instead — close this inbound.
         if (myId && myId < incoming.peer) {
-          try { incoming.close() } catch {}
+          try { incoming.close() } catch (e) { log.warn('useCollabGuest.peer.incomingLowerId', e) }
           return
         }
         setupMeshConnection(incoming, incoming.peer, false)
@@ -851,7 +860,7 @@ export function useCollabGuest(roomId: string) {
             if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
             if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
             if (directFailTimerRef.current) { clearTimeout(directFailTimerRef.current); directFailTimerRef.current = null }
-            try { conn.removeAllListeners() } catch {}
+            try { conn.removeAllListeners() } catch (e) { log.warn('useCollabGuest.handleDisconnect.removeListeners', e) }
 
             // H10 — unblock any of our outgoing uploads so their pause
             // loop exits and the async iterator can return cleanly.
@@ -948,7 +957,7 @@ export function useCollabGuest(roomId: string) {
             data instanceof Uint8Array ||
             (data && typeof data === 'object' && typeof (data as { byteLength?: unknown }).byteLength === 'number' && !(data as { type?: unknown }).type)
           ) {
-            chunkQueueRef.current = chunkQueueRef.current.then(() => handleChunk(data as ArrayBuffer)).catch(() => {})
+            chunkQueueRef.current = chunkQueueRef.current.then(() => handleChunk(data as ArrayBuffer)).catch(e => log.warn('useCollabGuest.chunkQueue', e))
             return
           }
 
@@ -956,7 +965,7 @@ export function useCollabGuest(roomId: string) {
 
           if (msg.type === 'pong') return
           if (msg.type === 'ping') {
-            try { conn.send({ type: 'pong', ts: msg.ts }) } catch {}
+            try { conn.send({ type: 'pong', ts: msg.ts }) } catch (e) { log.warn('useCollabGuest.sendPong', e) }
             return
           }
 
@@ -964,7 +973,7 @@ export function useCollabGuest(roomId: string) {
           if (typeof msg.type === 'string' && (msg.type as string).startsWith('call-')) {
             if (callMessageHandlerRef.current) {
               const from = (msg.from as string) || conn.peer
-              try { callMessageHandlerRef.current(from, msg) } catch {}
+              try { callMessageHandlerRef.current(from, msg) } catch (e) { log.warn('useCollabGuest.callMessageHandler', e) }
             }
             return
           }
@@ -999,11 +1008,14 @@ export function useCollabGuest(roomId: string) {
               const pubKeyBytes = await exportPublicKey(keyPairRef.current.publicKey)
               conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) })
               const remoteKeyBytes = new Uint8Array(msg.key as number[])
-              const remotePubKey = await importPublicKey(remoteKeyBytes)
-              decryptKeyRef.current = await deriveSharedKey(keyPairRef.current.privateKey, remotePubKey, pubKeyBytes, remoteKeyBytes)
+              const { encryptKey, fingerprint } = await finalizeKeyExchange({
+                localPrivate: keyPairRef.current.privateKey,
+                localPublic: pubKeyBytes,
+                remotePublic: remoteKeyBytes,
+              })
+              decryptKeyRef.current = encryptKey
               if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
-              const fp = await getKeyFingerprint(pubKeyBytes, remoteKeyBytes)
-              dispatchRoom({ type: 'SET', payload: { fingerprint: fp } })
+              dispatchRoom({ type: 'SET', payload: { fingerprint } })
             } catch {
               dispatchRoom({ type: 'SET_STATUS', payload: 'error' })
             }
@@ -1065,7 +1077,7 @@ export function useCollabGuest(roomId: string) {
             if (!decryptKeyRef.current || !msg.data) return
             let payload: Record<string, unknown> = {}
             try { payload = await decryptJSON(decryptKeyRef.current, msg.data as string) }
-            catch { return }
+            catch (e) { log.warn('useCollabGuest.chatEncrypted.decrypt', e); return }
             setMessages(prev => [...prev, {
               id: payload.id as string | undefined,
               text: payload.text as string || '',
@@ -1084,7 +1096,7 @@ export function useCollabGuest(roomId: string) {
             if (!decryptKeyRef.current || !msg.data) return
             let payload: Record<string, unknown> = {}
             try { payload = await decryptJSON(decryptKeyRef.current, msg.data as string) }
-            catch { return }
+            catch (e) { log.warn('useCollabGuest.collabMsgEnc.decrypt', e); return }
 
             // File list from host — C2 validation.
             if (payload.type === 'collab-file-list') {
@@ -1204,7 +1216,7 @@ export function useCollabGuest(roomId: string) {
               if (inFlight.stream) {
                 try {
                   await inFlight.stream.close()
-                } catch {}
+                } catch (e) { log.warn('useCollabGuest.fileEnd.streamClose', e) }
               } else {
                 // Fallback: assemble from memory chunks
                 const totalLen = inFlight.chunks.reduce((s, c) => s + c.byteLength, 0)
@@ -1340,7 +1352,7 @@ export function useCollabGuest(roomId: string) {
             if (!decryptKeyRef.current || !msg.data) return
             let meta: Record<string, unknown>
             try { meta = await decryptJSON(decryptKeyRef.current, msg.data as string) }
-            catch { return }
+            catch (e) { log.warn('useCollabGuest.chatImageStart.decrypt', e); return }
             inProgressImageRef.current = {
               id: meta.id as string | undefined,
               mime: meta.mime as string || 'application/octet-stream',
@@ -1382,7 +1394,7 @@ export function useCollabGuest(roomId: string) {
         conn.on('close', () => {
           if (destroyedRef.current || disconnectHandled) return
           disconnectHandled = true
-          try { conn.removeAllListeners() } catch {}
+          try { conn.removeAllListeners() } catch (e) { log.warn('useCollabGuest.close.removeListeners', e) }
           if (heartbeatRef.current) heartbeatRef.current.cleanup()
           if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
 
@@ -1431,7 +1443,7 @@ export function useCollabGuest(roomId: string) {
     let parsed: { fileIndex: number; chunkIndex: number; data: ArrayBuffer }
     try {
       parsed = parseChunkPacket(buffer)
-    } catch { return }
+    } catch (e) { log.warn('useCollabGuest.handleChunk.parse', e); return }
 
     // Chat image chunk
     if (parsed.fileIndex === CHAT_IMAGE_FILE_INDEX) {
@@ -1440,7 +1452,7 @@ export function useCollabGuest(roomId: string) {
         const decrypted = await decryptChunk(decryptKeyRef.current, new Uint8Array(parsed.data))
         inProgressImageRef.current.chunks.push(new Uint8Array(decrypted))
         inProgressImageRef.current.receivedBytes += decrypted.byteLength
-      } catch {}
+      } catch (e) { log.warn('useCollabGuest.handleChunk.chatImageDecrypt', e) }
       return
     }
 
@@ -1466,7 +1478,7 @@ export function useCollabGuest(roomId: string) {
             try {
               const enc = await encryptJSON(decryptKeyRef.current!, { type: 'collab-cancel-file', fileId: currentFileId })
               sendToHost({ type: 'collab-msg-enc', data: enc })
-            } catch {}
+            } catch (e) { log.warn('useCollabGuest.handleChunk.cancelTooLarge', e) }
             return
           }
           inFlight.chunks.push(bytes)
@@ -1483,7 +1495,7 @@ export function useCollabGuest(roomId: string) {
       } catch {
         // Chunk decryption or write failed — abort stream and mark error.
         if (inFlight.stream) {
-          try { await inFlight.stream.abort() } catch {}
+          try { await inFlight.stream.abort() } catch (e) { log.warn('useCollabGuest.handleChunk.streamAbort', e) }
         }
         inProgressFilesRef.current.delete(currentFileId)
         if (currentDownloadFileIdRef.current === currentFileId) currentDownloadFileIdRef.current = null
@@ -1492,7 +1504,7 @@ export function useCollabGuest(roomId: string) {
         try {
           const enc = await encryptJSON(decryptKeyRef.current!, { type: 'collab-cancel-file', fileId: inFlight.fileId })
           sendToHost({ type: 'collab-msg-enc', data: enc })
-        } catch {}
+        } catch (e) { log.warn('useCollabGuest.handleChunk.cancelAfterFail', e) }
       }
       return
     }
@@ -1520,7 +1532,7 @@ export function useCollabGuest(roomId: string) {
       if (heartbeatRef.current) heartbeatRef.current.markAlive()
       const p = peerRef.current
       if (p && p.disconnected && !p.destroyed) {
-        try { p.reconnect() } catch {}
+        try { p.reconnect() } catch (e) { log.warn('useCollabGuest.visibilityReconnect', e) }
       }
     }
     document.addEventListener('visibilitychange', handleVisibility)
@@ -1539,33 +1551,33 @@ export function useCollabGuest(roomId: string) {
       typingTimeouts.current = {}
       // Abort any in-progress file streams
       inProgressFilesRef.current.forEach(f => {
-        if (f.stream) { try { f.stream.abort() } catch {} }
+        if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.unmount.streamAbort', e) } }
       })
       inProgressFilesRef.current.clear()
       currentDownloadFileIdRef.current = null
       downloadTimeoutsRef.current.forEach(t => clearTimeout(t))
       downloadTimeoutsRef.current.clear()
       if (hostConnRef.current) {
-        try { hostConnRef.current.removeAllListeners() } catch {}
-        try { hostConnRef.current.close() } catch {}
+        try { hostConnRef.current.removeAllListeners() } catch (e) { log.warn('useCollabGuest.unmount.hostRemoveListeners', e) }
+        try { hostConnRef.current.close() } catch (e) { log.warn('useCollabGuest.unmount.hostClose', e) }
       }
       // Close every mesh connection on unmount.
       for (const entry of peerConnectionsRef.current.values()) {
         if (entry.keyExchangeTimeout) clearTimeout(entry.keyExchangeTimeout)
-        if (entry.heartbeat) { try { entry.heartbeat.cleanup() } catch {} }
+        if (entry.heartbeat) { try { entry.heartbeat.cleanup() } catch (e) { log.warn('useCollabGuest.unmount.meshHeartbeat', e) } }
         if (entry.inProgressFiles) {
           for (const f of entry.inProgressFiles.values()) {
-            if (f.stream) { try { f.stream.abort() } catch {} }
+            if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.unmount.meshStreamAbort', e) } }
           }
         }
         if (entry.conn) {
-          try { entry.conn.removeAllListeners() } catch {}
-          try { entry.conn.close() } catch {}
+          try { entry.conn.removeAllListeners() } catch (e) { log.warn('useCollabGuest.unmount.meshRemoveListeners', e) }
+          try { entry.conn.close() } catch (e) { log.warn('useCollabGuest.unmount.meshClose', e) }
         }
       }
       peerConnectionsRef.current.clear()
       if (peerRef.current) peerRef.current.destroy()
-      imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch {} })
+      imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch (e) { log.warn('useCollabGuest.unmount.revokeBlob', e) } })
       setPeerInstance(null)
     }
   }, [startConnection])
@@ -1577,7 +1589,7 @@ export function useCollabGuest(roomId: string) {
     try {
       const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(password))
       sendToHost({ type: 'password-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)) })
-    } catch {}
+    } catch (e) { log.warn('useCollabGuest.submitPassword', e) }
   }, [sendToHost])
 
   // Send message
@@ -1618,7 +1630,7 @@ export function useCollabGuest(roomId: string) {
     try {
       const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(payload))
       sendToHost({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), nickname, time })
-    } catch {}
+    } catch (e) { log.warn('useCollabGuest.sendMessage.chatEncrypt', e) }
   }, [sendToHost, nickname])
 
   const sendTyping = useCallback((): void => {
@@ -1657,7 +1669,7 @@ export function useCollabGuest(roomId: string) {
 
   const clearMessages = useCallback((): void => {
     setMessages([])
-    imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch {} })
+    imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch (e) { log.warn('useCollabGuest.clearMessages.revokeBlob', e) } })
     imageBlobUrlsRef.current = []
   }, [])
 
@@ -1677,7 +1689,7 @@ export function useCollabGuest(roomId: string) {
   const leave = useCallback((): void => {
     destroyedRef.current = true
     if (hostConnRef.current) {
-      try { hostConnRef.current.close() } catch {}
+      try { hostConnRef.current.close() } catch (e) { log.warn('useCollabGuest.leave.hostClose', e) }
     }
     if (peerRef.current) peerRef.current.destroy()
     dispatchRoom({ type: 'SET_STATUS', payload: 'closed' })
@@ -1704,7 +1716,7 @@ export function useCollabGuest(roomId: string) {
     // Clear the in-progress state if it matches.
     const cur = inProgressFilesRef.current.get(fileId)
     if (cur) {
-      if (cur.stream) { try { cur.stream.abort() } catch {} }
+      if (cur.stream) { try { cur.stream.abort() } catch (e) { log.warn('useCollabGuest.cancelFile.streamAbort', e) } }
       inProgressFilesRef.current.delete(fileId)
       if (currentDownloadFileIdRef.current === fileId) currentDownloadFileIdRef.current = null
     }
@@ -1721,7 +1733,7 @@ export function useCollabGuest(roomId: string) {
     sendToHost({ type: 'collab-cancel-all' })
     // Abort every in-progress stream.
     inProgressFilesRef.current.forEach(f => {
-      if (f.stream) { try { f.stream.abort() } catch {} }
+      if (f.stream) { try { f.stream.abort() } catch (e) { log.warn('useCollabGuest.cancelAll.streamAbort', e) } }
     })
     inProgressFilesRef.current.clear()
     currentDownloadFileIdRef.current = null

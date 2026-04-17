@@ -14,10 +14,16 @@ cross off.
 
 - **P0 is complete and shipped.** Seven high-severity issues fixed, logger
   utility added, constants centralized. See the "Already shipped" section.
-- **P1 is partially started.** `src/net/config.ts` is live. The remaining
-  P1 pieces (protocol, keyExchange, session, transferEngine) are staged as
-  independent commits so you can ship them one by one.
-- **P2 / P3 are planning-only** — no code written yet.
+- **P1 is partially started.** `src/net/config.ts` is live, and
+  `src/net/keyExchange.ts` (P1.A) has landed with round-trip tests — all
+  seven ECDH derive call sites in the four hooks now funnel through
+  `finalizeKeyExchange`. The remaining P1 pieces (protocol, session,
+  transferEngine) are staged as independent commits.
+- **P2.1 done.** All ~200 silent `catch {}` in the four hooks migrated to
+  `log.warn()` — 191 log sites across useSender/useReceiver/useCollabHost/
+  useCollabGuest. Diagnostics buffer captures everything. "Copy diagnostics"
+  + "Clear" buttons now live on the Privacy page.
+- **P2 / P3 otherwise planning-only** — no code written yet.
 
 ---
 
@@ -69,7 +75,7 @@ verified each one in the tree. Fix them in whichever phase fits.
 | M7 | `useSender.ts:981-987` `handleHostChunk` | Decrypts chat-image chunks before checking `inProgressImage` exists. A peer sending stray chat-image chunks without a start still pays the decrypt cost. Fix: reorder — check first, decrypt second. |
 | M8 | `useSender.ts:580-597` `conn.on('data')` | `startTransfer` / `endTransfer` declared inside the handler → new closure per message. GC pressure on an active chat channel. Fix: hoist to `conn.on('open')` or module scope. |
 | M9 | `useSender.ts:439, 797` | Stale `senderName` closure in `conn.on('data')`. After `changeSenderName`, `chat-encrypted` relay still uses captured name. Fix: `senderNameRef` mirror. |
-| M10 | `useReceiver.ts:311-322` | `pendingManifestRef` not cleared on key-exchange failure; leaks to next connection. Fix: clear in the catch on line 330. |
+| ~~M10~~ | ~~`useReceiver.ts:311-322`~~ | **DONE** (during P2.1) — `pendingManifestRef.current = null` now set in the key-exchange catch. |
 | M11 | `useReceiver.ts:856` | `lastChunkIndexRef = chunkIndex + 1` assumes in-order chunks. A malicious/buggy sender out-of-order corrupts reconnect resume. Fix: `max(lastChunkIndex, chunkIndex + 1)` or require monotonic sequence. |
 | M12 | `useCollabHost.ts:944-1025` | **Defense-in-depth follow-up to P0 fix #3.** Host-side should also track `gs.requestedFileIds` and refuse to forward pause/resume/cancel if gs hasn't requested the file. Guest-side check is currently sufficient; this closes the amplification-DoS angle. |
 | M13 | `useCollabHost.ts:1535-1561` `streamImageToConn` | `await waitForBufferDrain` not wrapped — 15 s rejection propagates out of the image queue; partial transfer leaves receiver with stuck `inProgressImage`. Fix: try/catch and emit `chat-image-abort`. |
@@ -102,33 +108,24 @@ L9 Dead `avgThroughput` compute in `utils/fileChunker.ts:58-71`. Delete or use.
 Goal: shrink each of the four hooks to under ~400 lines and eliminate
 protocol duplication.
 
-### P1.A — `src/net/keyExchange.ts`  (~2 h, Medium risk)
+### P1.A — `src/net/keyExchange.ts` **[DONE]**
 
-Factor out the ECDH public-key receive/derive/fingerprint sequence
-duplicated in all four hooks (useSender, useReceiver, useCollabHost,
-useCollabGuest — the last one twice, for host conn and mesh conn).
+~~Factor out the ECDH public-key receive/derive/fingerprint sequence
+duplicated in all four hooks.~~ Done. `src/net/keyExchange.ts` exposes
+`finalizeKeyExchange({ localPrivate, localPublic, remotePublic })` →
+`{ encryptKey, fingerprint }`. Tests in `src/net/keyExchange.test.ts`
+round-trip two keypairs and assert matching fingerprints + working AES
+encrypt/decrypt across sides.
 
-**Shape:**
-```ts
-export async function finalizeKeyExchange(args: {
-  localPrivate: CryptoKey
-  localPublic: Uint8Array
-  remotePublic: Uint8Array
-}): Promise<{ encryptKey: CryptoKey; fingerprint: string }>
-```
+Migrated call sites (all 7):
+- `useSender.ts` — `public-key` handler + `pendingRemoteKey` drain.
+- `useReceiver.ts` — `public-key` handler.
+- `useCollabHost.ts` — `public-key` handler + `pendingRemoteKey` drain.
+- `useCollabGuest.ts` — host-conn `public-key`, mesh `public-key`,
+  and `drainPendingRemoteKey`.
 
-Call sites:
-- `useSender.ts` — key exchange in `conn.on('data')` for `type === 'public-key'`.
-- `useReceiver.ts` — mirror on the other side.
-- `useCollabHost.ts:655` — per-guest.
-- `useCollabGuest.ts:485,867` — host conn + mesh conn.
-
-Each site differs in where it writes the result (into `connState.encryptKey`
-vs `entry.encryptKey`) and what it dispatches afterwards — keep those
-site-specific, only the crypto is shared.
-
-**Tests:** add `src/net/keyExchange.test.ts` that round-trips a pair of
-keypairs and asserts both sides derive the same encryptKey + fingerprint.
+Hooks no longer import `importPublicKey` / `deriveSharedKey` /
+`getKeyFingerprint` directly. 256/256 existing tests still pass.
 
 ### P1.B — `src/net/protocol.ts`  (~3–4 h, Medium risk)
 
@@ -272,21 +269,17 @@ you're about to touch call plumbing for another reason.
 
 ## P2 — Reliability & UX
 
-### P2.1 — Full `catch {}` → `log.warn()` migration
+### P2.1 — Full `catch {}` → `log.warn()` migration **[DONE]**
 
-Logger is shipped (`src/utils/logger.ts`). Now replace the ~200 silent
-catches in the four hooks with:
-```ts
-} catch (e) { log.warn('useCollabHost.handleChunk', e) }
-```
-Use `redactId()` for any peerId / fileId before logging. Don't log payloads
-or plaintext — the E2E claim stays honest.
+Logger is shipped (`src/utils/logger.ts`). ~~Now replace the ~200 silent
+catches in the four hooks with `log.warn(...)`.~~ Done: 191 log sites
+across useSender (44), useReceiver (28), useCollabHost (56),
+useCollabGuest (63). Every silent catch now records context to the
+ring buffer.
 
-Add a "Copy diagnostics" button somewhere in the UI that calls
-`copyDiagnostics()` and writes to the clipboard. Suggested home: Privacy
-page, or a footer kebab menu.
-
-Rough effort: 2 h for the mechanical pass + 30 min for the button.
+~~"Copy diagnostics" button~~ Done — `src/pages/Privacy.tsx` has a
+Diagnostics section with Copy/Clear buttons that call `copyDiagnostics()`
+/ `clearDiagnostics()` and write to the clipboard.
 
 ### P2.2 — Property / fuzz tests at protocol boundary
 
