@@ -680,6 +680,10 @@ export function useSender() {
           const indices: number[] = (msg.indices as number[]) || filesRef.current.map((_, i) => i)
           const transferSize = indices.reduce((sum, i) => sum + (filesRef.current[i]?.size || 0), 0)
           startTransfer(transferSize)
+          // Running total across the batch. sendFile's onProgress reports
+          // per-file bytes (resets to 0 at each new file); aggregateUI wants
+          // cumulative bytes vs transferSize for the overall progress bar.
+          let batchBytes = 0
           for (const idx of indices) {
             if (meta.abort.aborted) break
             const idxFile = filesRef.current[idx]
@@ -697,7 +701,7 @@ export function useSender() {
                 chunker: meta.chunker,
                 signal: undefined,
                 onProgress: (sent, total) => {
-                  meta.totalSent = sent
+                  meta.totalSent = batchBytes + sent
                   meta.progress[idxFile.name] = total > 0 ? Math.round(sent / total * 100) : 0
                   meta.currentFileIndex = idx
                   aggregateUI()
@@ -706,6 +710,7 @@ export function useSender() {
               if (result !== 'complete') {
                 log.warn('useSender.sendFile.result', { result, index: idx })
               }
+              batchBytes += idxFile.size
             } catch (e) {
               log.warn('useSender.requestAll.skip', e)
               // Tell the receiver why the file is missing from the batch so
@@ -724,6 +729,8 @@ export function useSender() {
         if (msg.type === 'ready') {
           const transferSize = filesRef.current.reduce((sum, f) => sum + f.size, 0)
           startTransfer(transferSize)
+          // Running total across the batch. Same reason as request-all above.
+          let batchBytes = 0
           for (let i = 0; i < filesRef.current.length; i++) {
             if (meta.abort.aborted) break
             const readyFile = filesRef.current[i]
@@ -741,7 +748,7 @@ export function useSender() {
                 chunker: meta.chunker,
                 signal: undefined,
                 onProgress: (sent, total) => {
-                  meta.totalSent = sent
+                  meta.totalSent = batchBytes + sent
                   meta.progress[readyFile.name] = total > 0 ? Math.round(sent / total * 100) : 0
                   meta.currentFileIndex = i
                   aggregateUI()
@@ -750,6 +757,7 @@ export function useSender() {
               if (result !== 'complete') {
                 log.warn('useSender.sendFile.result', { result, index: i })
               }
+              batchBytes += readyFile.size
             } catch (e) {
               log.warn('useSender.ready.skip', e)
               try { session.send({ type: 'file-skipped', index: i, reason: (e as Error)?.message || 'send-failed' } satisfies PortalMsg) }

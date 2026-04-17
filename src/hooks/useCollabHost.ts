@@ -404,7 +404,12 @@ export function useCollabHost() {
         fileId,
         chunker: meta.chunker,
         onProgress: (bytesSent, totalBytes) => {
-          if (meta.progressThrottler!.shouldUpdate()) {
+          // Force a dispatch on the final chunk (bytesSent === totalBytes) so
+          // the UI reaches 100% before END_UPLOAD clears the entry. Otherwise
+          // a throttled-out final update leaves the progress bar stalled at
+          // the last sampled value until the reducer removes the entry.
+          const done = bytesSent >= totalBytes && totalBytes > 0
+          if (done || meta.progressThrottler!.shouldUpdate()) {
             const elapsed = (Date.now() - startTime) / 1000
             const speed = elapsed > 0.5 ? bytesSent / elapsed : 0
             const progress = totalBytes > 0 ? Math.min(100, Math.round((bytesSent / totalBytes) * 100)) : 0

@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { createCollabWire } from './collabWire'
 import { finalizeKeyExchange } from '../../keyExchange'
+import { decryptJSON } from '../../../utils/crypto'
 import type { Session } from '../../session'
+import type { CollabInnerMsg } from '../../protocol'
 
 function makeSession(key: CryptoKey): Session {
   return { encryptKey: key } as unknown as Session
@@ -46,15 +48,51 @@ describe('collabWire', () => {
     expect(w.packetIndexFor('fresh')).toBe(1)  // 0 taken, allocator advances
   })
 
-  it('buildFileStart includes packetIndex matching allocator', async () => {
+  it('buildFileStart returns a collab-msg-enc envelope wrapping an encrypted collab-file-start', async () => {
     const w = createCollabWire()
     const s = makeSession(key)
     const msg = await w.buildFileStart(s, {
       fileId: 'x', name: 'a.txt', size: 10, totalChunks: 1,
-    }) as { type: string; packetIndex: number; fileId: string }
-    expect(msg.type).toBe('collab-file-start')
-    expect(msg.packetIndex).toBe(0)
-    expect(msg.fileId).toBe('x')
+    }) as { type: string; data: string }
+    expect(msg.type).toBe('collab-msg-enc')
+    expect(typeof msg.data).toBe('string')
+
+    const inner = await decryptJSON<CollabInnerMsg>(key, msg.data)
+    expect(inner.type).toBe('collab-file-start')
+    if (inner.type !== 'collab-file-start') throw new Error('type narrow')
+    expect(inner.fileId).toBe('x')
+    expect(inner.name).toBe('a.txt')
+    expect(inner.size).toBe(10)
+    expect(inner.totalChunks).toBe(1)
+    expect(inner.packetIndex).toBe(0)
+  })
+
+  it('buildFileEnd returns a collab-msg-enc envelope wrapping collab-file-end', async () => {
+    const w = createCollabWire()
+    const s = makeSession(key)
+    const msg = await w.buildFileEnd(s, 'x') as { type: string; data: string }
+    expect(msg.type).toBe('collab-msg-enc')
+    const inner = await decryptJSON<CollabInnerMsg>(key, msg.data)
+    expect(inner.type).toBe('collab-file-end')
+    if (inner.type !== 'collab-file-end') throw new Error('type narrow')
+    expect(inner.fileId).toBe('x')
+  })
+
+  it('buildFileCancelled returns a collab-msg-enc envelope wrapping collab-cancel-file', async () => {
+    const w = createCollabWire()
+    const s = makeSession(key)
+    const msg = await w.buildFileCancelled(s, 'x') as { type: string; data: string }
+    expect(msg.type).toBe('collab-msg-enc')
+    const inner = await decryptJSON<CollabInnerMsg>(key, msg.data)
+    expect(inner.type).toBe('collab-cancel-file')
+    if (inner.type !== 'collab-cancel-file') throw new Error('type narrow')
+    expect(inner.fileId).toBe('x')
+  })
+
+  it('buildFileStart throws when key is null', async () => {
+    const w = createCollabWire()
+    const s = { encryptKey: null } as unknown as Session
+    await expect(w.buildFileStart(s, { fileId: 'x', name: 'a', size: 1, totalChunks: 1 })).rejects.toThrow(/no key/)
   })
 
   it('encrypt/decrypt round-trips', async () => {
