@@ -532,10 +532,35 @@ export function useReceiver(peerId: string) {
                     const meta = fileMetaRef.current[idx]
                     if (meta) meta.received = written
                     const now = Date.now()
-                    if (now - lastChunkUIUpdateRef.current >= 100 && meta && meta.size > 0) {
-                      lastChunkUIUpdateRef.current = now
-                      const pct = Math.min(100, Math.round((written / total) * 100))
-                      dispatchTransfer({ type: 'FILE_PROGRESS', name: meta.name, value: pct })
+                    if (now - lastChunkUIUpdateRef.current < 100 || !meta || meta.size <= 0) return
+                    lastChunkUIUpdateRef.current = now
+                    // Per-file percentage.
+                    const pct = Math.min(100, Math.round((written / total) * 100))
+                    dispatchTransfer({ type: 'FILE_PROGRESS', name: meta.name, value: pct })
+                    // Overall progress, speed, ETA in the same throttle window.
+                    // The engine-path handleChunk block that also computed this
+                    // was starved by the per-file dispatch above — both share
+                    // one throttle ref, per-file always ran first and reset the
+                    // clock, overall never saw the 100 ms gap.
+                    totalReceivedRef.current = Object.values(fileMetaRef.current)
+                      .reduce((s, m) => s + (m?.received || 0), 0)
+                    const totalSize = transferTotalRef.current || manifestRef.current?.totalSize || 0
+                    if (totalSize > 0 && startTimeRef.current) {
+                      const overall = Math.min(100, Math.round((totalReceivedRef.current / totalSize) * 100))
+                      const elapsed = (now - startTimeRef.current) / 1000
+                      if (elapsed > 0.5) {
+                        const currentSpeed = totalReceivedRef.current / elapsed
+                        dispatchTransfer({
+                          type: 'SET',
+                          payload: {
+                            overallProgress: overall,
+                            speed: currentSpeed,
+                            eta: Math.max(0, (totalSize - totalReceivedRef.current) / currentSpeed),
+                          },
+                        })
+                      } else {
+                        dispatchTransfer({ type: 'SET', payload: { overallProgress: overall } })
+                      }
                     }
                   },
                 })
@@ -912,33 +937,13 @@ export function useReceiver(peerId: string) {
     const fileId = portalWire.fileIdForPacketIndex(fileIndex)
     if (fileIndex !== CHAT_IMAGE_FILE_INDEX && fileId && receiverRef.current?.has(fileId)) {
       // Engine-managed StreamSaver path: delegate raw packet (engine decrypts internally).
+      // Per-file + overall progress are both emitted from the onProgress callback
+      // wired in the file-start handler, in the same throttle window.
       lastFileIndexRef.current = fileIndex
       try {
         await receiverRef.current.onChunk(packet)
       } catch (e) {
         log.warn('useReceiver.handleChunk.engine', e)
-      }
-      // Update overall progress counters (engine's onProgress only fires per-file pct).
-      // We approximate totalReceivedRef using fileMetaRef.received which onProgress
-      // already updates via the callback wired in file-start.
-      const metaE = fileMetaRef.current[fileIndex]
-      if (metaE) {
-        totalReceivedRef.current = Object.values(fileMetaRef.current).reduce((s, m) => s + (m?.received || 0), 0)
-        const now = Date.now()
-        if (now - lastChunkUIUpdateRef.current >= 100) {
-          lastChunkUIUpdateRef.current = now
-          const totalSize = transferTotalRef.current || manifestRef.current?.totalSize || 0
-          if (totalSize > 0) {
-            const overall = Math.min(100, Math.round((totalReceivedRef.current / totalSize) * 100))
-            const elapsed = (now - startTimeRef.current!) / 1000
-            if (elapsed > 0.5) {
-              const currentSpeed = totalReceivedRef.current / elapsed
-              dispatchTransfer({ type: 'SET', payload: { overallProgress: overall, speed: currentSpeed, eta: Math.max(0, (totalSize - totalReceivedRef.current) / currentSpeed) } })
-            } else {
-              dispatchTransfer({ type: 'SET', payload: { overallProgress: overall } })
-            }
-          }
-        }
       }
       return
     }
