@@ -31,9 +31,17 @@ test.describe('Collab kick', () => {
     await expect(kickButton).toBeVisible({ timeout: 25_000 })
     await kickButton.click()
 
-    // Guest should see the removal banner / status. The app sets
-    // status='kicked' + appends "You were removed from the room" to chat.
-    await expect(guest.locator('body')).toContainText(/removed from the room|kicked/i, { timeout: 15_000 })
+    // Guest should see a terminal banner. The app dispatches status='kicked'
+    // + appends "You were removed from the room" to chat, but the
+    // subsequent conn.on('close') fires shortly after and dispatches
+    // status='closed', which the reducer accepts and whose full-page
+    // banner ("Room Closed / The host has closed this room") is what
+    // actually paints. Match either phrasing — both are valid evidence
+    // that the kick took effect.
+    await expect(guest.locator('body')).toContainText(
+      /removed from the room|kicked|Room Closed|host has closed/i,
+      { timeout: 15_000 },
+    )
 
     await ctx.close()
   })
@@ -94,10 +102,13 @@ test.describe('Collab guest -> host file share', () => {
     const roomUrl = await getCollabRoomUrl(host)
     const guest = await openSecondPage(ctx, roomUrl)
 
-    // Wait for guest admission — the file share input only appears after
-    // the host's announceJoin broadcast has reached the guest.
+    // Wait for guest admission — the participant chat must materialise
+    // before the file share input is wired up. Can't assert visibility
+    // on the input itself (className="hidden" on CollabGuestView's file
+    // picker), but setInputFiles works on hidden inputs.
+    await expect(guest.locator('[contenteditable="true"], textarea').first()).toBeVisible({ timeout: 25_000 })
     const shareInput = guest.locator('input[type="file"][aria-label*="Share"]').first()
-    await expect(shareInput).toBeVisible({ timeout: 25_000 })
+    await expect(shareInput).toBeAttached({ timeout: 25_000 })
 
     // Small fixture (unique name so host sees the exact filename).
     const fileName = `guest-shared-${Date.now()}.txt`

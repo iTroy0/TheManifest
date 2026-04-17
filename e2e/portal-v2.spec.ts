@@ -39,6 +39,11 @@ test.describe('Portal password gate', () => {
     await receiver.getByTestId('portal-password-submit').click()
     await expect(receiver.getByText(/wrong password/i)).toBeVisible({ timeout: 10_000 })
 
+    // Sender enforces exponential backoff: 1s after first wrong, 2s after
+    // second, ... Capped at 30s. Wait past the 1s window before the next
+    // attempt so the sender doesn't reject with 'password-rate-limited'.
+    await receiver.waitForTimeout(1200)
+
     // Now the correct one. UI resets the error and submits again.
     await portalPw.fill(PASSWORD)
     await receiver.getByTestId('portal-password-submit').click()
@@ -57,10 +62,11 @@ test.describe('Portal password gate', () => {
 
 test.describe('Portal receiver cancel', () => {
   test('receiver cancels mid-transfer; sender sees cancel signal', async ({ browser }) => {
-    // Use a file big enough that the adaptive chunker actually streams a
-    // handful of chunks. 512 KB is well within localhost throughput but
-    // large enough that "click download -> click cancel" arrives mid-stream.
-    const fixture = writeFixture('big.bin', patternedBytes(512 * 1024))
+    // Needs to be big enough that localhost P2P takes more than a few
+    // frames — 512 KB finished before we could click cancel, so bump to
+    // 10 MB. The adaptive chunker on loopback sustains ~50 MB/s in
+    // Chromium, so ~200 ms window for the cancel to arrive mid-stream.
+    const fixture = writeFixture('big.bin', patternedBytes(10 * 1024 * 1024))
 
     const ctx = await browser.newContext()
     const sender = await ctx.newPage()
