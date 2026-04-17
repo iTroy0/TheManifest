@@ -56,7 +56,6 @@ describe('ECDH Key Exchange', () => {
     const keyA: CryptoKey = await deriveSharedKey(alice.privateKey, bobImported)
     const keyB: CryptoKey = await deriveSharedKey(bob.privateKey, aliceImported)
 
-    // Encrypt with A, decrypt with B
     const data: Uint8Array = new TextEncoder().encode('hello from alice')
     const encrypted: ArrayBuffer = await encryptChunk(keyA, data)
     const decrypted: ArrayBuffer = await decryptChunk(keyB, new Uint8Array(encrypted))
@@ -86,7 +85,6 @@ describe('AES-256-GCM Encryption', () => {
     key = await makeKey()
     const data: Uint8Array = new Uint8Array(100)
     const encrypted: ArrayBuffer = await encryptChunk(key, data)
-    // 12 bytes IV + 100 bytes data + 16 bytes GCM tag = 128
     expect(new Uint8Array(encrypted).length).toBe(128)
   })
 
@@ -95,7 +93,6 @@ describe('AES-256-GCM Encryption', () => {
     const encrypted: Uint8Array = new Uint8Array(await encryptChunk(key, new Uint8Array(10)))
     const iv: Uint8Array = encrypted.slice(0, 12)
     expect(iv.length).toBe(12)
-    // IV should not be all zeros (random)
     expect(iv.some(b => b !== 0)).toBe(true)
   })
 
@@ -236,7 +233,6 @@ describe('Base64 Utilities', () => {
     const b64: string = uint8ToBase64(data)
     const back: Uint8Array = base64ToUint8(b64)
     expect(back).toEqual(data)
-    // Every byte value 0x00 through 0xFF must survive the round-trip
     for (let i = 0; i < 256; i++) expect(back[i]).toBe(i)
   })
 })
@@ -248,7 +244,6 @@ describe('importPublicKey edge cases', () => {
   })
 
   it('throws when importing an array with wrong prefix (not 0x04)', async () => {
-    // A P-256 uncompressed point must start with 0x04
     const wrongPrefix: Uint8Array = new Uint8Array(65)
     wrongPrefix[0] = 0x02 // compressed-point prefix — invalid for 'raw' format
     await expect(importPublicKey(wrongPrefix)).rejects.toThrow()
@@ -296,11 +291,9 @@ describe('decryptJSON edge cases', () => {
 
   it('throws or returns malformed result when ciphertext contains non-JSON plaintext', async () => {
     const key: CryptoKey = await makeKey()
-    // Encrypt a plain string that is not valid JSON
     const nonJsonBytes: Uint8Array = new TextEncoder().encode('not valid json }{')
     const encrypted: ArrayBuffer = await encryptChunk(key, nonJsonBytes)
     const b64: string = uint8ToBase64(new Uint8Array(encrypted))
-    // decryptJSON decrypts fine but JSON.parse should throw
     await expect(decryptJSON(key, b64)).rejects.toThrow()
   })
 })
@@ -330,17 +323,12 @@ describe('timingSafeEqual', () => {
   })
 
   it('result does not depend on shared prefix length', () => {
-    // Purely an equality check — don't assert timing, but confirm
-    // behaviour doesn't short-circuit on first mismatch position.
     expect(timingSafeEqual('a'.repeat(100) + 'b', 'a'.repeat(100) + 'c')).toBe(false)
     expect(timingSafeEqual('b' + 'a'.repeat(100), 'c' + 'a'.repeat(100))).toBe(false)
   })
 })
 
 describe('HKDF salt binding to public keys', () => {
-  // Verifies: when both sides pass the (localPub, remotePub) byte arrays,
-  // the derived salt is session-unique — two different sessions produce
-  // different keys even if the same ECDH private/public pair were reused.
   it('two sessions with same keypairs but different salts produce different keys', async () => {
     const alice: CryptoKeyPair = await generateKeyPair()
     const bob: CryptoKeyPair = await generateKeyPair()
@@ -348,20 +336,17 @@ describe('HKDF salt binding to public keys', () => {
     const bobPub: Uint8Array = await exportPublicKey(bob.publicKey)
     const bobImported: CryptoKey = await importPublicKey(bobPub)
 
-    // Session 1: real pub bytes salt
     const k1: CryptoKey = await deriveSharedKey(alice.privateKey, bobImported, alicePub, bobPub)
-    // Session 2: swapped bytes produce the same sorted digest — keys should match
+    // Swapped bytes produce the same sorted digest — keys should match
     const k2: CryptoKey = await deriveSharedKey(alice.privateKey, bobImported, bobPub, alicePub)
-    // Session 3: omit salt material → zero salt (different key)
+    // Omit salt material → zero salt (different key)
     const k3: CryptoKey = await deriveSharedKey(alice.privateKey, bobImported)
 
     const data: Uint8Array = new TextEncoder().encode('hi')
     const ct1: ArrayBuffer = await encryptChunk(k1, data)
-    // k2 (same sorted inputs) decrypts k1's ciphertext
     const pt12: ArrayBuffer = await decryptChunk(k2, new Uint8Array(ct1))
     expect(new TextDecoder().decode(pt12)).toBe('hi')
 
-    // k3 (zero-salt path) MUST NOT decrypt k1's ciphertext
     await expect(decryptChunk(k3, new Uint8Array(ct1))).rejects.toThrow()
   })
 

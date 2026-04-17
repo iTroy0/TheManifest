@@ -18,8 +18,6 @@
 import type { DataConnection } from 'peerjs'
 import type { setupHeartbeat, setupRTTPolling } from '../utils/connectionHelpers'
 
-// ── Enums ────────────────────────────────────────────────────────────────
-
 export type SessionState =
   | 'idle'
   | 'connecting'
@@ -48,8 +46,6 @@ export type CloseReason =
   | 'key-exchange-timeout'
   | 'password-locked'
   | 'complete'
-
-// ── Bookkeeping ──────────────────────────────────────────────────────────
 
 // A single in-flight transfer on this session. Covers both outbound
 // (sender → peer) and inbound (peer → sender) because `activeTransfers`
@@ -80,8 +76,6 @@ export interface InProgressImageSlot {
   receivedBytes: number
 }
 
-// ── Events ───────────────────────────────────────────────────────────────
-
 // Non-terminal transitions + bookkeeping. Terminal transitions go
 // through `session.close(reason)` — this keeps the dispatch surface
 // bounded and guarantees close-time cleanup runs on every terminal
@@ -100,8 +94,6 @@ export type SessionInput =
   | { type: 'transfer-end' }
   | { type: 'cancel-all' }
 
-// Emitted to subscribers. Hook-side reducers translate these into
-// UI dispatch actions.
 export type SessionEvent =
   | { type: 'state-change'; from: SessionState; to: SessionState }
   | { type: 'fingerprint'; value: string }
@@ -114,17 +106,13 @@ export type SessionEvent =
     }
   | { type: 'closed'; reason: CloseReason }
 
-// ── Session interface ────────────────────────────────────────────────────
-
 export interface Session {
-  // Identity. Stable for the session's life.
   readonly id: string
   readonly generation: number
   readonly role: SessionRole
   readonly peerId: string
   readonly conn: DataConnection
 
-  // State — mutated via dispatch/close/set*.
   state: SessionState
   encryptKey: CryptoKey | null
   keyPair: CryptoKeyPair | null
@@ -148,13 +136,11 @@ export interface Session {
   imageSendQueue: Promise<void>
   uploadQueue: Promise<void>
 
-  // Bookkeeping.
   activeTransfers: Map<string, TransferHandle>
   requestedFileIds: Set<string>
   recentFileShares: number[]
   inProgressImage: InProgressImageSlot | null
 
-  // Event bus.
   on<T extends SessionEvent['type']>(
     type: T,
     fn: (ev: Extract<SessionEvent, { type: T }>) => void,
@@ -164,13 +150,10 @@ export interface Session {
   // (matches the "inbound logged and dropped" rule from the plan).
   dispatch(input: SessionInput): void
 
-  // Outbound. Throws from terminal state — callers must check first
-  // (or catch and route to close()).
+  // Throws from terminal state — callers must check first (or catch and route to close()).
   send(msg: Record<string, unknown>): void
   sendBinary(bytes: ArrayBuffer | ArrayBufferView): void
 
-  // Transfer helpers. Session-side bookkeeping only — the actual
-  // chunk streaming sits on `transferEngine` (P1.D) later.
   beginTransfer(handle: TransferHandle): void
   endTransfer(
     transferId: string,
@@ -181,7 +164,6 @@ export interface Session {
   cancelTransfer(transferId: string): void
   cancelAllTransfers(): void
 
-  // Field mutators that also emit events.
   setKeyPair(pair: CryptoKeyPair): void
   setNickname(name: string): void
   setPasswordVerified(): void
@@ -191,8 +173,6 @@ export interface Session {
   close(reason: CloseReason): void
 }
 
-// ── Factory opts ─────────────────────────────────────────────────────────
-
 export interface CreateSessionOpts {
   conn: DataConnection
   role: SessionRole
@@ -201,8 +181,6 @@ export interface CreateSessionOpts {
   passwordRequired?: boolean
   id?: string
 }
-
-// ── Transition table ─────────────────────────────────────────────────────
 
 function isTerminal(s: SessionState): boolean {
   return s === 'closed' || s === 'error' || s === 'kicked'
@@ -225,8 +203,6 @@ function terminalForReason(reason: CloseReason): SessionState {
   }
 }
 
-// Given the current state + an input + role, return the next state.
-// Pure — the session wrapper mutates fields around this call.
 function nextState(
   from: SessionState,
   input: SessionInput,
@@ -273,8 +249,6 @@ function nextState(
       return from === 'transferring' ? 'authenticated' : from
   }
 }
-
-// ── Factory ──────────────────────────────────────────────────────────────
 
 function makeSessionId(): string {
   const g = globalThis as unknown as { crypto?: Crypto }

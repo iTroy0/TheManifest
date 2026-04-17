@@ -1,8 +1,3 @@
-// src/net/transferEngine/types.ts
-//
-// Shared types for the transfer engine. Implementations live in
-// sibling files; this module is type-only.
-
 import type { AdaptiveChunker, ChunkPacket } from '../../utils/fileChunker'
 import type { Session } from '../session'
 

@@ -45,12 +45,10 @@ export function createFileStream(fileName: string, fileSize: number): FileStream
   }
 }
 
-// Engine-friendly variant. Returns the StreamSaver WritableStream directly
-// so the caller (FileReceiver) can .getWriter() once and pass bytes straight
-// through to the service worker with no intermediate wrapper stream.
-// Wrapping in a new WritableStream({ write, close, abort }) introduced an
-// extra layer of buffering that could leave bytes un-flushed when the engine
-// called writer.close(), so the browser never produced a `download` event.
+// Returns the StreamSaver WritableStream directly so the caller can .getWriter()
+// once and pipe bytes straight to the service worker with no intermediate wrapper.
+// A wrapper WritableStream introduced extra buffering that prevented the browser
+// from producing a `download` event when writer.close() was called.
 export function createFileWritableStream(fileName: string, fileSize: number): WritableStream<Uint8Array> | null {
   if (!isStreamSupported()) return null
   try {

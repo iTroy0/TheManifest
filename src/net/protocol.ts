@@ -16,16 +16,12 @@
 
 import { encryptJSON, decryptJSON } from '../utils/crypto'
 
-// ── Shared primitives ────────────────────────────────────────────────────
-
 export interface PingMsg { type: 'ping'; ts: number }
 export interface PongMsg { type: 'pong'; ts: number }
 // Raw public-key bytes for ECDH. Serialized as a plain number[] so JSON
 // round-trips survive (Uint8Array is not directly JSON-representable).
 export interface PublicKeyMsg { type: 'public-key'; key: number[] }
 
-// Online-count and system-msg exist on both portal and collab wires, with
-// identical shape. Defined once here; each lane union re-exports them.
 export interface OnlineCountMsg { type: 'online-count'; count: number }
 export interface SystemMsgMsg { type: 'system-msg'; text: string; time: number }
 
@@ -49,15 +45,11 @@ export interface ChatImageEndEncMsg {
 export interface ChatImageAbortMsg { type: 'chat-image-abort' }
 
 // ── Portal (useSender ↔ useReceiver) ─────────────────────────────────────
-// Unencrypted manifest (legacy — still sent only for the error branch).
-// The canonical path is `manifest-enc`, produced after the ECDH handshake.
 export interface ManifestEncMsg { type: 'manifest-enc'; data: string }
-// Legacy plain-manifest path. Kept here so the receiver can still match
-// `msg.type === 'manifest'` and reject it loudly (MITM-safety log line).
+// Kept so the receiver can still match `msg.type === 'manifest'` and reject
+// it loudly (MITM-safety log line).
 export interface ManifestMsg { type: 'manifest' }
-// Per-file framing on the binary transport — the JSON start/end sit on
-// the same DataConnection as the chunk packets and mark the file
-// boundary. `resumeFrom` lets a reconnect skip chunks already written.
+// `resumeFrom` lets a reconnect skip chunks already written.
 export interface FileStartMsg {
   type: 'file-start'
   index: number
@@ -67,24 +59,20 @@ export interface FileStartMsg {
   resumeFrom?: number
 }
 export interface FileEndMsg { type: 'file-end'; index: number }
-// Password flow — gates manifest delivery.
 export interface PasswordRequiredMsg { type: 'password-required' }
 export interface PasswordEncryptedMsg { type: 'password-encrypted'; data: string }
 export interface PasswordAcceptedMsg { type: 'password-accepted' }
 export interface PasswordWrongMsg { type: 'password-wrong' }
 export interface PasswordLockedMsg { type: 'password-locked' }
 export interface PasswordRateLimitedMsg { type: 'password-rate-limited' }
-// Receiver tells sender which file(s) it wants.
 export interface ReadyMsg { type: 'ready' }
 export interface RequestFileMsg { type: 'request-file'; index: number; resumeChunk?: number }
 export interface RequestAllMsg { type: 'request-all'; indices?: number[] }
 export interface ResumeMsg { type: 'resume'; fileIndex: number; chunkIndex: number }
-// Per-file control (either direction, same shape).
 export interface PauseFileMsg { type: 'pause-file'; index: number }
 export interface ResumeFileMsg { type: 'resume-file'; index: number }
 export interface CancelFileMsg { type: 'cancel-file'; index: number }
 export interface CancelAllMsg { type: 'cancel-all' }
-// End-of-transfer / per-file status.
 export interface FileSkippedMsg { type: 'file-skipped'; index: number; reason: string }
 export interface FileCancelledMsg { type: 'file-cancelled'; index: number }
 export interface BatchDoneMsg { type: 'batch-done' }
@@ -92,7 +80,6 @@ export interface DoneMsg { type: 'done' }
 export interface CancelAllAckMsg { type: 'cancel-all-ack' }
 export interface RejectedMsg { type: 'rejected'; reason?: string }
 export interface ClosingMsg { type: 'closing' }
-// Participant metadata (portal also has chat).
 export interface JoinMsg { type: 'join'; nickname: string }
 // Portal rename message. Differs from the collab equivalent in that the
 // old name travels in the payload (portal has no authenticated peerId
@@ -105,8 +92,7 @@ export interface ReactionMsg {
   emoji: string
   nickname: string
 }
-// Chat body (encrypted per peer). `from` / `time` are present on relay
-// frames so each recipient can attribute the message correctly.
+// `from` / `time` are present on relay frames so recipients can attribute the message correctly.
 export interface ChatEncryptedMsg {
   type: 'chat-encrypted'
   data: string
@@ -132,17 +118,14 @@ export type PortalMsg =
   | ChatEncryptedMsg | RelayChatEncryptedMsg
   | ChatImageStartEncMsg | ChatImageEndEncMsg | ChatImageAbortMsg
 
-// ── Collab envelope + inner ──────────────────────────────────────────────
 // Two-layer protocol: outer `collab-msg-enc` carries base64 ciphertext of
 // an inner JSON message. Don't collapse these types — the host
 // intentionally can't read some collab-* inner payloads (peer-to-peer
 // mesh chat is end-to-end between guests).
 export interface CollabEnvelope { type: 'collab-msg-enc'; data: string }
 
-// Inner payloads (encrypted body of CollabEnvelope). Typed as `unknown` for
-// `SharedFile` / participant-snapshot shapes to avoid a circular import
-// through `state/collabState.ts`; the sanitizer in that file is the
-// runtime validator.
+// `SharedFile` / participant-snapshot shapes typed as `unknown` to avoid a
+// circular import through `state/collabState.ts`; the sanitizer there is the runtime validator.
 export type CollabInnerMsg =
   | { type: 'collab-request-file'; fileId: string; owner?: string; requesterPeerId?: string }
   | { type: 'collab-file-start'; fileId: string; name: string; size: number; totalChunks: number; packetIndex: number }
@@ -193,9 +176,8 @@ export type CollabUnencryptedMsg =
   | { type: 'password-rate-limited' }
 
 // ── Call lane ────────────────────────────────────────────────────────────
-// Signaling overlay on top of either lane's DataConnection. Every call
-// message carries `from` so the receiver can route without trusting the
-// transport's peerId (useful across host-relayed guest↔guest).
+// Every call message carries `from` so the receiver can route without
+// trusting the transport's peerId (useful across host-relayed guest↔guest).
 export type CallMode = 'audio' | 'video'
 
 export type CallMsg =
@@ -229,10 +211,8 @@ export type CallMsg =
   // cap exceeded). Carries no extra payload beyond `from`.
   | { type: 'call-rejected'; from: string }
 
-// ── Encryption helpers ───────────────────────────────────────────────────
-// Thin wrappers around `encryptJSON` / `decryptJSON`. The win is that the
-// caller states which message shape is expected; the compiler then
-// narrows the return type downstream. Runtime behaviour is identical.
+// Typed wrappers around `encryptJSON` / `decryptJSON` — the compiler narrows
+// the return type to the caller's stated message shape.
 export async function encodeEnc<T>(key: CryptoKey, msg: T): Promise<string> {
   return encryptJSON(key, msg)
 }

@@ -45,8 +45,6 @@ function isVideoType(type: string | undefined): boolean {
   return !!type && type.startsWith('video/')
 }
 
-// ── TextPreviewTooltip: hover + click with outside-close (fix #10) ────────
-
 interface TextPreviewTooltipProps {
   preview: string | undefined
 }
@@ -103,8 +101,6 @@ function TextPreviewTooltip({ preview }: TextPreviewTooltipProps) {
     </div>
   )
 }
-
-// ── OverflowMenu: mobile 3-dot popover (fix #13) ─────────────────────────
 
 interface OverflowMenuProps {
   onRemove: () => void
@@ -166,8 +162,6 @@ function OverflowMenu({ onRemove, removeConfirming }: OverflowMenuProps) {
     </div>
   )
 }
-
-// ── CollabFileItem ───────────────────────────────────────────────────────
 
 interface CollabFileItemProps {
   file: SharedFile
@@ -272,7 +266,6 @@ function CollabFileItem({
         }
       `}
     >
-      {/* File icon/thumbnail with progress indicator */}
       <div className="relative shrink-0">
         {file.thumbnail ? (
           <div className="relative w-9 h-9 sm:w-10 sm:h-10">
@@ -322,7 +315,6 @@ function CollabFileItem({
         )}
       </div>
 
-      {/* File info */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 min-w-0">
           <p className={`text-xs sm:text-sm font-mono truncate transition-colors ${isDone ? 'text-accent' : 'text-text'}`}>
@@ -334,10 +326,8 @@ function CollabFileItem({
           )}
         </div>
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-          {/* Size */}
           <p className="text-[10px] sm:text-[11px] text-muted font-mono">{formatBytes(file.size)}</p>
 
-          {/* Owner indicator */}
           <span className="text-muted/40 font-mono text-[10px]">·</span>
           <span className={`inline-flex items-center gap-1 font-mono text-[10px] ${isOwn ? 'text-accent' : 'text-muted/70'}`}>
             <User className="w-2.5 h-2.5" />
@@ -413,14 +403,11 @@ function CollabFileItem({
         </div>
       </div>
 
-      {/* Progress percentage */}
       {isDownloading && !isDone && (
         <span className="font-mono text-xs sm:text-sm tabular-nums text-info font-medium">{progress}%</span>
       )}
 
-      {/* Actions */}
       <div className="flex items-center gap-1.5">
-        {/* Fix #3: Error state — Retry + Dismiss */}
         {isError && (
           <>
             <button
@@ -445,7 +432,6 @@ function CollabFileItem({
           </>
         )}
 
-        {/* Fix #1: Persistent "Downloaded" chip + "Download again" */}
         {!isError && !isOwn && isDone && (
           <>
             <span
@@ -468,7 +454,6 @@ function CollabFileItem({
           </>
         )}
 
-        {/* Download button - only for files NOT owned by user and in idle state */}
         {!isError && !isOwn && isIdle && (
           <button
             type="button"
@@ -481,7 +466,6 @@ function CollabFileItem({
           </button>
         )}
 
-        {/* Pause button */}
         {!isError && isDownloading && !isPaused && (
           <button
             type="button"
@@ -494,7 +478,6 @@ function CollabFileItem({
           </button>
         )}
 
-        {/* Resume button — fix #7: yellow-400 paused palette */}
         {!isError && isPaused && (
           <button
             type="button"
@@ -507,7 +490,6 @@ function CollabFileItem({
           </button>
         )}
 
-        {/* Cancel button */}
         {!isError && isPending && (
           <button
             type="button"
@@ -520,8 +502,6 @@ function CollabFileItem({
           </button>
         )}
 
-        {/* Remove button — fix #5: two-click confirm, desktop only.
-            Fix #13: mobile uses OverflowMenu instead. */}
         {!isError && isOwn && !isPending && (
           <>
             <button
@@ -552,8 +532,6 @@ function CollabFileItem({
     </div>
   )
 }
-
-// ── Filter bar (fix #4) ──────────────────────────────────────────────────
 
 type SortKey = 'newest' | 'name' | 'size'
 type OwnerFilter = 'all' | 'mine' | 'others'
@@ -608,8 +586,6 @@ function FilterBar({ query, setQuery, sortKey, setSortKey, ownerFilter, setOwner
     </div>
   )
 }
-
-// ── CollabFileList ───────────────────────────────────────────────────────
 
 interface CollabFileListProps {
   files: SharedFile[]

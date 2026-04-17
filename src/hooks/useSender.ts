@@ -19,8 +19,6 @@ import { MAX_CONNECTIONS, MAX_CHAT_IMAGE_SIZE } from '../net/config'
 import type { PortalMsg } from '../net/protocol'
 import { log } from '../utils/logger'
 
-// ── Types ────────────────────────────────────────────────────────────────
-
 interface InProgressImage {
   mime: string
   size: number
@@ -71,8 +69,6 @@ function createSenderMeta(): SenderMeta {
   }
 }
 
-// ── Hook ─────────────────────────────────────────────────────────────────
-
 export function useSender() {
   const [transfer, dispatchTransfer] = useReducer(transferReducer, initialTransfer)
   const [conn, dispatchConn] = useReducer(connectionReducer, initialConnection)
@@ -85,8 +81,6 @@ export function useSender() {
   const lastMsgTime = useRef<number>(0)
   const peerRef = useRef<InstanceType<typeof Peer> | null>(null)
   const filesRef = useRef<File[]>([])
-  // Map<connId, ConnEntry> — the room-level membership. Each entry holds a
-  // `Session` (per-connection lifecycle) plus a `SenderMeta` (UI accounting).
   const connectionsRef = useRef<Map<string, ConnEntry>>(new Map())
   const passwordRef = useRef<string | null>(null)
   const chatOnlyRef = useRef<boolean>(false)
@@ -94,8 +88,6 @@ export function useSender() {
   const globalPasswordAttempts = useRef<number>(0)
   const lastPasswordAttemptTime = useRef<number>(0)
 
-  // Call plumbing — exposed to useCall as a lightweight bus. useCall is the
-  // only consumer; we keep a single handler slot rather than a pub/sub list.
   const [peerInstance, setPeerInstance] = useState<InstanceType<typeof Peer> | null>(null)
   const [participants, setParticipants] = useState<Array<{ peerId: string; name: string }>>([])
   const callMessageHandlerRef = useRef<((fromPeerId: string, msg: Record<string, unknown>) => void) | null>(null)
@@ -161,10 +153,6 @@ export function useSender() {
 
       const connId = conn.peer + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
       const session = createSession({ conn, role: 'portal-sender' })
-      // Inbound peer connection — we didn't initiate, but the transition
-      // table expects connect-start before conn-open. Dispatch both now
-      // (connect-start unconditionally on allocation; conn-open when the
-      // DataConnection 'open' event fires below).
       session.dispatch({ type: 'connect-start' })
       const meta = createSenderMeta()
       const entry: ConnEntry = { session, meta }
@@ -173,16 +161,10 @@ export function useSender() {
       function announceJoin(e: ConnEntry, cId: string): void {
         dispatchConn({ type: 'SET', payload: { status: 'connected', recipientCount: connectionsRef.current.size } })
         refreshParticipants()
-        // Fall back to 'Anon' when the peer hasn't sent a `nickname` yet —
-        // reconnect / password-gate paths can announce before the join
-        // message lands, which used to render as "  joined".
         const name = e.session.nickname || 'Anon'
         setMessages(prev => [...prev, { text: `${name} joined`, from: 'system', time: Date.now(), self: false }].slice(-500))
         const count = connectionsRef.current.size + 1
         connectionsRef.current.forEach((other, id) => {
-          // Skip sessions in a terminal state — send() would throw and the
-          // warn-on-throw previously spammed diagnostics whenever a receiver
-          // reconnected while an older session still lingered in the map.
           const s = other.session.state
           if (s === 'closed' || s === 'error' || s === 'kicked') return
           try { other.session.send({ type: 'online-count', count } satisfies PortalMsg) } catch (e) { log.warn('useSender.announceJoin.onlineCount', e) }
@@ -192,10 +174,6 @@ export function useSender() {
         })
       }
 
-      // Closure-scoped throttle. onProgress fires per chunk (many Hz on a
-      // fast link) which would burn the React reducer. Force=true bypasses
-      // the throttle for terminal events (endTransfer, cancel-all) so the
-      // UI snaps to the final state instead of stalling at a stale sample.
       let lastAggregateAt = 0
       function aggregateUI(force = false): void {
         const now = Date.now()
@@ -233,8 +211,6 @@ export function useSender() {
         }})
       }
 
-      // Hoisted out of `conn.on('data')` so we don't allocate two new
-      // closures on every inbound message. Same lifetime as entry.
       function startTransfer(transferSize: number): void {
         meta.abort = { aborted: false }
         meta.totalSent = 0
@@ -278,12 +254,9 @@ export function useSender() {
           if (session.state === 'closed' || session.state === 'error' || session.state === 'kicked') return
           meta.abort.aborted = true
           try { conn.removeAllListeners() } catch (e) { log.warn('useSender.handlePeerDisconnect.removeListeners', e) }
-          // Null ICE handler to release the closure holding the session
-          if (conn.peerConnection) {
+            if (conn.peerConnection) {
             try { conn.peerConnection.oniceconnectionstatechange = null } catch (e) { log.warn('useSender.handlePeerDisconnect.clearIce', e) }
           }
-          // Session-level cleanup: heartbeat, rttPoller, keyExchangeTimeout,
-          // plus every active transfer handle gets aborted + pauseResolved.
           session.close('peer-disconnect')
           const name = session.nickname || 'A recipient'
           connectionsRef.current.delete(connId)
@@ -323,8 +296,6 @@ export function useSender() {
         const pubKeyBytes = await exportPublicKey(session.keyPair!.publicKey)
         try { session.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies PortalMsg) } catch (e) { log.warn('useSender.sendPublicKey', e) }
 
-        // Handshake watchdog. Session auto-clears on `keys-derived` and
-        // on `close()`; no manual teardown needed.
         session.keyExchangeTimeout = setTimeout(() => {
           if (!session.encryptKey && !destroyed) {
             console.warn('Key exchange timed out for', connId)
@@ -332,7 +303,6 @@ export function useSender() {
           }
         }, 10_000)
 
-        // Handle deferred public key if receiver responded before our key was ready
         if (session.pendingRemoteKey) {
           try {
             const { encryptKey, fingerprint } = await finalizeKeyExchange({
@@ -340,8 +310,6 @@ export function useSender() {
               localPublic: pubKeyBytes,
               remotePublic: session.pendingRemoteKey,
             })
-            // Atomic: flips state to authenticated, sets encryptKey +
-            // fingerprint, disarms keyExchangeTimeout.
             session.dispatch({ type: 'keys-derived', encryptKey, fingerprint })
             dispatchConn({ type: 'SET', payload: { fingerprint } })
             session.pendingRemoteKey = null
@@ -361,9 +329,6 @@ export function useSender() {
         if (destroyed) return
         if (session.heartbeat) session.heartbeat.markAlive()
 
-        // Binary chunk packet — routed through the chunk queue. Must come
-        // before the PortalMsg cast: ArrayBuffers don't have a `type` field
-        // and shouldn't be treated as JSON messages.
         if (data instanceof ArrayBuffer || (data && (data as ArrayBuffer).byteLength !== undefined && !(typeof data === 'object' && (data as { type?: unknown }).type))) {
           session.chunkQueue = session.chunkQueue
             .then(() => handleHostChunk(entry, data as ArrayBuffer))
@@ -371,9 +336,6 @@ export function useSender() {
           return
         }
 
-        // Call messages (call-*) route through to useCall — they aren't
-        // part of PortalMsg. Pull them off before the union cast so the
-        // narrowing switch below isn't confused by call-* literals.
         const raw = data as { type?: unknown }
         if (typeof raw.type === 'string' && raw.type.startsWith('call-')) {
           if (callMessageHandlerRef.current) {
@@ -383,11 +345,6 @@ export function useSender() {
           return
         }
 
-        // Trust boundary — a peer can send any JSON, but after the binary
-        // check every valid payload should match PortalMsg. Each branch
-        // below narrows the union via `msg.type === 'X'`. Fields that
-        // aren't on the union (defensive reads of unknown shapes from
-        // buggy or hostile peers) still compile via `as` casts.
         const msg = data as PortalMsg
 
         if (msg.type === 'pong') return
@@ -399,7 +356,6 @@ export function useSender() {
         if (msg.type === 'public-key') {
           const remoteKeyRaw = new Uint8Array(msg.key as number[])
           if (!session.keyPair) {
-            // Key pair not ready yet — defer until generateKeyPair resolves
             session.pendingRemoteKey = remoteKeyRaw
             return
           }
@@ -452,11 +408,6 @@ export function useSender() {
           const matched = password.length > 0 && timingSafeEqual(password, expected)
 
           if (matched) {
-            // Reset the global attempt counter on success so one legitimate
-            // unlock clears any backoff accumulated from prior typos.
-            // Without this, the global counter grew monotonically and any
-            // room that hit 8 lifetime wrong guesses would reject every
-            // future guest regardless of whether they had the password.
             globalPasswordAttempts.current = 0
             lastPasswordAttemptTime.current = 0
             session.passwordAttempts = 0
@@ -626,8 +577,6 @@ export function useSender() {
           meta.progress = {}
           meta.totalSent = 0
           meta.speed = 0
-          // Abort every in-flight file-transfer handle on this session so
-          // pausedFile awaits unblock and the sender loop exits.
           session.cancelAllTransfers()
           aggregateUI(true)
           const anyActive = Array.from(connectionsRef.current.values()).some(e => e.meta.transferring)
@@ -654,6 +603,8 @@ export function useSender() {
           const file = filesRef.current[msg.index as number]
           if (!file) return
           const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+          // Clamp to totalChunks - 1 so request for the last chunk still sends it.
+          // A resumeChunk === totalChunks would skip the whole file but still send file-end.
           // Clamp to totalChunks - 1 so request for the last chunk still sends it.
           // A resumeChunk === totalChunks would skip the whole file but still send file-end.
           const resumeChunk = Math.min(Math.max(0, (msg.resumeChunk as number) || 0), Math.max(0, totalChunks - 1))
@@ -696,9 +647,6 @@ export function useSender() {
           const indices: number[] = (msg.indices as number[]) || filesRef.current.map((_, i) => i)
           const transferSize = indices.reduce((sum, i) => sum + (filesRef.current[i]?.size || 0), 0)
           startTransfer(transferSize)
-          // Running total across the batch. sendFile's onProgress reports
-          // per-file bytes (resets to 0 at each new file); aggregateUI wants
-          // cumulative bytes vs transferSize for the overall progress bar.
           let batchBytes = 0
           for (const idx of indices) {
             if (meta.abort.aborted) break
@@ -731,9 +679,6 @@ export function useSender() {
               batchBytes += idxFile.size
             } catch (e) {
               log.warn('useSender.requestAll.skip', e)
-              // Tell the receiver why the file is missing from the batch so
-              // it can surface the failure instead of silently completing
-              // with fewer files than requested.
               try { session.send({ type: 'file-skipped', index: idx, reason: (e as Error)?.message || 'send-failed' } satisfies PortalMsg) }
               catch (sendErr) { log.warn('useSender.requestAll.skipNotify', sendErr) }
             }
@@ -747,7 +692,6 @@ export function useSender() {
         if (msg.type === 'ready') {
           const transferSize = filesRef.current.reduce((sum, f) => sum + f.size, 0)
           startTransfer(transferSize)
-          // Running total across the batch. Same reason as request-all above.
           let batchBytes = 0
           for (let i = 0; i < filesRef.current.length; i++) {
             if (meta.abort.aborted) break
@@ -786,9 +730,6 @@ export function useSender() {
           }
           if (!meta.abort.aborted) {
             try { session.send({ type: 'done' } satisfies PortalMsg) } catch (e) { log.warn('useSender.done.send', e) }
-            // Snap overall progress to 100 and flip transferring off via the
-            // same path the request-all and request-file branches use, so the
-            // UI's overall bar and status follow a single source of truth.
             endTransfer()
             dispatchConn({ type: 'SET_STATUS', payload: 'done' })
           }
@@ -865,8 +806,6 @@ export function useSender() {
         connectionsRef.current.delete(connId)
         dispatchConn({ type: 'SET', payload: { recipientCount: connectionsRef.current.size } })
         refreshParticipants()
-        // If this was our only connection, surface a status so the UI doesn't
-        // sit silently in 'waiting' with no indication that a channel died.
         if (connectionsRef.current.size === 0) {
           setRtt(null)
           dispatchConn({ type: 'SET_STATUS', payload: (prev: string) => prev === 'done' ? prev : 'waiting' })
@@ -886,9 +825,6 @@ export function useSender() {
       } else if (err.type === 'disconnected' || err.type === 'network') {
         return
       } else if (err.type === 'peer-unavailable') {
-        // A recipient tried to connect with a stale sender id, or the signaling
-        // server couldn't find them. Not fatal to the session — just ignore
-        // unless we have no live connections.
         if (connectionsRef.current.size > 0) return
       }
       if (connectionsRef.current.size === 0) {
@@ -899,8 +835,6 @@ export function useSender() {
     function handleVisibility(): void {
       if (document.visibilityState !== 'visible' || destroyed) return
       if (peer.disconnected && !peer.destroyed) peer.reconnect()
-      // Reset heartbeat liveness on every live recipient so the 5s check-
-      // timer that just un-paused can't false-positive on its first tick.
       connectionsRef.current.forEach(entry => { if (entry.session.heartbeat) entry.session.heartbeat.markAlive() })
     }
     document.addEventListener('visibilitychange', handleVisibility)
@@ -1056,8 +990,6 @@ export function useSender() {
 }
 
 
-// ── handleHostChunk ───────────────────────────────────────────────────────
-
 async function handleHostChunk(entry: ConnEntry, rawData: ArrayBuffer | ArrayBufferView): Promise<void> {
   const { session } = entry
   if (!session.encryptKey) return
@@ -1067,15 +999,10 @@ async function handleHostChunk(entry: ConnEntry, rawData: ArrayBuffer | ArrayBuf
   let parsed: { fileIndex: number; chunkIndex: number; data: ArrayBuffer }
   try { parsed = parseChunkPacket(buffer) } catch (e) { log.warn('handleHostChunk.parse', e); return }
   if (parsed.fileIndex !== CHAT_IMAGE_FILE_INDEX) return
-  // Refuse to pay the decrypt cost if no image is in progress for this
-  // connection. A peer spamming stray chat-image chunks without a matching
-  // `chat-image-start-enc` used to make us do AES-GCM work per chunk only
-  // to drop the plaintext on the floor. Cheap check first.
   if (!session.inProgressImage) return
   let plain: ArrayBuffer | Uint8Array
   try { plain = await decryptChunk(session.encryptKey, parsed.data) }
   catch (e) {
-    // Decrypt failure — drop the in-flight image to prevent memory buildup
     console.warn('handleHostChunk decrypt failed:', e)
     session.inProgressImage = null
     return
@@ -1085,7 +1012,6 @@ async function handleHostChunk(entry: ConnEntry, rawData: ArrayBuffer | ArrayBuf
   const inFlight = session.inProgressImage
   if (!inFlight) return
   const bytes = plain instanceof Uint8Array ? plain : new Uint8Array(plain)
-  // Enforce size cap even on the relay path to prevent a malicious peer from exhausting host memory
   if (inFlight.receivedBytes + bytes.byteLength > MAX_CHAT_IMAGE_SIZE) {
     console.warn('handleHostChunk: chat image exceeds size cap, dropping')
     session.inProgressImage = null
@@ -1094,8 +1020,6 @@ async function handleHostChunk(entry: ConnEntry, rawData: ArrayBuffer | ArrayBuf
   inFlight.chunks.push(bytes)
   inFlight.receivedBytes += bytes.byteLength
 }
-
-// ── streamImageToConn ────────────────────────────────────────────────────
 
 // Emit a best-effort abort so the receiver can clear its in-progress
 // image slot. Without this, a mid-stream failure left `inProgressImage`
@@ -1144,7 +1068,6 @@ async function streamImageToConn(
     const encEnd = await encryptChunk(key, new TextEncoder().encode('{}'))
     conn.send({ type: 'chat-image-end-enc', data: uint8ToBase64(new Uint8Array(encEnd)) } satisfies PortalMsg)
   } catch (e) {
-    // Receiver will see incomplete image; the next start clears it
     log.warn('streamImageToConn.end', e)
   }
 }

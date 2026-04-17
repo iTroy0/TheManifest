@@ -1,10 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// notifications.ts uses `'Notification' in window` and `document.visibilityState`
-// at call time (not module load time), so we stub window/document in each group.
-
-// ── Type helpers ──────────────────────────────────────────────────────────────
-
 type NotificationPermission = 'granted' | 'denied' | 'default'
 
 interface MockNotificationInstance {
@@ -47,8 +42,6 @@ function stubWindowWithoutNotification() {
   vi.stubGlobal('Notification', undefined)
 }
 
-// ── isNotificationSupported ───────────────────────────────────────────────────
-
 describe('isNotificationSupported', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -68,8 +61,6 @@ describe('isNotificationSupported', () => {
     expect(isNotificationSupported()).toBe(false)
   })
 })
-
-// ── canNotify ─────────────────────────────────────────────────────────────────
 
 describe('canNotify', () => {
   afterEach(() => {
@@ -104,8 +95,6 @@ describe('canNotify', () => {
     expect(canNotify()).toBe(false)
   })
 })
-
-// ── requestNotificationPermission ─────────────────────────────────────────────
 
 describe('requestNotificationPermission', () => {
   afterEach(() => {
@@ -155,8 +144,6 @@ describe('requestNotificationPermission', () => {
     expect(result).toBe(false)
   })
 })
-
-// ── alertNewMessage ───────────────────────────────────────────────────────────
 
 describe('alertNewMessage', () => {
   afterEach(() => {
@@ -241,8 +228,6 @@ describe('alertNewMessage', () => {
   })
 })
 
-// ── sounds ────────────────────────────────────────────────────────────────────
-
 describe('sounds', () => {
   function makeAudioContextMock() {
     const gainNode = {
@@ -259,8 +244,6 @@ describe('sounds', () => {
       start: vi.fn(),
       stop: vi.fn(),
     }
-    // Must use a class (not an arrow function) so `new AudioContext()` works
-    // without vitest's "did not use function or class" warning.
     return class MockAudioContext {
       createOscillator = vi.fn().mockReturnValue(oscillator)
       createGain = vi.fn().mockReturnValue(gainNode)

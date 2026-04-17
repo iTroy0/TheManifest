@@ -130,7 +130,6 @@ export default function Home() {
   return (
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
 
-      {/* ── Header ── */}
       <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80 sm:sticky sm:top-0 z-10">
         <div className="max-w-[720px] mx-auto px-6 py-5 flex items-center justify-between">
           <Link to="/" className="group" onClick={isActive ? (e) => { e.preventDefault(); handleNewSession() } : undefined} aria-label="The Manifest — go to home">
@@ -163,10 +162,8 @@ export default function Home() {
         </div>
       </header>
 
-      {/* ── Main ── */}
       <main className="flex-1 max-w-[720px] w-full mx-auto px-6 py-8 space-y-6">
 
-        {/* Hero — only on landing */}
         {!isActive && (
           <div className="text-center py-6 animate-fade-in-up">
             <h2 className="font-mono text-2xl sm:text-3xl font-bold text-text-bright mb-3 tracking-tight text-balance">
@@ -179,7 +176,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Drop zone + chat room button — only on landing */}
         {!isActive && (
           <>
             <DropZone onFiles={handleFiles} disabled={isTransferring || isFinished} />
@@ -206,10 +202,8 @@ export default function Home() {
           </>
         )}
 
-        {/* How it works — only on landing */}
         {!isActive && <HowItWorks />}
 
-        {/* Feature cards — only on landing */}
         {!isActive && (
           <div className="animate-fade-in-up" style={{ animationDelay: '350ms' }}>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -226,10 +220,8 @@ export default function Home() {
           </div>
         )}
 
-        {/* ── Active session UI ── */}
         {isActive && !isFinished && (
           <>
-            {/* Hidden file input */}
             <input
               ref={addInputRef}
               type="file"
@@ -242,14 +234,11 @@ export default function Home() {
               className="hidden"
             />
 
-            {/* Password — before main card, only pre-connection */}
             {!isTransferring && !isFinished && recipientCount === 0 && (
               <PasswordSection password={passwordInput} onChange={(v: string) => { setPasswordInput(v); setPassword(v) }} />
             )}
 
-            {/* ── Main session card ── */}
             <div className="glow-card overflow-hidden animate-fade-in-up">
-              {/* Header: status + badges + warning */}
               <div className="px-4 py-3 space-y-2">
                 {chatMode && (
                   <div className="flex items-center gap-2">
@@ -289,7 +278,6 @@ export default function Home() {
                 )}
               </div>
 
-              {/* Files section */}
               {!chatMode && (
                 <div className="border-t border-border">
                   {hasFiles ? (
@@ -379,7 +367,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Portal link */}
               {peerId && !isFinished && (
                 <div className="border-t border-border">
                   <PortalLink peerId={peerId} />
@@ -387,7 +374,6 @@ export default function Home() {
               )}
             </div>
 
-            {/* Call — separate, appears above chat */}
             {(recipientCount > 0 || chatMode) && !isFinished && (
               <ComponentErrorBoundary name="Call">
                 <CallPanelLazy
@@ -409,7 +395,6 @@ export default function Home() {
               </ComponentErrorBoundary>
             )}
 
-            {/* Chat — separate */}
             {(recipientCount > 0 || chatMode) && !isFinished && (
               <ComponentErrorBoundary name="Chat">
                 <ChatPanel messages={messages} onSend={sendMessage} onClearMessages={clearMessages} disabled={recipientCount === 0} onlineCount={recipientCount + 1} nickname={senderName} onNicknameChange={changeSenderName} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
@@ -418,14 +403,12 @@ export default function Home() {
           </>
         )}
 
-        {/* Error */}
         {error && (
           <div className="bg-danger/8 border border-danger/20 rounded-xl px-4 py-3 animate-fade-in-up">
             <p className="font-mono text-[11px] text-danger">{error}</p>
           </div>
         )}
 
-        {/* Done / closed / error — show new session button */}
         {isFinished && (
           <div className="text-center py-12 animate-fade-in-up">
             <div className="max-w-sm mx-auto space-y-5">
@@ -471,7 +454,6 @@ export default function Home() {
             </div>
           </div>
         )}
-        {/* New Session confirmation modal */}
         {showResetConfirm && createPortal(
           <div
             className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm"

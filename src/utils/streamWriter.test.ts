@@ -9,11 +9,6 @@ vi.stubGlobal('window', {
 })
 vi.stubGlobal('WritableStream', class WritableStream {})
 
-// ── streamsaver mock ──────────────────────────────────────────────────────────
-// vi.mock hoists before imports, so the factory runs before streamWriter.ts is
-// evaluated. Do NOT call vi.resetModules() in tests — that would destroy the
-// mock registration and cause re-imports to load the real streamsaver.
-
 const mockWriter = {
   write: vi.fn().mockResolvedValue(undefined),
   close: vi.fn().mockResolvedValue(undefined),
@@ -34,21 +29,11 @@ vi.mock('streamsaver', () => ({
   },
 }))
 
-// Import the module once. The streamSupported cache inside the module starts
-// null on first load, so the first isStreamSupported() call in each test file
-// run will evaluate freshly. We import at top level to avoid re-triggering the
-// window.location.origin side-effect.
 import type { FileStreamHandle } from './streamWriter'
 
-// ── isStreamSupported ─────────────────────────────────────────────────────────
-
 describe('isStreamSupported', () => {
-  // Import once for this describe block — cache starts null on first call.
   it('returns true when createWriteStream and WritableStream both exist', async () => {
-    // WritableStream is stubbed at file top-level (truthy)
     const { isStreamSupported } = await import('./streamWriter')
-    // Reset the internal cache by re-importing after resetModules is NOT used;
-    // instead we rely on the fact that the first call sets the cache.
     expect(isStreamSupported()).toBe(true)
   })
 
@@ -59,8 +44,6 @@ describe('isStreamSupported', () => {
     expect(first).toBe(second)
   })
 })
-
-// ── createFileStream ──────────────────────────────────────────────────────────
 
 describe('createFileStream', () => {
   beforeEach(() => {
@@ -104,11 +87,6 @@ describe('createFileStream', () => {
     expect(handle).toBeNull()
   })
 })
-
-// ── isStreamSupported returns false when WritableStream absent ────────────────
-// This requires a fresh module load with WritableStream removed, which means
-// we must use resetModules. We do this in an isolated describe so the mock
-// is re-registered with doMock before the import.
 
 describe('isStreamSupported – WritableStream absent', () => {
   afterEach(() => {
@@ -166,8 +144,6 @@ describe('isStreamSupported – WritableStream absent', () => {
   })
 })
 
-// ── FileStreamHandle.write ────────────────────────────────────────────────────
-
 describe('FileStreamHandle.write', () => {
   let handle: FileStreamHandle
 
@@ -201,8 +177,6 @@ describe('FileStreamHandle.write', () => {
   })
 })
 
-// ── FileStreamHandle.close ────────────────────────────────────────────────────
-
 describe('FileStreamHandle.close', () => {
   let handle: FileStreamHandle
 
@@ -224,8 +198,6 @@ describe('FileStreamHandle.close', () => {
     await expect(handle.close()).resolves.toBeUndefined()
   })
 })
-
-// ── FileStreamHandle.abort ────────────────────────────────────────────────────
 
 describe('FileStreamHandle.abort', () => {
   let handle: FileStreamHandle

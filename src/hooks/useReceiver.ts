@@ -30,8 +30,6 @@ import {
   MAX_CHAT_IMAGE_SIZE,
 } from '../net/config'
 
-// ── Types ────────────────────────────────────────────────────────────────
-
 interface InProgressImage {
   mime: string
   size: number
@@ -51,8 +49,6 @@ interface FileMeta {
   received: number
 }
 
-// ── Hook ─────────────────────────────────────────────────────────────────
-
 export function useReceiver(peerId: string) {
   const [transfer, dispatchTransfer] = useReducer(transferReducer, initialTransfer)
   const [conn, dispatchConn] = useReducer(connectionReducer, initialConnection)
@@ -63,9 +59,6 @@ export function useReceiver(peerId: string) {
   const typingTimeouts = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const lastMsgTime = useRef<number>(0)
 
-  // Receiver-side file bookkeeping — these are hook-lifetime (file state
-  // must survive a reconnect; the Session is per-connection).
-  // receiverRef manages StreamSaver sinks via transferEngine (decrypt + write).
   const receiverRef = useRef<FileReceiver | null>(null)
   const chunksRef = useRef<Record<number, Uint8Array[] | null>>({})
   const zipWriterRef = useRef<ReturnType<typeof createStreamingZip> | null>(null)
@@ -74,9 +67,6 @@ export function useReceiver(peerId: string) {
   const startTimeRef = useRef<number | null>(null)
   const manifestRef = useRef<ManifestData | null>(null)
 
-  // Per-connection plumbing — owned by `Session`. Replaces decryptKeyRef,
-  // keyPairRef, heartbeatRef, rttPollerRef, keyExchangeTimeoutRef,
-  // chunkQueueRef, imageSendQueueRef, inProgressImageRef, connRef.
   const sessionRef = useRef<Session | null>(null)
 
   const peerRef = useRef<InstanceType<typeof Peer> | null>(null)
@@ -105,7 +95,6 @@ export function useReceiver(peerId: string) {
   // encryptKey, but the receiver is still awaiting its own deriveSharedKey.
   const pendingManifestRef = useRef<string | null>(null)
 
-  // Call plumbing (single-consumer — useCall owns the handler slot).
   const [peerInstance, setPeerInstance] = useState<InstanceType<typeof Peer> | null>(null)
   const callMessageHandlerRef = useRef<((fromPeerId: string, msg: Record<string, unknown>) => void) | null>(null)
 
@@ -152,9 +141,6 @@ export function useReceiver(peerId: string) {
       peer.on('open', () => {
         if (destroyedRef.current) return
         const conn = peer.connect(peerId, { reliable: true })
-        // Allocate the session up front; it stays `idle` until the
-        // conn-open event ticks the transitions. Generation tracks the
-        // receiver's connect attempt so bisects are informative.
         const sess = createSession({
           conn,
           role: 'portal-receiver',
@@ -182,12 +168,9 @@ export function useReceiver(peerId: string) {
             if (!wasTransferringRef.current) pendingResumeRef.current = null
             setRtt(null)
             setMessages(prev => [...prev, { text: reason, from: 'system', time: Date.now(), self: false }])
-            // Session-level cleanup: timers, heartbeat, rttPoller, active
-            // transfers. Idempotent — safe if a parallel path already closed.
             sess.close('peer-disconnect')
             if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
               if (receiverRef.current) {
-                // Abort all active engine-managed streams before reconnect
                 receiverRef.current = null
               }
               chunksRef.current = {}
@@ -208,8 +191,6 @@ export function useReceiver(peerId: string) {
             onDead: () => handleDisconnect('Connection lost'),
           })
 
-          // Handshake watchdog. Session auto-clears on `keys-derived`
-          // dispatch, and also on `close()`; no manual teardown needed.
           sess.keyExchangeTimeout = setTimeout(() => {
             if (sessionRef.current !== sess) return
             if (!sess.encryptKey && !destroyedRef.current) {
@@ -232,7 +213,6 @@ export function useReceiver(peerId: string) {
 
           if (isReconnect && wasTransferringRef.current) {
             dispatchConn({ type: 'SET_STATUS', payload: 'manifest-received' })
-            // Defer file request until new key exchange completes
             pendingResumeRef.current = {
               index: lastFileIndexRef.current,
               resumeChunk: receiverRef.current?.getResumeCursor(`file-${lastFileIndexRef.current}`) ?? 0,
@@ -261,9 +241,6 @@ export function useReceiver(peerId: string) {
             return
           }
 
-          // Call messages (call-*) route through useCall — they aren't in
-          // PortalMsg. Pull them off before the union cast so the
-          // discriminated switch below isn't confused by call-* literals.
           const raw = data as { type?: unknown; from?: unknown }
           if (typeof raw.type === 'string' && raw.type.startsWith('call-')) {
             if (callMessageHandlerRef.current) {
@@ -274,9 +251,6 @@ export function useReceiver(peerId: string) {
             return
           }
 
-          // Trust boundary — after the binary and call-* checks every
-          // valid payload should be PortalMsg. Each branch narrows via
-          // `msg.type === 'X'`.
           const msg = data as PortalMsg
 
           if (msg.type === 'pong') return
@@ -309,11 +283,8 @@ export function useReceiver(peerId: string) {
                 localPublic: pubKeyBytes,
                 remotePublic: remoteKeyBytes,
               })
-              // Atomic: flips state to authenticated, assigns encryptKey +
-              // fingerprint on the session, disarms keyExchangeTimeout.
               sess.dispatch({ type: 'keys-derived', encryptKey, fingerprint: fp })
               dispatchConn({ type: 'SET', payload: { fingerprint: fp } })
-              // Initialise the engine-backed receiver for the new session.
               receiverRef.current = createFileReceiver(sess, portalWire)
 
               // Fingerprint rotation warning — surface any change to the user
@@ -328,7 +299,6 @@ export function useReceiver(peerId: string) {
               }
               originalFingerprintRef.current = fp
 
-              // Process any manifest that arrived before the key was ready
               if (pendingManifestRef.current) {
                 const data = pendingManifestRef.current
                 pendingManifestRef.current = null
@@ -342,7 +312,6 @@ export function useReceiver(peerId: string) {
                 }
               }
 
-              // Resume deferred transfer now that we have the new decryption key
               if (pendingResumeRef.current) {
                 const { index, resumeChunk } = pendingResumeRef.current
                 pendingResumeRef.current = null
@@ -412,7 +381,6 @@ export function useReceiver(peerId: string) {
             return
           }
 
-          // Mid-stream abort from sender — clear in-progress image slot.
           if (msg.type === 'chat-image-abort') {
             sess.inProgressImage = null
             return
@@ -468,8 +436,6 @@ export function useReceiver(peerId: string) {
 
           if (msg.type === 'manifest-enc') {
             if (!msg.data) return
-            // If the key is still being derived, buffer the message; the
-            // public-key handler will process it once encryptKey is set.
             if (!sess.encryptKey) {
               pendingManifestRef.current = msg.data as string
               return
@@ -530,14 +496,8 @@ export function useReceiver(peerId: string) {
                     const now = Date.now()
                     if (now - lastChunkUIUpdateRef.current < 100 || !meta || meta.size <= 0) return
                     lastChunkUIUpdateRef.current = now
-                    // Per-file percentage.
                     const pct = Math.min(100, Math.round((written / total) * 100))
                     dispatchTransfer({ type: 'FILE_PROGRESS', name: meta.name, value: pct })
-                    // Overall progress, speed, ETA in the same throttle window.
-                    // The engine-path handleChunk block that also computed this
-                    // was starved by the per-file dispatch above — both share
-                    // one throttle ref, per-file always ran first and reset the
-                    // clock, overall never saw the 100 ms gap.
                     totalReceivedRef.current = Object.values(fileMetaRef.current)
                       .reduce((s, m) => s + (m?.received || 0), 0)
                     const totalSize = transferTotalRef.current || manifestRef.current?.totalSize || 0
@@ -624,7 +584,6 @@ export function useReceiver(peerId: string) {
 
             wasTransferringRef.current = false
             pendingResumeRef.current = null
-            // Reset reconnect budget — a successful transfer restores the full retry count
             reconnectCountRef.current = 0
             dispatchTransfer({ type: 'SET', payload: { pendingFiles: {}, overallProgress: 100, speed: 0, eta: null } })
             dispatchConn({ type: 'SET_STATUS', payload: 'manifest-received' })
@@ -641,8 +600,6 @@ export function useReceiver(peerId: string) {
         conn.on('close', () => {
           if (destroyedRef.current) return
           clearTimeout(timeoutRef.current!)
-          // Bail if handleDisconnect already ran (terminal state) or a
-          // newer session took over.
           if (sessionRef.current !== sess) return
           if (sess.state === 'closed' || sess.state === 'error' || sess.state === 'kicked') return
           try { conn.removeAllListeners() } catch (e) { log.warn('useReceiver.close.removeListeners', e) }
@@ -703,8 +660,6 @@ export function useReceiver(peerId: string) {
 
   useEffect(() => {
     if (!peerId) return
-    // Reset mount flag on (re-)mount — cleanup from a prior run may have set
-    // it to false, which would make startConnection's mounted-guard bail.
     isMountedRef.current = true
     reconnectTokenRef.current = Symbol('reconnect')
 
@@ -755,8 +710,6 @@ export function useReceiver(peerId: string) {
       const sess = sessionRef.current
       if (sess) {
         try { sess.conn.removeAllListeners() } catch (e) { log.warn('useReceiver.unmount.removeListeners', e) }
-        // Terminal close runs the session-level cleanup (timers,
-        // heartbeat, rttPoller, transfers) once and idempotently.
         sess.close('session-abort')
         sessionRef.current = null
       }
@@ -1079,10 +1032,8 @@ export function useReceiver(peerId: string) {
   }
 }
 
-// ── streamImageToHost ────────────────────────────────────────────────────
 // Module-level; parameterised by conn + key so it stays independent of
 // Session. Callers schedule it onto `sess.imageSendQueue`.
-
 async function streamImageToHost(
   conn: DataConnection,
   key: CryptoKey,
@@ -1127,7 +1078,6 @@ async function streamImageToHost(
     const encEnd = await encryptChunk(key, new TextEncoder().encode(endPayload))
     conn.send({ type: 'chat-image-end-enc', data: uint8ToBase64(new Uint8Array(encEnd)) } satisfies PortalMsg)
   } catch (e) {
-    // Receiver will time out the in-flight image
     log.warn('streamImageToHost.end', e)
   }
 }

@@ -15,8 +15,6 @@ const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯'
 const POPOUT_DEFAULT = { w: 384, h: 600 }
 const POPOUT_MIN = { w: 280, h: 300 }
 
-// ── ChatPanel props ──────────────────────────────────────────────────────────
-
 interface ChatPanelProps {
   messages: ChatMessage[]
   onSend: (text: string, image?: ImagePreview | { bytes: Uint8Array; mime: string } | string, replyTo?: ReplyTo) => void
@@ -49,7 +47,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const [recordingTime, setRecordingTime] = useState(0)
   const [micError, setMicError] = useState<string | null>(null)
   const [nameSaved, setNameSaved] = useState(false)
-  const recordingTimeRef = useRef(0) // ref mirror — closures read this, not stale state
+  const recordingTimeRef = useRef(0)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recordingChunksRef = useRef<Blob[]>([])
@@ -77,7 +75,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     return url
   }
 
-  // Cleanup blob URLs on unmount
   useEffect(() => {
     return () => {
       chatBlobUrlsRef.current.forEach(url => URL.revokeObjectURL(url))
@@ -88,7 +85,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     if (nickname) setEditName(nickname)
   }, [nickname])
 
-  // Fix 8: Auto-focus textarea when panel opens
   useEffect(() => {
     if (open && textInputRef.current) {
       const t = setTimeout(() => textInputRef.current?.focus(), 100)
@@ -239,7 +235,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     }
   }
 
-  // ── Voice recording ──────────────────────────────────────────────────
   const MAX_RECORDING_SECS = 180
 
   function getRecordingMime(): string {
@@ -281,7 +276,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         recordingTimeRef.current = 0
       }
 
-      recorder.start(250) // collect in 250ms chunks for smooth recording
+      recorder.start(250)
       mediaRecorderRef.current = recorder
       setIsRecording(true)
       setRecordingTime(0)
@@ -321,7 +316,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     recordingTimeRef.current = 0
   }
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -420,7 +414,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     }
   }, [showMenu])
 
-  // Fix 2: Auto-focus clear confirm dialog
   useEffect(() => {
     if (showClearConfirm && clearConfirmRef.current) {
       clearConfirmRef.current.focus()
@@ -504,14 +497,12 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         : undefined
       }
     >
-      {/* Header - popout mode */}
       {isPopout && !isFullscreen && (
         <div
           className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0 bg-surface/80 backdrop-blur-sm cursor-move select-none relative"
           onMouseDown={onPopoutDragStart}
           onTouchStart={onPopoutDragStart}
         >
-          {/* Top-left resize handle */}
           <div
             className="absolute -top-1 -left-1 w-5 h-5 cursor-nw-resize z-10 flex items-center justify-center opacity-40 hover:opacity-100 transition-opacity"
             onMouseDown={onPopoutResizeStart}
@@ -566,13 +557,11 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         </div>
       )}
 
-      {/* Header - native messaging app style when fullscreen */}
       {isFullscreen ? (
         <div
           className="flex items-center justify-between px-2 border-b border-border shrink-0 bg-surface/80 backdrop-blur-sm"
           style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 8px)', paddingBottom: '8px' }}
         >
-          {/* Left: Back/Minimize button */}
           <button
             onClick={() => { dispatchPanel({ type: 'SET', payload: { isFullscreen: false, ...(!isPopout && { open: true }) } }) }}
             className="flex items-center gap-0.5 px-2 py-2 rounded-xl text-accent active:bg-accent/10 transition-colors"
@@ -581,7 +570,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             <span className="font-mono text-sm font-medium">{isPopout ? 'Minimize' : 'Back'}</span>
           </button>
 
-          {/* Center: Title and online count */}
           <div className="absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none">
             <span className="font-mono text-base text-text font-semibold">Chat</span>
             {onlineCount != null && onlineCount > 0 && (
@@ -592,7 +580,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             )}
           </div>
 
-          {/* Right: Three-dot menu */}
           <div className="relative">
             <button
               ref={menuTriggerRef}
@@ -616,7 +603,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 style={{ top: `${menuPos.top}px`, right: `${menuPos.right}px`, zIndex: 9999 }}
                 onClick={(e: React.MouseEvent) => e.stopPropagation()}
               >
-                {/* Nickname section */}
                 {onNicknameChange && (
                   <div className="p-3 border-b border-border">
                     <label className="font-mono text-[10px] text-muted uppercase tracking-wide mb-2 block">Nickname</label>
@@ -646,7 +632,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                   </div>
                 )}
 
-                {/* Toggle options */}
                 <div className="py-1">
                   <button
                     onClick={() => setSoundEnabled(s => !s)}
@@ -686,7 +671,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                   </button>
                 </div>
 
-                {/* Clear messages */}
                 {onClearMessages && messages.length > 0 && (
                   <>
                     <div className="border-t border-border" />
@@ -743,7 +727,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
             )}
-            {/* Pop-out button - desktop only */}
             <button
               onClick={(e: React.MouseEvent) => {
                 e.stopPropagation()
@@ -754,7 +737,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             >
               <ExternalLink className="w-4 h-4" />
             </button>
-            {/* Fullscreen toggle */}
             <button
               onClick={(e: React.MouseEvent) => { e.stopPropagation(); dispatchPanel({ type: 'SET', payload: { isFullscreen: true } }) }}
               className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
@@ -774,7 +756,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       }`}>
         <div className={isFullscreen || isPopout ? 'flex-1 flex flex-col overflow-hidden' : 'overflow-hidden'}>
           <div className={`${isFullscreen || isPopout ? 'flex-1 flex flex-col overflow-hidden' : 'px-3 sm:px-4 pb-4 space-y-3'}`}>
-            {/* Nickname editor + settings - hidden in fullscreen (moved to menu) */}
             {!isFullscreen && (
             <div className="flex items-center justify-between gap-2">
               {onNicknameChange && (
@@ -806,7 +787,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                   {nameSaved && <span className="text-xs text-emerald-400">Saved</span>}
                 </div>
               )}
-              {/* Sound and notification toggles */}
               <div className="flex items-center gap-1 ml-auto">
                 <button
                   onClick={() => setSoundEnabled(s => !s)}
@@ -837,7 +817,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             </div>
             )}
 
-            {/* Messages */}
             <div
               ref={scrollRef}
               onScroll={handleScroll}
@@ -875,7 +854,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                     className={`flex ${group.self ? 'justify-end' : 'justify-start'} animate-fade-in-up`}
                   >
                     <div className={`flex flex-col gap-0.5 max-w-[90%] sm:max-w-[80%] ${group.self ? 'items-end' : 'items-start'}`}>
-                      {/* Show author name only once per group */}
                       {!group.self && (
                         <p className="font-mono text-[10px] text-accent/70 mb-0.5 px-1">{group.from}</p>
                       )}
@@ -999,7 +977,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 )
               })}
 
-              {/* Scroll to bottom button */}
               {showScrollBtn && (
                 <button
                   onClick={scrollToBottom}
@@ -1011,9 +988,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               )}
             </div>
 
-            {/* Input section - sticky bottom in fullscreen/popout */}
             <div className={`shrink-0 ${isFullscreen || isPopout ? 'bg-surface/80 backdrop-blur-sm border-t border-border' : 'space-y-2'}`}>
-              {/* Typing indicator */}
               {typingText && (
                 <div className={`flex items-center gap-2 ${isFullscreen || isPopout ? 'px-4 py-1.5' : 'px-1'}`}>
                   <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface-2/50 border border-border/50">
@@ -1023,7 +998,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 </div>
               )}
 
-              {/* Drop error toast */}
               {dropError && (
                 <div className={`flex items-center gap-2 bg-danger/10 border border-danger/20 animate-fade-in-up ${isFullscreen || isPopout ? 'mx-4 my-2 px-3 py-2 rounded-xl' : 'px-3 py-2 rounded-xl'}`}>
                   <X className="w-3.5 h-3.5 text-danger shrink-0" />
@@ -1031,7 +1005,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 </div>
               )}
 
-              {/* Mic/image error feedback */}
               {micError && (
                 <div className={`flex items-center gap-2 bg-danger/10 border border-danger/20 animate-fade-in-up ${isFullscreen || isPopout ? 'mx-4 my-2 px-3 py-2 rounded-xl' : 'px-3 py-2 rounded-xl'}`}>
                   <X className="w-3.5 h-3.5 text-danger shrink-0" />
@@ -1039,7 +1012,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 </div>
               )}
 
-              {/* Reply preview */}
               {replyTo && (
                 <div className={`flex items-center gap-2 bg-accent/5 animate-fade-in-up ${isFullscreen || isPopout ? 'px-4 py-2 border-b border-accent/20' : 'px-3 py-2 border border-accent/20 rounded-xl'}`}>
                   <div className="w-1 h-8 bg-accent/60 rounded-full shrink-0" />
@@ -1056,7 +1028,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 </div>
               )}
 
-              {/* Image preview */}
               {imagePreview && (
                 <div className={`relative inline-block animate-fade-in-up ${isFullscreen || isPopout ? 'mx-4 my-2' : ''}`}>
                   <img src={imagePreview.url} alt="Upload preview" className="h-20 rounded-xl border border-border shadow-sm object-cover" />
@@ -1072,7 +1043,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                 </div>
               )}
 
-              {/* Input form */}
               <form
                 onSubmit={handleSend}
                 onDragOver={(e: React.DragEvent<HTMLFormElement>) => { e.preventDefault(); dispatchInteract({ type: 'SET', payload: { isDragOver: true } }) }}
@@ -1085,7 +1055,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
 
               {isRecording ? (
                 <>
-                  {/* Recording indicator */}
                   <button
                     type="button"
                     onClick={cancelRecording}
@@ -1155,7 +1124,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                       disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px] max-h-[120px]
                       resize-none overflow-y-auto scrollbar-thin"
                   />
-                  {/* Show mic button when input is empty, send button when there's content */}
                   {!text.trim() && !imagePreview ? (
                     <button
                       type="button"
@@ -1238,8 +1206,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     </div>
   )
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function compressImage(file: File): Promise<string> {
   return new Promise((resolve, reject) => {

@@ -29,7 +29,6 @@ export default function VoicePlayer({ src, knownDuration }: VoicePlayerProps) {
       setCurrentTime(a.currentTime)
       const dur = getDur()
       setProgress(dur ? (a.currentTime / dur) * 100 : 0)
-      // Once playing, browser resolves the real duration
       if (a.duration && isFinite(a.duration)) setDuration(a.duration)
     }
     const onMeta = () => { const d = getDur(); if (d) setDuration(d) }

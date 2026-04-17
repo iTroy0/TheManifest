@@ -76,7 +76,6 @@ export default function Portal() {
   return (
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
 
-      {/* Header */}
       <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80 sm:sticky sm:top-0 z-10">
         <div className="max-w-[720px] mx-auto px-6 py-5">
           <Link to="/" className="flex items-center gap-2 text-muted hover:text-accent transition-colors mb-3 w-fit group">
@@ -106,14 +105,12 @@ export default function Portal() {
         </div>
       </header>
 
-      {/* Main */}
       <main className="flex-1 max-w-[720px] w-full mx-auto px-6 py-8 space-y-6">
 
         {!showManifest && (
           <StatusIndicator status={status} />
         )}
 
-        {/* Dead states */}
         {status === 'closed' && !manifest && (
           <ErrorBlock title="This portal no longer exists." desc="The sender has closed their tab or the connection timed out. Ask them to open a new portal." />
         )}
@@ -127,7 +124,6 @@ export default function Portal() {
           <ErrorBlock title="Connection error." desc="Could not establish a connection. Check your internet and try refreshing the page." />
         )}
 
-        {/* Connecting */}
         {isConnecting && (
           <div className="text-center py-16 animate-fade-in-up">
             <div className="relative w-20 h-20 mx-auto mb-6">
@@ -145,7 +141,6 @@ export default function Portal() {
           </div>
         )}
 
-        {/* Password required */}
         {status === 'password-required' && (
           <div className="text-center py-12 animate-fade-in-up">
             <div className="max-w-sm mx-auto space-y-6">
@@ -198,7 +193,6 @@ export default function Portal() {
           </div>
         )}
 
-        {/* Direct failed — relay option */}
         {status === 'direct-failed' && (
           <div className="text-center py-12 animate-fade-in-up">
             <div className="max-w-sm mx-auto space-y-6">
@@ -224,7 +218,6 @@ export default function Portal() {
           </div>
         )}
 
-        {/* Connected waiting for manifest */}
         {status === 'connected' && !manifest && (
           <div className="text-center py-10 animate-fade-in-up">
             <Loader2 className="w-6 h-6 animate-spin text-accent mx-auto mb-3" />
@@ -233,10 +226,8 @@ export default function Portal() {
           </div>
         )}
 
-        {/* ── Session card: status + files or chat label ── */}
         {showManifest && (
           <div className="glow-card overflow-hidden animate-fade-in-up">
-            {/* Header: status + badges */}
             <div className="px-4 py-3 space-y-2">
               {isChatOnly && (
                 <div className="flex items-center gap-2">

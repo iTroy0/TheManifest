@@ -39,7 +39,6 @@ export default function ImagePreviewOverlay({ viewImage, onClose }: ImagePreview
     return () => clearTimeout(hideTimer.current!)
   }, [])
 
-  // Auto-focus the overlay for keyboard accessibility
   useEffect(() => {
     if (overlayRef.current) {
       overlayRef.current.focus()

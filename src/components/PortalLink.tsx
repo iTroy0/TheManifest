@@ -82,7 +82,6 @@ export default function PortalLink({ peerId }: PortalLinkProps) {
             )}
           </div>
         </div>
-        {/* QR — collapsible */}
         <div className={`grid transition-all duration-300 ease-in-out ${showQr ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
           <div className="overflow-hidden">
             <div className="flex flex-col items-center gap-2 pt-4 pb-2">

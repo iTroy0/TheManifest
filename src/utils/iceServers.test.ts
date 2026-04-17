@@ -1,8 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// Each test group resets modules so import.meta.env is re-read fresh
-// vi.stubEnv patches import.meta.env keys for the duration of the test
-
 async function loadModule() {
   const mod = await import('./iceServers')
   return mod
@@ -15,8 +12,7 @@ describe('iceServers – default config (no env vars set)', () => {
     vi.stubEnv('VITE_TURN_URL', '')
     vi.stubEnv('VITE_SIGNAL_HOST', '')
     vi.stubEnv('VITE_SIGNAL_PATH', '')
-    // .env.test sets port=9000 / secure=false for Playwright; blank those
-    // out here so the defaults (443 / true) apply.
+    // Blank port/secure so production defaults (443 / true) apply.
     vi.stubEnv('VITE_SIGNAL_PORT', '')
     vi.stubEnv('VITE_SIGNAL_SECURE', '')
   })
@@ -55,8 +51,7 @@ describe('iceServers – with VITE_SIGNAL_HOST configured', () => {
     vi.unstubAllEnvs()
     vi.stubEnv('VITE_SIGNAL_HOST', 'signal.example.com')
     vi.stubEnv('VITE_SIGNAL_PATH', '/peerjs')
-    // .env.test port=9000 / secure=false — blank them so the production
-    // defaults assert as 443 / true.
+    // Blank port/secure so production defaults (443 / true) apply.
     vi.stubEnv('VITE_SIGNAL_PORT', '')
     vi.stubEnv('VITE_SIGNAL_SECURE', '')
   })
@@ -156,11 +151,6 @@ describe('iceServers – getWithTurn with API response', () => {
   })
 
   it('getWithTurn omits Google STUN under relay-only policy to prevent IP leak', async () => {
-    // Under iceTransportPolicy: 'relay' the ICE agent still probes STUN
-    // during candidate gathering even though only relay candidates will be
-    // used. Keeping Google STUN in the list would leak the user's public
-    // IP to a third party despite the privacy opt-in — self-hosted STUN
-    // is the only third-party trust the user opted into.
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({
