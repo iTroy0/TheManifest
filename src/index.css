@@ -25,6 +25,14 @@
 :root {
   color-scheme: dark;
 }
+
+/* Edge/IE paint their own password-reveal + clear buttons on top of
+   `type="password"` inputs. We render our own toggle with a Lucide
+   Eye/EyeOff icon; without this rule the user sees two eyes stacked. */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none;
+}
 body {
   margin: 0;
   background-color: var(--color-bg);
