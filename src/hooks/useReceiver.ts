@@ -3,6 +3,7 @@ import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
 import { parseChunkPacket, buildChunkPacket, waitForBufferDrain, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker } from '../utils/fileChunker'
 import { generateKeyPair, exportPublicKey, encryptChunk, decryptChunk, decryptJSON, uint8ToBase64 } from '../utils/crypto'
 import { finalizeKeyExchange } from '../net/keyExchange'
+import { createSession, type Session } from '../net/session'
 import { createFileStream } from '../utils/streamWriter'
 import { createStreamingZip } from '../utils/zipBuilder'
 import { STUN_ONLY, getWithTurn } from '../utils/iceServers'
@@ -60,16 +61,21 @@ export function useReceiver(peerId: string) {
   const typingTimeouts = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const lastMsgTime = useRef<number>(0)
 
+  // Receiver-side file bookkeeping — these are hook-lifetime (file state
+  // must survive a reconnect; the Session is per-connection).
   const streamsRef = useRef<Record<number, ReturnType<typeof createFileStream> | null>>({})
   const chunksRef = useRef<Record<number, Uint8Array[] | null>>({})
   const zipWriterRef = useRef<ReturnType<typeof createStreamingZip> | null>(null)
   const fileMetaRef = useRef<Record<number, FileMeta>>({})
-  const decryptKeyRef = useRef<CryptoKey | null>(null)
-  const keyPairRef = useRef<CryptoKeyPair | null>(null)
   const totalReceivedRef = useRef<number>(0)
   const startTimeRef = useRef<number | null>(null)
   const manifestRef = useRef<ManifestData | null>(null)
-  const connRef = useRef<DataConnection | null>(null)
+
+  // Per-connection plumbing — owned by `Session`. Replaces decryptKeyRef,
+  // keyPairRef, heartbeatRef, rttPollerRef, keyExchangeTimeoutRef,
+  // chunkQueueRef, imageSendQueueRef, inProgressImageRef, connRef.
+  const sessionRef = useRef<Session | null>(null)
+
   const peerRef = useRef<InstanceType<typeof Peer> | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const destroyedRef = useRef<boolean>(false)
@@ -82,23 +88,19 @@ export function useReceiver(peerId: string) {
   const wasTransferringRef = useRef<boolean>(false)
   const reconnectCountRef = useRef<number>(0)
   const useTurnRef = useRef<boolean>(false)
-  const chunkQueueRef = useRef<Promise<void>>(Promise.resolve())
-  const inProgressImageRef = useRef<InProgressImage | null>(null)
-  const imageSendQueueRef = useRef<Promise<void>>(Promise.resolve())
   const imageBlobUrlsRef = useRef<string[]>([])
   const lastChunkUIUpdateRef = useRef<number>(0)
-  const heartbeatRef = useRef<ReturnType<typeof setupHeartbeat> | null>(null)
-  const rttPollerRef = useRef<ReturnType<typeof setupRTTPolling> | null>(null)
   const manifestTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingResumeRef = useRef<{ index: number; resumeChunk: number } | null>(null)
-  const keyExchangeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const originalFingerprintRef = useRef<string | null>(null)
   const isMountedRef = useRef<boolean>(true)
+  // Hook-level reconnect-intent token — orthogonal to session identity.
+  // Rotates on every reconnect intent, enableRelay flip, and unmount so
+  // async orchestration setTimeouts can detect a newer intent and bail.
   const reconnectTokenRef = useRef<symbol>(Symbol('reconnect'))
-  // Buffers a manifest-enc message that arrives before key exchange completes.
-  // This race is real: the sender sends manifest-enc the moment it derives
-  // encryptKey after receiving the receiver's public-key, but the receiver is
-  // still awaiting its own deriveSharedKey when the message arrives.
+  // Buffers a manifest-enc message that arrives before key exchange
+  // completes — the sender emits manifest-enc the moment it derives its
+  // encryptKey, but the receiver is still awaiting its own deriveSharedKey.
   const pendingManifestRef = useRef<string | null>(null)
 
   // Call plumbing (single-consumer — useCall owns the handler slot).
@@ -110,20 +112,17 @@ export function useReceiver(peerId: string) {
   }, [])
 
   const sendCallMessage = useCallback((msg: Record<string, unknown>): void => {
-    const c = connRef.current
-    if (c && c.open) { try { c.send(msg) } catch (e) { log.warn('useReceiver.sendCallMessage', e) } }
+    const sess = sessionRef.current
+    if (sess && sess.conn.open) {
+      try { sess.send(msg) } catch (e) { log.warn('useReceiver.sendCallMessage', e) }
+    }
   }, [])
 
   const startConnection = useCallback((withTurn: boolean, isReconnect: boolean = false): void => {
     if (!window.crypto?.subtle) { dispatchConn({ type: 'SET_STATUS', payload: 'error' }); return }
-    // Don't restart after unmount — guards against setTimeout-queued reconnects
-    // racing the useEffect cleanup. `destroyedRef` alone is not enough because
-    // startConnection used to clobber it back to false.
     if (!isMountedRef.current) return
     destroyedRef.current = false
     attemptRef.current = 0
-    // Rotate reconnect token — queued reconnects from older sessions will see
-    // a different token and abort before touching a dead component.
     reconnectTokenRef.current = Symbol('reconnect')
     dispatchConn({ type: 'SET', payload: { retryCount: 0 } })
     if (!isReconnect) {
@@ -151,41 +150,40 @@ export function useReceiver(peerId: string) {
       peer.on('open', () => {
         if (destroyedRef.current) return
         const conn = peer.connect(peerId, { reliable: true })
-        connRef.current = conn
+        // Allocate the session up front; it stays `idle` until the
+        // conn-open event ticks the transitions. Generation tracks the
+        // receiver's connect attempt so bisects are informative.
+        const sess = createSession({
+          conn,
+          role: 'portal-receiver',
+          generation: attemptRef.current,
+        })
+        sessionRef.current = sess
+        sess.dispatch({ type: 'connect-start' })
         setPeerInstance(peer)
-        let disconnectHandled = false
 
         conn.on('open', () => {
           if (destroyedRef.current) return
           clearTimeout(timeoutRef.current!)
           reconnectCountRef.current = 0
+          sess.dispatch({ type: 'conn-open' })
 
-          if (rttPollerRef.current) {
-            rttPollerRef.current.cleanup()
-          }
-          rttPollerRef.current = setupRTTPolling(conn.peerConnection, setRtt)
+          sess.rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
 
           function handleDisconnect(reason: string): void {
-            if (disconnectHandled || destroyedRef.current) return
-            disconnectHandled = true
-            if (heartbeatRef.current) heartbeatRef.current.cleanup()
-            if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
-            if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
+            if (sessionRef.current !== sess || destroyedRef.current) return
+            if (sess.state === 'closed' || sess.state === 'error' || sess.state === 'kicked') return
             try { conn.removeAllListeners() } catch (e) { log.warn('useReceiver.handleDisconnect.removeListeners', e) }
-            // Null the ICE handler to release the closure
             if (conn.peerConnection) {
               try { conn.peerConnection.oniceconnectionstatechange = null } catch (e) { log.warn('useReceiver.handleDisconnect.clearIce', e) }
             }
-            // Clear stale pendingResume if the transfer completed between disconnects
             if (!wasTransferringRef.current) pendingResumeRef.current = null
             setRtt(null)
             setMessages(prev => [...prev, { text: reason, from: 'system', time: Date.now(), self: false }])
+            // Session-level cleanup: timers, heartbeat, rttPoller, active
+            // transfers. Idempotent — safe if a parallel path already closed.
+            sess.close('peer-disconnect')
             if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
-              chunkQueueRef.current = Promise.resolve()
-              imageSendQueueRef.current = Promise.resolve()
-              inProgressImageRef.current = null
-              decryptKeyRef.current = null
-              keyPairRef.current = null
               Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
               streamsRef.current = {}
               chunksRef.current = {}
@@ -193,7 +191,6 @@ export function useReceiver(peerId: string) {
               peer.destroy()
               const token = reconnectTokenRef.current
               setTimeout(() => {
-                // Verify the reconnect is still valid — unmount or newer reconnect invalidates it
                 if (!isMountedRef.current || destroyedRef.current || reconnectTokenRef.current !== token) return
                 startConnection(useTurnRef.current, true)
               }, RECONNECT_DELAY)
@@ -203,13 +200,15 @@ export function useReceiver(peerId: string) {
             }
           }
 
-          heartbeatRef.current = setupHeartbeat(conn, {
+          sess.heartbeat = setupHeartbeat(conn, {
             onDead: () => handleDisconnect('Connection lost'),
           })
 
-          // ECDH key exchange timeout
-          keyExchangeTimeoutRef.current = setTimeout(() => {
-            if (!decryptKeyRef.current && !destroyedRef.current) {
+          // Handshake watchdog. Session auto-clears on `keys-derived`
+          // dispatch, and also on `close()`; no manual teardown needed.
+          sess.keyExchangeTimeout = setTimeout(() => {
+            if (sessionRef.current !== sess) return
+            if (!sess.encryptKey && !destroyedRef.current) {
               console.warn('Key exchange timed out')
               conn.close()
             }
@@ -243,15 +242,15 @@ export function useReceiver(peerId: string) {
             }
             conn.on('data', origManifestHandler)
           }
-          conn.send({ type: 'join', nickname } satisfies PortalMsg)
+          try { sess.send({ type: 'join', nickname } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendJoin', e) }
         })
 
         conn.on('data', async (data: unknown) => {
           if (destroyedRef.current) return
-          if (heartbeatRef.current) heartbeatRef.current.markAlive()
+          if (sess.heartbeat) sess.heartbeat.markAlive()
 
           if (data instanceof ArrayBuffer || (data && (data as ArrayBuffer).byteLength !== undefined && !(typeof data === 'object' && (data as { type?: unknown }).type))) {
-            chunkQueueRef.current = chunkQueueRef.current.then(() => handleChunk(data as ArrayBuffer)).catch(e => log.warn('useReceiver.chunkQueue', e))
+            sess.chunkQueue = sess.chunkQueue.then(() => handleChunk(data as ArrayBuffer, sess)).catch(e => log.warn('useReceiver.chunkQueue', e))
             return
           }
 
@@ -275,7 +274,7 @@ export function useReceiver(peerId: string) {
 
           if (msg.type === 'pong') return
           if (msg.type === 'ping') {
-            try { conn.send({ type: 'pong', ts: msg.ts } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendPong', e) }
+            try { sess.send({ type: 'pong', ts: msg.ts } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendPong', e) }
             return
           }
 
@@ -285,32 +284,31 @@ export function useReceiver(peerId: string) {
           }
 
           if (msg.type === 'public-key') {
-            // Guard against unsolicited mid-session key rotation from a malicious peer.
-            // Allow ONLY if no shared key exists yet (first handshake or post-reconnect
-            // when handleDisconnect has cleared decryptKeyRef).
-            if (decryptKeyRef.current) {
+            // Guard against unsolicited mid-session key rotation from a
+            // malicious peer. Allow ONLY if no shared key exists yet.
+            if (sess.encryptKey) {
               console.warn('Ignoring unsolicited public-key message after key established')
               return
             }
             try {
-              if (!keyPairRef.current) {
-                keyPairRef.current = await generateKeyPair()
+              if (!sess.keyPair) {
+                sess.setKeyPair(await generateKeyPair())
               }
-              const pubKeyBytes = await exportPublicKey(keyPairRef.current.publicKey)
-              conn.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies PortalMsg)
+              const pubKeyBytes = await exportPublicKey(sess.keyPair!.publicKey)
+              sess.send({ type: 'public-key', key: Array.from(pubKeyBytes) } satisfies PortalMsg)
               const remoteKeyBytes = new Uint8Array(msg.key as number[])
               const { encryptKey, fingerprint: fp } = await finalizeKeyExchange({
-                localPrivate: keyPairRef.current.privateKey,
+                localPrivate: sess.keyPair!.privateKey,
                 localPublic: pubKeyBytes,
                 remotePublic: remoteKeyBytes,
               })
-              decryptKeyRef.current = encryptKey
-              if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
+              // Atomic: flips state to authenticated, assigns encryptKey +
+              // fingerprint on the session, disarms keyExchangeTimeout.
+              sess.dispatch({ type: 'keys-derived', encryptKey, fingerprint: fp })
               dispatchConn({ type: 'SET', payload: { fingerprint: fp } })
 
-              // Fingerprint rotation warning — surface any change to the user so
-              // a silent mid-session MitM swap is visible. On a legit reconnect this
-              // is informative; on a MitM takeover it is critical.
+              // Fingerprint rotation warning — surface any change to the user
+              // so a silent mid-session MitM swap is visible.
               if (originalFingerprintRef.current && originalFingerprintRef.current !== fp) {
                 setMessages(prev => [...prev, {
                   text: `Encryption re-established with new fingerprint: ${fp}. Verify with the sender if unexpected.`,
@@ -326,7 +324,7 @@ export function useReceiver(peerId: string) {
                 const data = pendingManifestRef.current
                 pendingManifestRef.current = null
                 try {
-                  const manifest = await decryptJSON<ManifestData>(decryptKeyRef.current, data)
+                  const manifest = await decryptJSON<ManifestData>(encryptKey, data)
                   dispatchConn({ type: 'SET', payload: { manifest } })
                   manifestRef.current = manifest
                   dispatchConn({ type: 'SET_STATUS', payload: (prev: string) => prev === 'receiving' ? prev : 'manifest-received' })
@@ -339,7 +337,7 @@ export function useReceiver(peerId: string) {
               if (pendingResumeRef.current) {
                 const { index, resumeChunk } = pendingResumeRef.current
                 pendingResumeRef.current = null
-                conn.send({ type: 'request-file', index, resumeChunk } satisfies PortalMsg)
+                try { sess.send({ type: 'request-file', index, resumeChunk } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.resumeRequest', e) }
               }
             } catch (e) {
               // M10 fix: don't leak the buffered manifest to a later connection
@@ -397,8 +395,8 @@ export function useReceiver(peerId: string) {
 
           if (msg.type === 'chat-encrypted') {
             let payload: Record<string, unknown> = {}
-            if (decryptKeyRef.current && msg.data) {
-              try { payload = await decryptJSON(decryptKeyRef.current, msg.data as string) }
+            if (sess.encryptKey && msg.data) {
+              try { payload = await decryptJSON(sess.encryptKey, msg.data as string) }
               catch (e) { log.warn('useReceiver.chatEncrypted.decrypt', e); return }
             }
             setMessages(prev => [...prev, { text: payload.text as string || '', image: payload.image as string | undefined, mime: payload.mime as string | undefined, replyTo: payload.replyTo as ChatMessage['replyTo'], from: msg.from as string || 'Sender', time: msg.time as number, self: false }])
@@ -407,16 +405,16 @@ export function useReceiver(peerId: string) {
 
           // Mid-stream abort from sender — clear in-progress image slot.
           if (msg.type === 'chat-image-abort') {
-            inProgressImageRef.current = null
+            sess.inProgressImage = null
             return
           }
 
           if (msg.type === 'chat-image-start-enc') {
-            if (!decryptKeyRef.current || !msg.data) return
+            if (!sess.encryptKey || !msg.data) return
             let meta: Record<string, unknown>
-            try { meta = await decryptJSON(decryptKeyRef.current, msg.data as string) }
+            try { meta = await decryptJSON(sess.encryptKey, msg.data as string) }
             catch (e) { log.warn('useReceiver.chatImageStart.decrypt', e); return }
-            inProgressImageRef.current = {
+            sess.inProgressImage = {
               mime: meta.mime as string || 'application/octet-stream',
               size: meta.size as number || 0,
               text: meta.text as string || '',
@@ -431,9 +429,9 @@ export function useReceiver(peerId: string) {
           }
 
           if (msg.type === 'chat-image-end-enc') {
-            await chunkQueueRef.current
-            const inFlight = inProgressImageRef.current
-            inProgressImageRef.current = null
+            await sess.chunkQueue
+            const inFlight = sess.inProgressImage
+            sess.inProgressImage = null
             if (!inFlight) return
             const blob = new Blob(inFlight.chunks as unknown as BlobPart[], { type: inFlight.mime })
             const url = URL.createObjectURL(blob)
@@ -462,13 +460,13 @@ export function useReceiver(peerId: string) {
           if (msg.type === 'manifest-enc') {
             if (!msg.data) return
             // If the key is still being derived, buffer the message; the
-            // public-key handler will process it once decryptKeyRef is set.
-            if (!decryptKeyRef.current) {
+            // public-key handler will process it once encryptKey is set.
+            if (!sess.encryptKey) {
               pendingManifestRef.current = msg.data as string
               return
             }
             try {
-              const manifest = await decryptJSON<ManifestData>(decryptKeyRef.current, msg.data as string)
+              const manifest = await decryptJSON<ManifestData>(sess.encryptKey, msg.data as string)
               dispatchConn({ type: 'SET', payload: { manifest } })
               manifestRef.current = manifest
               dispatchConn({ type: 'SET_STATUS', payload: (prev: string) => prev === 'receiving' ? prev : 'manifest-received' })
@@ -521,7 +519,7 @@ export function useReceiver(peerId: string) {
             const meta = fileMetaRef.current[idx]
             if (!meta) return
 
-            await chunkQueueRef.current
+            await sess.chunkQueue
 
             if (zipModeRef.current && zipWriterRef.current) {
               zipWriterRef.current.endFile()
@@ -554,7 +552,7 @@ export function useReceiver(peerId: string) {
             // Sender hit an error partway through `request-all` / `ready`
             // and gave up on this index. Before this message existed the
             // sender just swallowed the error and the receiver UI kept
-            // showing the file as pending forever. Now surface it.
+            // showing the file as pending forever.
             const idx = msg.index as number
             const name = manifestRef.current?.files?.[idx]?.name
             const reason = (msg.reason as string) || 'send-failed'
@@ -567,7 +565,7 @@ export function useReceiver(peerId: string) {
           }
 
           if (msg.type === 'done' || msg.type === 'batch-done') {
-            await chunkQueueRef.current
+            await sess.chunkQueue
 
             wasTransferringRef.current = false
             pendingResumeRef.current = null
@@ -588,23 +586,17 @@ export function useReceiver(peerId: string) {
         conn.on('close', () => {
           if (destroyedRef.current) return
           clearTimeout(timeoutRef.current!)
-          if (disconnectHandled) return
-          disconnectHandled = true
+          // Bail if handleDisconnect already ran (terminal state) or a
+          // newer session took over.
+          if (sessionRef.current !== sess) return
+          if (sess.state === 'closed' || sess.state === 'error' || sess.state === 'kicked') return
           try { conn.removeAllListeners() } catch (e) { log.warn('useReceiver.close.removeListeners', e) }
           if (conn.peerConnection) {
             try { conn.peerConnection.oniceconnectionstatechange = null } catch (e) { log.warn('useReceiver.close.clearIce', e) }
           }
-          if (heartbeatRef.current) heartbeatRef.current.cleanup()
-          if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
-          if (keyExchangeTimeoutRef.current) { clearTimeout(keyExchangeTimeoutRef.current); keyExchangeTimeoutRef.current = null }
-          // Clear stale pendingResume if the transfer had completed
           if (!wasTransferringRef.current) pendingResumeRef.current = null
-          chunkQueueRef.current = Promise.resolve()
-          imageSendQueueRef.current = Promise.resolve()
-          inProgressImageRef.current = null
+          sess.close('peer-disconnect')
           if (wasTransferringRef.current && reconnectCountRef.current < MAX_RECONNECTS) {
-            decryptKeyRef.current = null
-            keyPairRef.current = null
             Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
             streamsRef.current = {}
             chunksRef.current = {}
@@ -663,7 +655,9 @@ export function useReceiver(peerId: string) {
     reconnectTokenRef.current = Symbol('reconnect')
 
     const handleBeforeUnload = (): void => {
-      try { connRef.current?.send({ type: 'closing' } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendClosing', e) }
+      const sess = sessionRef.current
+      if (!sess) return
+      try { sess.send({ type: 'closing' } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendClosing', e) }
     }
     window.addEventListener('beforeunload', handleBeforeUnload)
     // iOS Safari does not reliably fire beforeunload — pagehide is the correct event
@@ -674,7 +668,8 @@ export function useReceiver(peerId: string) {
       // Fresh network means a fresh chance — don't let a budget exhausted
       // during an outage lock us out once the network comes back.
       reconnectCountRef.current = 0
-      if (connRef.current && !connRef.current.open) {
+      const sess = sessionRef.current
+      if (sess && !sess.conn.open) {
         startConnection(useTurnRef.current, true)
       }
     }
@@ -684,7 +679,8 @@ export function useReceiver(peerId: string) {
       if (!isMountedRef.current) return
       if (typeof document === 'undefined') return
       if (document.visibilityState !== 'visible') return
-      if (heartbeatRef.current) heartbeatRef.current.markAlive()
+      const hb = sessionRef.current?.heartbeat
+      if (hb) hb.markAlive()
       if (peerRef.current && peerRef.current.disconnected && !peerRef.current.destroyed) {
         try { peerRef.current.reconnect() } catch (e) { log.warn('useReceiver.visibilityReconnect', e) }
       }
@@ -702,18 +698,17 @@ export function useReceiver(peerId: string) {
       document.removeEventListener('visibilitychange', handleVisibility)
       Object.values(typingTimeouts.current).forEach(clearTimeout)
       typingTimeouts.current = {}
-      if (keyExchangeTimeoutRef.current) clearTimeout(keyExchangeTimeoutRef.current)
-      if (connRef.current) try { connRef.current.removeAllListeners() } catch (e) { log.warn('useReceiver.unmount.removeListeners', e) }
+      const sess = sessionRef.current
+      if (sess) {
+        try { sess.conn.removeAllListeners() } catch (e) { log.warn('useReceiver.unmount.removeListeners', e) }
+        // Terminal close runs the session-level cleanup (timers,
+        // heartbeat, rttPoller, transfers) once and idempotently.
+        sess.close('session-abort')
+        sessionRef.current = null
+      }
       destroyedRef.current = true
       clearTimeout(timeoutRef.current!)
       clearTimeout(manifestTimeoutRef.current!)
-      if (heartbeatRef.current) { heartbeatRef.current.cleanup(); heartbeatRef.current = null }
-      if (rttPollerRef.current) { rttPollerRef.current.cleanup(); rttPollerRef.current = null }
-      decryptKeyRef.current = null
-      keyPairRef.current = null
-      chunkQueueRef.current = Promise.resolve()
-      imageSendQueueRef.current = Promise.resolve()
-      inProgressImageRef.current = null
       imageBlobUrlsRef.current.forEach(u => { try { URL.revokeObjectURL(u) } catch (e) { log.warn('useReceiver.unmount.revokeBlob', e) } })
       imageBlobUrlsRef.current = []
       Object.values(streamsRef.current).forEach(s => { if (s) s.abort() })
@@ -727,15 +722,15 @@ export function useReceiver(peerId: string) {
     // Bump the reconnect token FIRST so any in-flight async handlers that
     // captured the old token (e.g. a chunk decrypt still awaiting) detect
     // the switch and bail out of mutating state against the new connection.
-    // This is the primary race-stop — setting destroyedRef=true is retained
-    // for synchronous handlers that only check that flag, but the token
-    // bump is what protects async paths across the 500 ms gap before the
-    // new peer is started.
     reconnectTokenRef.current = Symbol('enable-relay')
     const token = reconnectTokenRef.current
     destroyedRef.current = true
     clearTimeout(timeoutRef.current!)
-    chunkQueueRef.current = Promise.resolve()
+    const sess = sessionRef.current
+    if (sess) {
+      sess.close('session-abort')
+      sessionRef.current = null
+    }
     reconnectCountRef.current = 0
     if (peerRef.current) peerRef.current.destroy()
     useTurnRef.current = true
@@ -747,9 +742,9 @@ export function useReceiver(peerId: string) {
   }, [startConnection])
 
   const cancelFile = useCallback((index: number): void => {
-    const conn = connRef.current
-    if (!conn) return
-    conn.send({ type: 'cancel-file', index } satisfies PortalMsg)
+    const sess = sessionRef.current
+    if (!sess) return
+    try { sess.send({ type: 'cancel-file', index } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.cancelFile', e) }
     if (streamsRef.current[index]) {
       streamsRef.current[index]!.abort()
       streamsRef.current[index] = null
@@ -763,8 +758,8 @@ export function useReceiver(peerId: string) {
   }, [])
 
   const cancelAll = useCallback((): void => {
-    const conn = connRef.current
-    if (conn) try { conn.send({ type: 'cancel-all' } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.cancelAll', e) }
+    const sess = sessionRef.current
+    if (sess) try { sess.send({ type: 'cancel-all' } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.cancelAll', e) }
     if (zipWriterRef.current) {
       zipWriterRef.current.abort()
       zipWriterRef.current = null
@@ -780,22 +775,22 @@ export function useReceiver(peerId: string) {
   }, [])
 
   const pauseFile = useCallback((index: number): void => {
-    const conn = connRef.current
-    if (!conn) return
-    conn.send({ type: 'pause-file', index } satisfies PortalMsg)
+    const sess = sessionRef.current
+    if (!sess) return
+    try { sess.send({ type: 'pause-file', index } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.pauseFile', e) }
     dispatchTransfer({ type: 'PAUSE_FILE', index })
   }, [])
 
   const resumeFile = useCallback((index: number): void => {
-    const conn = connRef.current
-    if (!conn) return
-    conn.send({ type: 'resume-file', index } satisfies PortalMsg)
+    const sess = sessionRef.current
+    if (!sess) return
+    try { sess.send({ type: 'resume-file', index } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.resumeFile', e) }
     dispatchTransfer({ type: 'RESUME_FILE', index })
   }, [])
 
   const sendTyping = useCallback((): void => {
-    const conn = connRef.current
-    if (conn) try { conn.send({ type: 'typing', nickname } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendTyping', e) }
+    const sess = sessionRef.current
+    if (sess) try { sess.send({ type: 'typing', nickname } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendTyping', e) }
   }, [nickname])
 
   const sendReaction = useCallback((msgId: string, emoji: string): void => {
@@ -813,16 +808,16 @@ export function useReceiver(peerId: string) {
       }
       return m
     }))
-    const conn = connRef.current
-    if (conn) try { conn.send({ type: 'reaction', msgId, emoji, nickname } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendReaction', e) }
+    const sess = sessionRef.current
+    if (sess) try { sess.send({ type: 'reaction', msgId, emoji, nickname } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.sendReaction', e) }
   }, [nickname])
 
   const changeNickname = useCallback((newName: string): void => {
-    const conn = connRef.current
-    if (!conn || !newName.trim()) return
+    const sess = sessionRef.current
+    if (!sess || !newName.trim()) return
     const oldName = nickname
     setNickname(newName.trim())
-    try { conn.send({ type: 'nickname-change', oldName, newName: newName.trim() } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.changeNickname', e) }
+    try { sess.send({ type: 'nickname-change', oldName, newName: newName.trim() } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.changeNickname', e) }
   }, [nickname])
 
   const sendMessage = useCallback(async (text: string, image?: { bytes: Uint8Array; mime: string } | string, replyTo?: ChatMessage['replyTo']): Promise<void> => {
@@ -830,10 +825,10 @@ export function useReceiver(peerId: string) {
     const now = Date.now()
     if (now - lastMsgTime.current < 100) return
     lastMsgTime.current = now
-    const conn = connRef.current
-    if (!conn || !decryptKeyRef.current) return
+    const sess = sessionRef.current
+    if (!sess || !sess.encryptKey) return
     const time = Date.now()
-    const key = decryptKeyRef.current
+    const key = sess.encryptKey
 
     if (image && typeof image === 'object' && (image as { bytes: Uint8Array; mime: string }).bytes) {
       const imgObj = image as { bytes: Uint8Array; mime: string; duration?: number }
@@ -845,8 +840,8 @@ export function useReceiver(peerId: string) {
       imageBlobUrlsRef.current.push(localUrl)
       setMessages(prev => [...prev, { text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }])
 
-      imageSendQueueRef.current = imageSendQueueRef.current
-        .then(() => streamImageToHost(conn, key, bytes, mime, text || '', replyTo ?? null, time, nickname, destroyedRef, duration))
+      sess.imageSendQueue = sess.imageSendQueue
+        .then(() => streamImageToHost(sess.conn, key, bytes, mime, text || '', replyTo ?? null, time, nickname, destroyedRef, duration))
         .catch(e => log.warn('useReceiver.imageSendQueue', e))
       return
     }
@@ -856,18 +851,18 @@ export function useReceiver(peerId: string) {
     try {
       const payload = JSON.stringify({ text, image: imgStr, replyTo })
       const encrypted = await encryptChunk(key, new TextEncoder().encode(payload))
-      conn.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), nickname, time } satisfies PortalMsg)
+      sess.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), nickname, time } satisfies PortalMsg)
     } catch (e) { console.warn('Failed to send chat message:', e) }
   }, [nickname])
 
-  async function handleChunk(rawData: ArrayBuffer | ArrayBufferView): Promise<void> {
+  async function handleChunk(rawData: ArrayBuffer | ArrayBufferView, sess: Session): Promise<void> {
     const buffer = rawData instanceof ArrayBuffer ? rawData : ((rawData as ArrayBufferView).buffer as ArrayBuffer)
     const { fileIndex, chunkIndex, data } = parseChunkPacket(buffer)
 
     let plainData: ArrayBuffer | Uint8Array
     try {
-      plainData = decryptKeyRef.current
-        ? await decryptChunk(decryptKeyRef.current, data)
+      plainData = sess.encryptKey
+        ? await decryptChunk(sess.encryptKey, data)
         : data
     } catch (decryptErr) {
       console.error('Chunk decryption failed for file', fileIndex, 'chunk', chunkIndex, decryptErr)
@@ -883,11 +878,11 @@ export function useReceiver(peerId: string) {
     }
 
     if (fileIndex === CHAT_IMAGE_FILE_INDEX) {
-      const inFlight = inProgressImageRef.current
+      const inFlight = sess.inProgressImage
       if (inFlight) {
         const bytes = plainData instanceof Uint8Array ? plainData : new Uint8Array(plainData)
         if (inFlight.receivedBytes + bytes.byteLength > MAX_CHAT_IMAGE_SIZE) {
-          inProgressImageRef.current = null
+          sess.inProgressImage = null
           return
         }
         inFlight.chunks.push(bytes)
@@ -901,9 +896,7 @@ export function useReceiver(peerId: string) {
 
     lastFileIndexRef.current = fileIndex
     // Take the max so out-of-order chunk arrival (slow or malicious sender)
-    // can't roll the resume cursor backwards. The assignment-form used to
-    // let a tail chunk followed by a head chunk silently reset resume to
-    // the low index, which corrupted reconnect continuation.
+    // can't roll the resume cursor backwards.
     lastChunkIndexRef.current = Math.max(lastChunkIndexRef.current, chunkIndex + 1)
     totalReceivedRef.current += (plainData as { byteLength: number }).byteLength
     const metaForBytes = fileMetaRef.current[fileIndex]
@@ -947,8 +940,8 @@ export function useReceiver(peerId: string) {
   }
 
   const requestFile = useCallback((index: number): void => {
-    const conn = connRef.current
-    if (!conn || !manifestRef.current) return
+    const sess = sessionRef.current
+    if (!sess || !manifestRef.current) return
     wasTransferringRef.current = true
     zipModeRef.current = false
     totalReceivedRef.current = 0
@@ -956,13 +949,13 @@ export function useReceiver(peerId: string) {
     transferTotalRef.current = manifestRef.current.files[index]?.size || 0
     dispatchConn({ type: 'SET_STATUS', payload: 'receiving' })
     dispatchTransfer({ type: 'SET', payload: { progress: {}, overallProgress: 0, speed: 0, eta: null } })
-    conn.send({ type: 'request-file', index } satisfies PortalMsg)
+    try { sess.send({ type: 'request-file', index } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.requestFile', e) }
     dispatchTransfer({ type: 'ADD_PENDING', index })
   }, [])
 
   const requestAllAsZip = useCallback((): void => {
-    const conn = connRef.current
-    if (!conn || !manifestRef.current) return
+    const sess = sessionRef.current
+    if (!sess || !manifestRef.current) return
 
     const zipWriter = createStreamingZip('manifest-files.zip')
     if (!zipWriter) return
@@ -976,19 +969,19 @@ export function useReceiver(peerId: string) {
     const indices = manifestRef.current.files.map((_, i) => i).filter(i => !transfer.completedFiles[i])
     transferTotalRef.current = indices.reduce((sum, i) => sum + (manifestRef.current!.files[i]?.size || 0), 0)
     dispatchTransfer({ type: 'SET', payload: { progress: {}, overallProgress: 0, speed: 0, eta: null } })
-    conn.send({ type: 'request-all', indices } satisfies PortalMsg)
+    try { sess.send({ type: 'request-all', indices } satisfies PortalMsg) } catch (e) { log.warn('useReceiver.requestAllAsZip', e) }
     const pending: Record<number, boolean> = {}
     indices.forEach(i => { pending[i] = true })
     dispatchTransfer({ type: 'SET', payload: { pendingFiles: pending } })
   }, [transfer.completedFiles])
 
   const submitPassword = useCallback(async (password: string): Promise<void> => {
-    const conn = connRef.current
-    if (!conn || !decryptKeyRef.current) return
+    const sess = sessionRef.current
+    if (!sess || !sess.encryptKey) return
     dispatchConn({ type: 'SET', payload: { passwordError: false } })
     try {
-      const encrypted = await encryptChunk(decryptKeyRef.current, new TextEncoder().encode(password))
-      conn.send({ type: 'password-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)) } satisfies PortalMsg)
+      const encrypted = await encryptChunk(sess.encryptKey, new TextEncoder().encode(password))
+      sess.send({ type: 'password-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)) } satisfies PortalMsg)
     } catch (e) { console.warn('Failed to submit password:', e) }
   }, [])
 
@@ -1010,6 +1003,8 @@ export function useReceiver(peerId: string) {
 }
 
 // ── streamImageToHost ────────────────────────────────────────────────────
+// Module-level; parameterised by conn + key so it stays independent of
+// Session. Callers schedule it onto `sess.imageSendQueue`.
 
 async function streamImageToHost(
   conn: DataConnection,
