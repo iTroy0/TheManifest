@@ -33,6 +33,7 @@ import {
   FALLBACK_TOO_LARGE_MSG,
   DOWNLOAD_REQUEST_TIMEOUT_MS,
 } from '../net/config'
+import type { CollabInnerMsg, CollabUnencryptedMsg } from '../net/protocol'
 import { log } from '../utils/logger'
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -611,7 +612,10 @@ export function useCollabGuest(roomId: string) {
         return
       }
 
-      const msg = data as Record<string, unknown>
+      // Trust boundary on mesh link — typed against the collab outer
+      // union. The mesh wire doesn't carry call-* messages (the host
+      // relays those), so no call-* hoist is needed here.
+      const msg = data as CollabUnencryptedMsg
       if (msg.type === 'pong') return
       if (msg.type === 'ping') {
         try { conn.send({ type: 'pong', ts: msg.ts }) } catch (e) { log.warn('useCollabGuest.mesh.sendPong', e) }
@@ -648,8 +652,8 @@ export function useCollabGuest(roomId: string) {
       // Encrypted collab messages over mesh.
       if (msg.type === 'collab-msg-enc') {
         if (!current.encryptKey || !msg.data) return
-        let payload: Record<string, unknown> = {}
-        try { payload = await decryptJSON(current.encryptKey, msg.data as string) }
+        let payload: CollabInnerMsg
+        try { payload = await decryptJSON<CollabInnerMsg>(current.encryptKey, msg.data as string) }
         catch (e) { log.warn('useCollabGuest.mesh.decrypt', e); return }
 
         // collab-file-start (inbound download from mesh peer)
@@ -1022,20 +1026,24 @@ export function useCollabGuest(roomId: string) {
             return
           }
 
-          const msg = data as Record<string, unknown>
+          // Call messages (call-*) route through useCall — aren't in the
+          // collab union. Pull them off before the typed cast so the
+          // discriminated switch below isn't confused by call-* literals.
+          const raw = data as { type?: unknown; from?: unknown }
+          if (typeof raw.type === 'string' && raw.type.startsWith('call-')) {
+            if (callMessageHandlerRef.current) {
+              const from = (typeof raw.from === 'string' && raw.from) || conn.peer
+              try { callMessageHandlerRef.current(from, raw as Record<string, unknown>) }
+              catch (e) { log.warn('useCollabGuest.callMessageHandler', e) }
+            }
+            return
+          }
+
+          const msg = data as CollabUnencryptedMsg
 
           if (msg.type === 'pong') return
           if (msg.type === 'ping') {
             try { conn.send({ type: 'pong', ts: msg.ts }) } catch (e) { log.warn('useCollabGuest.sendPong', e) }
-            return
-          }
-
-          // Call messages
-          if (typeof msg.type === 'string' && (msg.type as string).startsWith('call-')) {
-            if (callMessageHandlerRef.current) {
-              const from = (msg.from as string) || conn.peer
-              try { callMessageHandlerRef.current(from, msg) } catch (e) { log.warn('useCollabGuest.callMessageHandler', e) }
-            }
             return
           }
 
@@ -1155,8 +1163,8 @@ export function useCollabGuest(roomId: string) {
           // Collab encrypted messages
           if (msg.type === 'collab-msg-enc') {
             if (!decryptKeyRef.current || !msg.data) return
-            let payload: Record<string, unknown> = {}
-            try { payload = await decryptJSON(decryptKeyRef.current, msg.data as string) }
+            let payload: CollabInnerMsg
+            try { payload = await decryptJSON<CollabInnerMsg>(decryptKeyRef.current, msg.data as string) }
             catch (e) { log.warn('useCollabGuest.collabMsgEnc.decrypt', e); return }
 
             // File list from host — C2 validation.

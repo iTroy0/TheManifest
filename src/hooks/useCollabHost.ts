@@ -31,6 +31,7 @@ import {
   DOWNLOAD_REQUEST_TIMEOUT_MS,
   MAX_CONNECTIONS,
 } from '../net/config'
+import type { CollabInnerMsg, CollabUnencryptedMsg } from '../net/protocol'
 import { log } from '../utils/logger'
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -748,19 +749,25 @@ export function useCollabHost() {
           return
         }
 
-        const msg = data as Record<string, unknown>
+        // Call messages (call-*) ride the same DataConnection but aren't
+        // in the collab union. Pull them off before the union cast so the
+        // discriminated switch below stays clean.
+        const raw = data as { type?: unknown }
+        if (typeof raw.type === 'string' && raw.type.startsWith('call-')) {
+          if (callMessageHandlerRef.current) {
+            try { callMessageHandlerRef.current(conn.peer, raw as Record<string, unknown>) }
+            catch (e) { log.warn('useCollabHost.callMessageHandler', e) }
+          }
+          return
+        }
+
+        // Trust boundary — after the binary and call-* checks every
+        // valid payload should match the collab outer union.
+        const msg = data as CollabUnencryptedMsg
 
         if (msg.type === 'pong') return
         if (msg.type === 'ping') {
           try { conn.send({ type: 'pong', ts: msg.ts }) } catch (e) { log.warn('useCollabHost.sendPong', e) }
-          return
-        }
-
-        // Call messages
-        if (typeof msg.type === 'string' && (msg.type as string).startsWith('call-')) {
-          if (callMessageHandlerRef.current) {
-            try { callMessageHandlerRef.current(conn.peer, msg) } catch (e) { log.warn('useCollabHost.callMessageHandler', e) }
-          }
           return
         }
 
@@ -919,8 +926,10 @@ export function useCollabHost() {
         // Encrypted collab messages
         if (msg.type === 'collab-msg-enc') {
           if (!gs.encryptKey || !msg.data) return
-          let payload: Record<string, unknown> = {}
-          try { payload = await decryptJSON(gs.encryptKey, msg.data as string) }
+          // Typed against CollabInnerMsg — each `payload.type === 'X'`
+          // branch narrows to the matching variant.
+          let payload: CollabInnerMsg
+          try { payload = await decryptJSON<CollabInnerMsg>(gs.encryptKey, msg.data as string) }
           catch (e) { log.warn('useCollabHost.collabMsgEnc.decrypt', e); return }
 
           // Handle collab-specific messages

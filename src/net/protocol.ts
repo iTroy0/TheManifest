@@ -52,6 +52,21 @@ export interface ChatImageAbortMsg { type: 'chat-image-abort' }
 // Unencrypted manifest (legacy — still sent only for the error branch).
 // The canonical path is `manifest-enc`, produced after the ECDH handshake.
 export interface ManifestEncMsg { type: 'manifest-enc'; data: string }
+// Legacy plain-manifest path. Kept here so the receiver can still match
+// `msg.type === 'manifest'` and reject it loudly (MITM-safety log line).
+export interface ManifestMsg { type: 'manifest' }
+// Per-file framing on the binary transport — the JSON start/end sit on
+// the same DataConnection as the chunk packets and mark the file
+// boundary. `resumeFrom` lets a reconnect skip chunks already written.
+export interface FileStartMsg {
+  type: 'file-start'
+  index: number
+  name: string
+  size: number
+  totalChunks: number
+  resumeFrom?: number
+}
+export interface FileEndMsg { type: 'file-end'; index: number }
 // Password flow — gates manifest delivery.
 export interface PasswordRequiredMsg { type: 'password-required' }
 export interface PasswordEncryptedMsg { type: 'password-encrypted'; data: string }
@@ -104,7 +119,8 @@ export interface RelayChatEncryptedMsg { type: 'relay-chat-encrypted'; data: str
 export type PortalMsg =
   | PingMsg | PongMsg | PublicKeyMsg
   | OnlineCountMsg | SystemMsgMsg
-  | ManifestEncMsg
+  | ManifestEncMsg | ManifestMsg
+  | FileStartMsg | FileEndMsg
   | PasswordRequiredMsg | PasswordEncryptedMsg | PasswordAcceptedMsg
   | PasswordWrongMsg | PasswordLockedMsg | PasswordRateLimitedMsg
   | ReadyMsg | ResumeMsg
@@ -140,6 +156,11 @@ export type CollabInnerMsg =
   | { type: 'collab-cancel-all' }
   | { type: 'collab-file-unavailable'; fileId: string; reason?: string; requesterPeerId?: string }
   | { type: 'collab-participant-list'; participants: Array<{ peerId: string; name: string }> }
+  // `collab-peer-renamed` is primarily broadcast unencrypted (see
+  // `CollabUnencryptedMsg`), but useCollabGuest carries a legacy
+  // encrypted-path handler. Keep the variant here so that handler
+  // still typechecks until it's removed in a cleanup pass.
+  | { type: 'collab-peer-renamed'; peerId: string; oldName?: string; newName: string }
 
 // Participant-management messages that ride the same DataConnection but
 // are NOT encrypted. Trust is established via host-owned peerId; the host
@@ -148,9 +169,10 @@ export type CollabInnerMsg =
 export type CollabUnencryptedMsg =
   | CollabEnvelope
   | PingMsg | PongMsg | PublicKeyMsg
-  | OnlineCountMsg | SystemMsgMsg
+  | OnlineCountMsg | SystemMsgMsg | ClosingMsg
   | ChatEncryptedMsg | RelayChatEncryptedMsg
   | ChatImageStartEncMsg | ChatImageEndEncMsg | ChatImageAbortMsg
+  | JoinMsg | TypingMsg | ReactionMsg
   | { type: 'collab-signal'; target: string; signal: unknown }
   | { type: 'collab-peer-joined'; peerId: string; name: string }
   | { type: 'collab-peer-left'; peerId: string; name?: string }

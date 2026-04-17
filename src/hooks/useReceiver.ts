@@ -11,6 +11,7 @@ import { ChatMessage, ManifestData } from '../types'
 import { sanitizeFileName } from '../utils/filename'
 import { generateNickname } from '../utils/nickname'
 import { log } from '../utils/logger'
+import type { PortalMsg } from '../net/protocol'
 import {
   transferReducer,
   connectionReducer,
@@ -249,24 +250,32 @@ export function useReceiver(peerId: string) {
           if (destroyedRef.current) return
           if (heartbeatRef.current) heartbeatRef.current.markAlive()
 
-          if (data instanceof ArrayBuffer || (data && (data as ArrayBuffer).byteLength !== undefined && !(typeof data === 'object' && (data as Record<string, unknown>).type))) {
+          if (data instanceof ArrayBuffer || (data && (data as ArrayBuffer).byteLength !== undefined && !(typeof data === 'object' && (data as { type?: unknown }).type))) {
             chunkQueueRef.current = chunkQueueRef.current.then(() => handleChunk(data as ArrayBuffer)).catch(e => log.warn('useReceiver.chunkQueue', e))
             return
           }
 
-          const msg = data as Record<string, unknown>
+          // Call messages (call-*) route through useCall — they aren't in
+          // PortalMsg. Pull them off before the union cast so the
+          // discriminated switch below isn't confused by call-* literals.
+          const raw = data as { type?: unknown; from?: unknown }
+          if (typeof raw.type === 'string' && raw.type.startsWith('call-')) {
+            if (callMessageHandlerRef.current) {
+              const from = (typeof raw.from === 'string' && raw.from) || conn.peer
+              try { callMessageHandlerRef.current(from, raw as Record<string, unknown>) }
+              catch (e) { log.warn('useReceiver.callMessageHandler', e) }
+            }
+            return
+          }
+
+          // Trust boundary — after the binary and call-* checks every
+          // valid payload should be PortalMsg. Each branch narrows via
+          // `msg.type === 'X'`.
+          const msg = data as PortalMsg
 
           if (msg.type === 'pong') return
           if (msg.type === 'ping') {
             try { conn.send({ type: 'pong', ts: msg.ts }) } catch (e) { log.warn('useReceiver.sendPong', e) }
-            return
-          }
-
-          if (typeof msg.type === 'string' && (msg.type as string).startsWith('call-')) {
-            if (callMessageHandlerRef.current) {
-              const from = (msg.from as string) || conn.peer
-              try { callMessageHandlerRef.current(from, msg) } catch (e) { log.warn('useReceiver.callMessageHandler', e) }
-            }
             return
           }
 
