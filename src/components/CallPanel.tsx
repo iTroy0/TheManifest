@@ -641,9 +641,6 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
           <Phone className="w-3 h-3 text-accent" />
         </div>
         <span className="font-mono text-[11px] text-text font-medium truncate">{headerLabel}</span>
-        <span className="font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-warning/15 text-warning border border-warning/30 shrink-0">
-          Beta
-        </span>
         {call.joined && !isReconnecting && (
           <span className="w-1.5 h-1.5 rounded-full bg-accent shadow-[0_0_6px_rgba(100,255,218,0.8)] animate-pulse shrink-0" />
         )}
