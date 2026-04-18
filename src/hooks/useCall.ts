@@ -14,6 +14,10 @@ export interface RemotePeer {
   stream: MediaStream | null
   micMuted: boolean
   cameraOff: boolean
+  // True while the peer is publishing a screen share. The video track on
+  // `stream` carries screen frames instead of camera frames — the UI
+  // inspects this flag to swap in a ScreenTile with contain-fit + no mirror.
+  screenSharing: boolean
 }
 
 // Structured failure surface so the UI can react without parsing strings.
@@ -189,6 +193,13 @@ export function useCall(options: UseCallOptions) {
   const [callError, setCallError] = useState<CallError | null>(null)
   const [endReason, setEndReason] = useState<CallEndReason | null>(null)
   const [roster, setRoster] = useState<Map<string, RemotePeer>>(new Map())
+  // True while the local user is actively publishing a screen share. We
+  // swap the track via `sender.replaceTrack` rather than opening a second
+  // MediaConnection — keeps the existing call topology and the remote
+  // `stream` identity stable; only the video frames change.
+  const [screenSharing, setScreenSharing] = useState<boolean>(false)
+  const [screenShareStarting, setScreenShareStarting] = useState<boolean>(false)
+  const [screenShareError, setScreenShareError] = useState<CallError | null>(null)
 
   const mediaConnsRef = useRef<Map<string, MediaConnection>>(new Map())
   const joinedRef = useRef<boolean>(false)
@@ -222,6 +233,10 @@ export function useCall(options: UseCallOptions) {
   // as a simple rate-limit to drop high-frequency spam before it triggers
   // setRoster re-renders.
   const lastTrackStateAtRef = useRef<Map<string, number>>(new Map())
+  // Local screen-share state mirrors, readable from effects without
+  // depending on React state identity.
+  const screenStreamRef = useRef<MediaStream | null>(null)
+  const screenSharingRef = useRef<boolean>(false)
 
   useEffect(() => { joinedRef.current = joined }, [joined])
   useEffect(() => { modeRef.current = mode }, [mode])
@@ -242,6 +257,7 @@ export function useCall(options: UseCallOptions) {
         stream: null,
         micMuted: false,
         cameraOff: true,
+        screenSharing: false,
       }
       next.set(peerId, { ...base, ...patch })
       return next
@@ -518,7 +534,13 @@ export function useCall(options: UseCallOptions) {
     const stream = localMedia.stream
     if (!stream || !joinedRef.current) return
     const audioTrack = stream.getAudioTracks()[0] || null
-    const videoTrack = stream.getVideoTracks()[0] || null
+    // While actively screen-sharing, a mode-change reconnect may have
+    // republished the camera track — but `screenStreamRef` still holds the
+    // share we care about, so prefer the screen track for the video sender.
+    const screenVideoTrack = screenSharingRef.current
+      ? (screenStreamRef.current?.getVideoTracks()[0] ?? null)
+      : null
+    const videoTrack = screenVideoTrack ?? (stream.getVideoTracks()[0] || null)
     mediaConnsRef.current.forEach(mc => {
       const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
       if (!pc) return
@@ -659,6 +681,15 @@ export function useCall(options: UseCallOptions) {
         return
       }
 
+      if (type === 'call-screen-state' && isHost) {
+        // A peer reports their own screen-share on/off. Same pinning rule
+        // as track-state: derive peerId from the authenticated transport id.
+        const active = !!msg.active
+        upsertRoster(fromPeerId, { screenSharing: active })
+        broadcast?.({ type: 'call-screen-state', peerId: fromPeerId, active, from: myPeerId! } satisfies CallMsg, fromPeerId)
+        return
+      }
+
       // ── Non-host: only trust messages claimed to be from the host ─────
 
       if (type === 'call-roster') {
@@ -714,6 +745,16 @@ export function useCall(options: UseCallOptions) {
         const cameraOff = !!msg.cameraOff
         const nextMode: CallMode = reportedMode || (cameraOff ? 'audio' : 'video')
         upsertRoster(peerId, { micMuted: !!msg.micMuted, cameraOff, mode: nextMode })
+        return
+      }
+
+      if (type === 'call-screen-state') {
+        // Same trust rule as call-track-state: only accept embedded peerId
+        // when the host is relaying; otherwise pin to the transport sender.
+        const isFromHost = fromPeerId === hostPeerIdRef.current
+        const embeddedId = asPeerId(msg.peerId)
+        const peerId = isFromHost && embeddedId ? embeddedId : fromPeerId
+        upsertRoster(peerId, { screenSharing: !!msg.active })
         return
       }
 
@@ -852,9 +893,128 @@ export function useCall(options: UseCallOptions) {
     }
   }, [peer, myPeerId, joining, localMediaStart, isHost, hostPeerId, broadcast, sendToHost, callPeerWithStream])
 
+  // ── Screen share ───────────────────────────────────────────────────────
+  // Publishing a screen share piggy-backs on the existing MediaConnections:
+  // we acquire `getDisplayMedia`, then `sender.replaceTrack` the screen
+  // video track into the video sender on every peer connection. The remote
+  // sees frames swap without renegotiation. A separate signaling message
+  // (`call-screen-state`) flips a roster flag so the UI can render the
+  // remote tile as a screen-share (contain fit, no mirror, labeled).
+  //
+  // Precondition: must be joined AND publishing video (so a video sender
+  // already exists on every PC). If we're audio-only we reconnect via the
+  // camera toggle first so a video sender exists before the swap.
+  const broadcastScreenState = useCallback((active: boolean): void => {
+    if (!joinedRef.current || !myPeerId) return
+    const payload: CallMsg = { type: 'call-screen-state', active, from: myPeerId }
+    if (isHost) broadcast?.({ ...payload, peerId: myPeerId })
+    else sendToHost?.(payload)
+  }, [isHost, broadcast, sendToHost, myPeerId])
+
+  const swapVideoTrack = useCallback((track: MediaStreamTrack | null): void => {
+    mediaConnsRef.current.forEach(mc => {
+      const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+      if (!pc) return
+      pc.getSenders().forEach(sender => {
+        if (sender.track?.kind === 'video') {
+          sender.replaceTrack(track).catch(() => {})
+        }
+      })
+    })
+  }, [])
+
+  const stopScreenShare = useCallback((): void => {
+    const s = screenStreamRef.current
+    screenStreamRef.current = null
+    screenSharingRef.current = false
+    if (s) {
+      s.getTracks().forEach(t => { try { t.stop() } catch {} })
+    }
+    // Restore the camera track (or null if camera off) on every video sender.
+    const camTrack = localStreamRef.current?.getVideoTracks()[0] || null
+    swapVideoTrack(camTrack)
+    setScreenSharing(false)
+    broadcastScreenState(false)
+  }, [swapVideoTrack, broadcastScreenState])
+
+  const startScreenShare = useCallback(async (): Promise<void> => {
+    if (screenSharingRef.current || screenShareStarting) return
+    if (!joinedRef.current) {
+      setScreenShareError({ code: 'not-connected', message: 'Join the call before sharing your screen.', recoverable: false })
+      return
+    }
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
+      setScreenShareError({ code: 'media-failed', message: 'This browser does not support screen sharing.', recoverable: false })
+      return
+    }
+    setScreenShareStarting(true)
+    setScreenShareError(null)
+    try {
+      // Must be in video mode so every PC already has a video sender to
+      // swap into. If the user was audio-only, flip camera on and wait for
+      // the mode-change reconnect to finish wiring video senders.
+      if (modeRef.current !== 'video') {
+        try {
+          await localMediaStart('video')
+        } catch (e) {
+          if ((e as Error).name === 'AbortError') return
+          throw e
+        }
+        // Give the mode-change effect a tick to re-call every peer with the
+        // new video stream. The effect runs synchronously on state change,
+        // but the resulting `peer.call` only produces senders once the PC
+        // negotiates. In practice we see senders on the next microtask.
+        await new Promise(r => setTimeout(r, 200))
+      }
+      const share = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 30, max: 60 } },
+        audio: false,
+      })
+      if (!joinedRef.current) {
+        share.getTracks().forEach(t => { try { t.stop() } catch {} })
+        return
+      }
+      const videoTrack = share.getVideoTracks()[0]
+      if (!videoTrack) {
+        share.getTracks().forEach(t => { try { t.stop() } catch {} })
+        throw new Error('No video track in screen share stream')
+      }
+      screenStreamRef.current = share
+      screenSharingRef.current = true
+      // Auto-stop when the user hits the browser's native "Stop sharing"
+      // chrome. The track fires `ended` without any JS action.
+      videoTrack.addEventListener('ended', () => {
+        if (screenStreamRef.current === share) stopScreenShare()
+      })
+      swapVideoTrack(videoTrack)
+      setScreenSharing(true)
+      broadcastScreenState(true)
+    } catch (e) {
+      const name = (e as { name?: string })?.name || ''
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        setScreenShareError({ code: 'permission-denied', message: 'Screen sharing was blocked.', recoverable: true })
+      } else {
+        setScreenShareError({ code: 'media-failed', message: (e as Error).message || 'Could not start screen sharing.', recoverable: true })
+      }
+    } finally {
+      setScreenShareStarting(false)
+    }
+  }, [screenShareStarting, localMediaStart, swapVideoTrack, broadcastScreenState, stopScreenShare])
+
+  const dismissScreenShareError = useCallback((): void => setScreenShareError(null), [])
+
   const leave = useCallback((reason: CallEndReason = 'user-left'): void => {
     // Invalidate any in-flight join attempt.
     joinAttemptRef.current = Symbol('leave')
+    // Stop any active screen share so tracks are released and remote tiles
+    // flip back to camera view on rejoin.
+    if (screenSharingRef.current) {
+      const s = screenStreamRef.current
+      screenStreamRef.current = null
+      screenSharingRef.current = false
+      if (s) s.getTracks().forEach(t => { try { t.stop() } catch {} })
+      setScreenSharing(false)
+    }
     mediaConnsRef.current.forEach(mc => { try { mc.close() } catch {} })
     mediaConnsRef.current.clear()
     // Drop any pending retry / ghost-prune work so a rejoin starts clean.
@@ -1055,6 +1215,16 @@ export function useCall(options: UseCallOptions) {
     cameraFacing: localMedia.cameraFacing,
     flipCamera: localMedia.flipCamera,
     localStream: localMedia.stream,
+    // Screen share: active flag + control methods. `screenShareError` is
+    // kept separate from `error` so the screen-share banner can be
+    // dismissed without clearing an unrelated call error.
+    screenSharing,
+    screenShareStarting,
+    screenShareError,
+    startScreenShare,
+    stopScreenShare,
+    dismissScreenShareError,
+    screenStream: screenSharing ? screenStreamRef.current : null,
   }
 }
 

@@ -210,6 +210,14 @@ export type CallMsg =
   // Host can reject a join after a call-join arrives (e.g., soft video
   // cap exceeded). Carries no extra payload beyond `from`.
   | { type: 'call-rejected'; from: string }
+  // Screen share state. `active` flips true/false as the peer starts/stops
+  // sharing their display. Guests omit peerId; host pins it and rebroadcasts.
+  | {
+      type: 'call-screen-state'
+      peerId?: string
+      active: boolean
+      from: string
+    }
 
 // Typed wrappers around `encryptJSON` / `decryptJSON` — the compiler narrows
 // the return type to the caller's stated message shape.

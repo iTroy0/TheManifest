@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { MicOff, User, VideoOff, Maximize2, Minimize2, Maximize, PictureInPicture2, Volume2, VolumeX } from 'lucide-react'
+import { MicOff, User, VideoOff, Maximize2, Minimize2, Maximize, PictureInPicture2, Volume2, VolumeX, MonitorUp } from 'lucide-react'
 
 interface VideoTileProps {
   stream: MediaStream | null
@@ -20,6 +20,11 @@ interface VideoTileProps {
   // else in the call.
   mutedForMe?: boolean
   onToggleMutedForMe?: () => void
+  // Screen-share variant: frames are a screen capture, so object-fit is
+  // forced to `contain` (aspect-honest), mirror is disabled, and the
+  // caption row renders a MonitorUp badge so viewers can tell the tile
+  // apart from a camera tile at a glance.
+  screenShare?: boolean
 }
 
 // Clamp the container's aspect ratio so an unusual source can't produce a
@@ -39,7 +44,7 @@ type WebkitVideoExtras = {
   webkitDisplayingFullscreen?: boolean
 }
 
-export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus, volume = 1, level = 0, mutedForMe = false, onToggleMutedForMe }: VideoTileProps) {
+export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus, volume = 1, level = 0, mutedForMe = false, onToggleMutedForMe, screenShare = false }: VideoTileProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [srcAspect, setSrcAspect] = useState<number>(16 / 9)
@@ -231,7 +236,9 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
   //     portrait mobile sources on a desktop focus were being zoomed and
   //     cropped because maxHeight clamped the container into a different
   //     aspect than the source)
-  const objectFitClass: string = (focused || isFullscreen) && !mini ? 'object-contain' : 'object-cover'
+  const objectFitClass: string = screenShare
+    ? 'object-contain'
+    : (focused || isFullscreen) && !mini ? 'object-contain' : 'object-cover'
 
   // Control button sizing: 40px tap targets on mobile (minimum touch
   // target), compact 24px on sm+ so they don't dominate desktop tiles.
@@ -281,7 +288,7 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
         className={`absolute inset-0 w-full h-full ${objectFitClass} bg-black transition-opacity duration-200 ${
           shouldShowBlackout ? 'opacity-0 pointer-events-none' : 'opacity-100'
         }`}
-        style={{ transform: self ? 'scaleX(-1)' : undefined }}
+        style={{ transform: self && !screenShare ? 'scaleX(-1)' : undefined }}
       />
 
       {shouldShowBlackout && (
@@ -351,7 +358,12 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
       <div className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent flex items-center justify-between gap-2 ${
         mini ? 'px-2 py-1' : 'px-3 py-2'
       }`}>
-        <span className={`font-mono text-white truncate ${mini ? 'text-[9px]' : 'text-[11px]'}`}>{name}{self ? ' (you)' : ''}</span>
+        <span className={`font-mono text-white truncate flex items-center gap-1.5 ${mini ? 'text-[9px]' : 'text-[11px]'}`}>
+          {screenShare && (
+            <MonitorUp className={mini ? 'w-2.5 h-2.5 text-accent shrink-0' : 'w-3 h-3 text-accent shrink-0'} aria-hidden="true" />
+          )}
+          <span className="truncate">{name}{self ? ' (you)' : ''}{screenShare ? ' — screen' : ''}</span>
+        </span>
         {micMuted && (
           <div className={`flex items-center justify-center rounded-md bg-danger/90 ring-1 ring-black/20 shrink-0 ${
             mini ? 'w-3.5 h-3.5' : 'w-5 h-5'

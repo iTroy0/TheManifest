@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera, AlertTriangle, Loader2, RefreshCw, X, WifiOff } from 'lucide-react'
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera, AlertTriangle, Loader2, RefreshCw, X, WifiOff, MonitorUp, MonitorOff } from 'lucide-react'
 import { UseCallReturn } from '../hooks/useCall'
 import { useViewport } from '../hooks/useViewport'
 import { usePopout } from '../hooks/usePopout'
@@ -243,17 +243,23 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
       micMuted: boolean
       cameraOff: boolean
       connecting: boolean
+      screenShare: boolean
     }
     const videoTiles: VideoTileInfo[] = []
     if (showLocalVideo) {
+      // When screen-sharing, the outgoing video sender carries the screen
+      // track but the LOCAL preview keeps rendering the camera feed (so the
+      // sharer still sees themselves as a small self-check). Preview stream
+      // prefers the screen capture so the user sees what peers see.
       videoTiles.push({
         id: 'self',
         isSelf: true,
         name: myName,
-        stream: call.localStream,
+        stream: call.screenSharing ? (call.screenStream ?? call.localStream) : call.localStream,
         micMuted: call.micMuted,
-        cameraOff: call.cameraOff,
+        cameraOff: call.cameraOff && !call.screenSharing,
         connecting: false,
+        screenShare: call.screenSharing,
       })
     }
     videoRemotes.forEach(p => {
@@ -265,6 +271,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         micMuted: p.micMuted,
         cameraOff: p.cameraOff,
         connecting: !p.stream,
+        screenShare: p.screenSharing,
       })
     })
     // Focus is fully manual. Auto active-speaker focus was removed because
@@ -380,6 +387,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
                     focused={isFocused}
                     mini={isMini}
                     onToggleFocus={isFocused ? handleUnfocus : () => handleFocusToggle(v.id)}
+                    screenShare={v.screenShare}
                   />
                 </div>
               )
@@ -436,6 +444,23 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         </div>
       )}
 
+      {call.screenShareError && (
+        <div className="px-3 pb-2">
+          <div className="flex items-start gap-2 rounded-lg bg-warning/10 border border-warning/30 px-3 py-2">
+            <MonitorOff className="w-3.5 h-3.5 text-warning shrink-0 mt-0.5" />
+            <p className="flex-1 font-mono text-[10px] text-warning">{call.screenShareError.message}</p>
+            <button
+              type="button"
+              onClick={call.dismissScreenShareError}
+              className="shrink-0 text-warning/60 hover:text-warning transition-colors"
+              aria-label="Dismiss screen share error"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="border-t border-border bg-surface-2/40 px-3 py-2">
         <div className="flex items-center justify-center gap-1.5 flex-wrap">
           <ControlButton
@@ -457,6 +482,25 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
               onClick={() => { void call.flipCamera() }}
               title="Switch camera"
               icon={SwitchCamera}
+            />
+          )}
+          {!isMobile && (
+            <ControlButton
+              onClick={() => {
+                if (call.screenSharing) call.stopScreenShare()
+                else void call.startScreenShare()
+              }}
+              title={
+                call.screenShareStarting
+                  ? 'Starting screen share…'
+                  : call.screenSharing
+                    ? 'Stop sharing'
+                    : 'Share screen'
+              }
+              icon={call.screenShareStarting ? Loader2 : call.screenSharing ? MonitorOff : MonitorUp}
+              danger={call.screenSharing}
+              disabled={call.screenShareStarting}
+              spinning={call.screenShareStarting}
             />
           )}
           <ControlButton
