@@ -134,7 +134,10 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
   const remotePeers = call.remotePeers
   const videoRemotes = remotePeers.filter(p => p.mode === 'video')
   const audioRemotes = remotePeers.filter(p => p.mode !== 'video')
-  const showLocalVideo: boolean = call.mode === 'video'
+  // Include screen-share so the self preview tile renders while sharing
+  // even when the local camera is off (call.mode stays 'audio' because
+  // useLocalMedia never switched — the screen track lives in screenStream).
+  const showLocalVideo: boolean = call.mode === 'video' || call.screenSharing
 
   // Speaking levels: one shared analyser graph drives every tile's pulse.
   const speakingEntries: StreamEntry[] = useMemo(() => {

@@ -238,6 +238,22 @@ export function useCall(options: UseCallOptions) {
   const screenStreamRef = useRef<MediaStream | null>(null)
   const screenSharingRef = useRef<boolean>(false)
 
+  // Returns the stream we should publish to a NEW peer connection right now.
+  // When screen-sharing is active we hand out a fresh MediaStream carrying
+  // our audio track plus the screen video track so late joiners (and peers
+  // we re-call during a mode change) receive the screen share too — not a
+  // stale camera feed. When not sharing, returns the normal local stream.
+  const getPublishStream = useCallback((): MediaStream | null => {
+    const local = localStreamRef.current
+    if (!screenSharingRef.current || !screenStreamRef.current) return local
+    const screenVideo = screenStreamRef.current.getVideoTracks()[0]
+    if (!screenVideo) return local
+    const out = new MediaStream()
+    local?.getAudioTracks().forEach(t => out.addTrack(t))
+    out.addTrack(screenVideo)
+    return out
+  }, [])
+
   useEffect(() => { joinedRef.current = joined }, [joined])
   useEffect(() => { modeRef.current = mode }, [mode])
   useEffect(() => { rosterRef.current = roster }, [roster])
@@ -344,10 +360,15 @@ export function useCall(options: UseCallOptions) {
             if (!joinedRef.current) return
             if (!rosterRef.current.has(peerId)) return
             if (mediaConnsRef.current.has(peerId)) return
-            const currentStream = localStreamRef.current
+            // Screen-aware retry: if we're sharing, the retry must carry
+            // the screen video track too, not a stale camera-only stream.
+            const currentStream = getPublishStream() ?? localStreamRef.current
             if (!currentStream) return
-            const currentMode = modeRef.current
-            if (currentMode === 'none') return
+            const baseMode = modeRef.current
+            if (baseMode === 'none') return
+            // When screen-sharing, publish as 'video' regardless of local
+            // camera mode — the stream carries a screen video track.
+            const currentMode: CallMode = screenSharingRef.current ? 'video' : (baseMode as CallMode)
             const fn = callPeerWithStreamRef.current
             fn?.(peerId, currentStream, currentMode)
           }, MEDIA_CONN_RETRY_DELAY_MS)
@@ -416,7 +437,10 @@ export function useCall(options: UseCallOptions) {
         try { existing.close() } catch {}
         mediaConnsRef.current.delete(mc.peer)
       }
-      try { mc.answer(localStreamRef.current) } catch { return }
+      // If screen-sharing, answer with a stream carrying screen video +
+      // local audio so the caller sees our share immediately.
+      const answerStream = getPublishStream() ?? localStreamRef.current
+      try { mc.answer(answerStream) } catch { return }
       mediaConnsRef.current.set(mc.peer, mc)
 
       // Existing roster name (from the host's snapshot or call-peer-joined
@@ -699,9 +723,13 @@ export function useCall(options: UseCallOptions) {
         }
         const peers = parseRosterSnapshot(msg.peers)
         peers.forEach(p => { upsertRoster(p.peerId, { name: p.name, mode: p.mode, cameraOff: p.mode !== 'video' }) })
-        const stream = localStreamRef.current
+        // Publish-aware: when screen-sharing, hand out a combined stream
+        // so late joiners see the share immediately. Mode is forced to
+        // 'video' to match what the stream carries.
+        const stream = getPublishStream() ?? localStreamRef.current
         if (stream && modeRef.current !== 'none') {
-          peers.forEach(p => callPeerWithStream(p.peerId, stream, modeRef.current as CallMode))
+          const publishMode: CallMode = screenSharingRef.current ? 'video' : (modeRef.current as CallMode)
+          peers.forEach(p => callPeerWithStream(p.peerId, stream, publishMode))
         }
         return
       }
@@ -1026,6 +1054,18 @@ export function useCall(options: UseCallOptions) {
       }
       setScreenSharing(true)
       broadcastScreenState(true)
+      // Tell the room we're publishing video now (even if local camera is
+      // off). Without this, remote tiles stay as AudioTile and ignore the
+      // screen video track.
+      const trackPayload: CallMsg = {
+        type: 'call-track-state',
+        micMuted: micMutedRef.current,
+        cameraOff: false,
+        mode: 'video',
+        from: myPeerId!,
+      }
+      if (isHost) broadcast?.(trackPayload)
+      else sendToHost?.(trackPayload)
     } catch (e) {
       const name = (e as { name?: string })?.name || ''
       if (name === 'NotAllowedError' || name === 'SecurityError') {
@@ -1036,7 +1076,7 @@ export function useCall(options: UseCallOptions) {
     } finally {
       setScreenShareStarting(false)
     }
-  }, [screenShareStarting, swapVideoTrack, broadcastScreenState, stopScreenShare, recallAllPeersWith])
+  }, [screenShareStarting, swapVideoTrack, broadcastScreenState, stopScreenShare, recallAllPeersWith, isHost, broadcast, sendToHost, myPeerId])
 
   const dismissScreenShareError = useCallback((): void => setScreenShareError(null), [])
 
