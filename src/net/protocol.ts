@@ -188,12 +188,15 @@ export type CallMsg =
       peerId: string
       name: string
       mode: CallMode
+      // Whether this peer is actively sharing their screen. Optional for
+      // backward compatibility with older clients that predate screen share.
+      screenSharing?: boolean
       from: string
     }
   | { type: 'call-peer-left'; peerId: string; from: string }
   | {
       type: 'call-roster'
-      peers: Array<{ peerId: string; name: string; mode: CallMode }>
+      peers: Array<{ peerId: string; name: string; mode: CallMode; screenSharing?: boolean }>
       from: string
     }
   | {

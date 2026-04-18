@@ -126,14 +126,33 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
   // doesn't silently restore focus.
   useEffect(() => {
     if (!manualFocusId) return
-    const selfFocused = manualFocusId === 'self' && call.joined && call.mode === 'video'
-    const remoteFocused = call.remotePeers.some(p => p.peerId === manualFocusId && p.mode === 'video')
+    const selfFocused = manualFocusId === 'self' && call.joined && (call.mode === 'video' || call.screenSharing)
+    const remoteFocused = call.remotePeers.some(p => p.peerId === manualFocusId && (p.mode === 'video' || p.screenSharing))
     if (!selfFocused && !remoteFocused) setManualFocusId(null)
-  }, [manualFocusId, call.remotePeers, call.joined, call.mode])
+  }, [manualFocusId, call.remotePeers, call.joined, call.mode, call.screenSharing])
+
+  // Auto-focus the first remote peer who starts sharing. Keeps the UX
+  // "screen shares take center stage" without clobbering a manual focus
+  // the user already picked. We track the last peer set we auto-focused
+  // for so repeated renders don't re-focus endlessly.
+  const lastAutoFocusedSharerRef = useRef<string | null>(null)
+  useEffect(() => {
+    const sharer = call.remotePeers.find(p => p.screenSharing)
+    if (!sharer) {
+      lastAutoFocusedSharerRef.current = null
+      return
+    }
+    if (sharer.peerId === lastAutoFocusedSharerRef.current) return
+    lastAutoFocusedSharerRef.current = sharer.peerId
+    // Only override when nothing is currently focused — respect the user.
+    if (manualFocusId === null) setManualFocusId(sharer.peerId)
+  }, [call.remotePeers, manualFocusId])
 
   const remotePeers = call.remotePeers
-  const videoRemotes = remotePeers.filter(p => p.mode === 'video')
-  const audioRemotes = remotePeers.filter(p => p.mode !== 'video')
+  // A peer with screenSharing but stale mode='audio' still deserves a video
+  // tile — otherwise a dropped call-track-state packet hides their share.
+  const videoRemotes = remotePeers.filter(p => p.mode === 'video' || p.screenSharing)
+  const audioRemotes = remotePeers.filter(p => p.mode !== 'video' && !p.screenSharing)
   // Include screen-share so the self preview tile renders while sharing
   // even when the local camera is off (call.mode stays 'audio' because
   // useLocalMedia never switched — the screen track lives in screenStream).
@@ -304,6 +323,30 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
 
     return (
     <div className="flex flex-col flex-1 min-h-0">
+      {/* Screen-share banner — reassures the sharer that the capture is
+          live and gives a one-tap exit without hunting for the toolbar. */}
+      {call.screenSharing && (
+        <div className="px-3 pt-2">
+          <div className="flex items-center gap-2 rounded-lg bg-accent/10 border border-accent/30 px-3 py-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" aria-hidden="true" />
+            <MonitorUp className="w-3.5 h-3.5 text-accent shrink-0" />
+            <p className="font-mono text-[10px] text-accent flex-1">
+              You&apos;re sharing your screen
+            </p>
+            <button
+              type="button"
+              onClick={() => call.stopScreenShare()}
+              className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md bg-danger/90 hover:bg-danger text-white font-mono text-[10px] transition-colors"
+              aria-label="Stop screen share"
+              title="Stop sharing"
+            >
+              <MonitorOff className="w-3 h-3" />
+              Stop
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Reconnect banner — visible whenever the underlying transport is
           flailing. Doesn't block the call UI; the audio that is still up
           keeps playing. */}
@@ -474,10 +517,15 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
           />
           <ControlButton
             onClick={call.toggleCamera}
-            title={call.cameraStarting ? 'Camera starting…' : call.cameraOff ? 'Turn camera on' : 'Turn camera off'}
+            title={
+              call.screenSharing
+                ? 'Camera is unavailable while sharing'
+                : call.cameraStarting ? 'Camera starting…'
+                : call.cameraOff ? 'Turn camera on' : 'Turn camera off'
+            }
             icon={call.cameraStarting ? Loader2 : call.cameraOff ? VideoOff : Video}
             danger={call.cameraOff}
-            disabled={call.cameraStarting}
+            disabled={call.cameraStarting || call.screenSharing}
             spinning={call.cameraStarting}
           />
           {call.mode === 'video' && call.cameraDevices.length > 1 && (

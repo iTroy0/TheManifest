@@ -130,6 +130,7 @@ interface RosterEntry {
   peerId: string
   name: string
   mode: CallMode
+  screenSharing: boolean
 }
 
 function asPeerId(v: unknown): string | null {
@@ -141,11 +142,12 @@ function parseRosterSnapshot(input: unknown): RosterEntry[] {
   const out: RosterEntry[] = []
   for (const raw of input) {
     if (!raw || typeof raw !== 'object') continue
-    const entry = raw as { peerId?: unknown; name?: unknown; mode?: unknown }
+    const entry = raw as { peerId?: unknown; name?: unknown; mode?: unknown; screenSharing?: unknown }
     if (typeof entry.peerId !== 'string' || entry.peerId.length === 0) continue
     const name = typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : 'Anon'
     const mode: CallMode = entry.mode === 'video' ? 'video' : 'audio'
-    out.push({ peerId: entry.peerId, name, mode })
+    const screenSharing = entry.screenSharing === true
+    out.push({ peerId: entry.peerId, name, mode, screenSharing })
   }
   return out
 }
@@ -237,19 +239,32 @@ export function useCall(options: UseCallOptions) {
   // depending on React state identity.
   const screenStreamRef = useRef<MediaStream | null>(null)
   const screenSharingRef = useRef<boolean>(false)
+  // Mixed (mic + screen-audio) track published while sharing when the user
+  // granted tab/system audio. Null when no screen audio was captured — in
+  // that case the raw mic track is published as usual.
+  const mixedAudioTrackRef = useRef<MediaStreamTrack | null>(null)
+  // AudioContext owning the mixer graph. Torn down on stop to release the
+  // audio hardware.
+  const screenAudioCtxRef = useRef<AudioContext | null>(null)
 
   // Returns the stream we should publish to a NEW peer connection right now.
   // When screen-sharing is active we hand out a fresh MediaStream carrying
-  // our audio track plus the screen video track so late joiners (and peers
-  // we re-call during a mode change) receive the screen share too — not a
-  // stale camera feed. When not sharing, returns the normal local stream.
+  // (a) the mixed audio track if we captured tab audio, otherwise the raw
+  // mic track, and (b) the screen video track. Late joiners and retry
+  // callers get the current share instead of a stale camera feed. When not
+  // sharing, returns the normal local stream.
   const getPublishStream = useCallback((): MediaStream | null => {
     const local = localStreamRef.current
     if (!screenSharingRef.current || !screenStreamRef.current) return local
     const screenVideo = screenStreamRef.current.getVideoTracks()[0]
     if (!screenVideo) return local
     const out = new MediaStream()
-    local?.getAudioTracks().forEach(t => out.addTrack(t))
+    const mixed = mixedAudioTrackRef.current
+    if (mixed && mixed.readyState !== 'ended') {
+      out.addTrack(mixed)
+    } else {
+      local?.getAudioTracks().forEach(t => out.addTrack(t))
+    }
     out.addTrack(screenVideo)
     return out
   }, [])
@@ -323,6 +338,10 @@ export function useCall(options: UseCallOptions) {
   // recursion safe under any re-creation.
   type CallPeerFn = (peerId: string, stream: MediaStream, myMode: CallMode) => void
   const callPeerWithStreamRef = useRef<CallPeerFn | null>(null)
+  // Ref to the tuneScreenSenders helper defined later in the file, so we
+  // can invoke it from mc stream handlers without forward-declaration
+  // gymnastics.
+  const tuneScreenSendersRef = useRef<((pc: RTCPeerConnection) => void) | null>(null)
 
   const callPeerWithStream = useCallback<CallPeerFn>((peerId, stream, myMode) => {
     if (!peer || peerId === myPeerId) return
@@ -336,6 +355,12 @@ export function useCall(options: UseCallOptions) {
           stream: remoteStream,
           mode: streamHasLiveVideo(remoteStream) ? 'video' : 'audio',
         })
+        // If we're screen-sharing, apply encoder tuning to the freshly-
+        // established video sender so late joiners benefit too.
+        if (screenSharingRef.current) {
+          const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+          if (pc) tuneScreenSendersRef.current?.(pc)
+        }
       })
       mc.on('close', () => {
         mediaConnsRef.current.delete(peerId)
@@ -461,6 +486,10 @@ export function useCall(options: UseCallOptions) {
           stream: remoteStream,
           mode: streamHasLiveVideo(remoteStream) ? 'video' : 'audio',
         })
+        if (screenSharingRef.current) {
+          const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+          if (pc) tuneScreenSendersRef.current?.(pc)
+        }
       })
       mc.on('close', () => {
         mediaConnsRef.current.delete(mc.peer)
@@ -672,17 +701,23 @@ export function useCall(options: UseCallOptions) {
       if (type === 'call-join' && isHost) {
         const incomingMode = (msg.mode as CallMode) || 'audio'
         const incomingName = (msg.name as string) || 'Anon'
-        upsertRoster(fromPeerId, { name: incomingName, mode: incomingMode, micMuted: false, cameraOff: incomingMode !== 'video' })
-        // Send the joiner a roster snapshot (excluding themselves).
-        const snapshot: Array<{ peerId: string; name: string; mode: CallMode }> = []
+        upsertRoster(fromPeerId, { name: incomingName, mode: incomingMode, micMuted: false, cameraOff: incomingMode !== 'video', screenSharing: false })
+        // Send the joiner a roster snapshot (excluding themselves) so they
+        // learn existing call state, including who is screen-sharing right
+        // now — otherwise a late joiner would render the sharer's tile as
+        // plain audio until the next track-state broadcast.
+        const snapshot: Array<{ peerId: string; name: string; mode: CallMode; screenSharing: boolean }> = []
         rosterRef.current.forEach((p, pid) => {
-          if (pid !== fromPeerId) snapshot.push({ peerId: pid, name: p.name, mode: p.mode })
+          if (pid !== fromPeerId) snapshot.push({ peerId: pid, name: p.name, mode: p.mode, screenSharing: p.screenSharing })
         })
         if (joinedRef.current && myPeerId && modeRef.current !== 'none') {
-          snapshot.push({ peerId: myPeerId, name: myNameRef.current, mode: modeRef.current as CallMode })
+          // Host's own publish mode is forced to 'video' while sharing so
+          // the joiner's UI expects a video sender and mounts VideoTile.
+          const selfMode: CallMode = screenSharingRef.current ? 'video' : (modeRef.current as CallMode)
+          snapshot.push({ peerId: myPeerId, name: myNameRef.current, mode: selfMode, screenSharing: screenSharingRef.current })
         }
         sendToPeer?.(fromPeerId, { type: 'call-roster', peers: snapshot, from: myPeerId! } satisfies CallMsg)
-        broadcast?.({ type: 'call-peer-joined', peerId: fromPeerId, name: incomingName, mode: incomingMode, from: myPeerId! } satisfies CallMsg, fromPeerId)
+        broadcast?.({ type: 'call-peer-joined', peerId: fromPeerId, name: incomingName, mode: incomingMode, screenSharing: false, from: myPeerId! } satisfies CallMsg, fromPeerId)
         return
       }
 
@@ -722,10 +757,9 @@ export function useCall(options: UseCallOptions) {
           return
         }
         const peers = parseRosterSnapshot(msg.peers)
-        peers.forEach(p => { upsertRoster(p.peerId, { name: p.name, mode: p.mode, cameraOff: p.mode !== 'video' }) })
-        // Publish-aware: when screen-sharing, hand out a combined stream
-        // so late joiners see the share immediately. Mode is forced to
-        // 'video' to match what the stream carries.
+        // Seed roster with screenSharing flag so a tile rendered BEFORE the
+        // MediaConnection resolves already knows to expect a screen share.
+        peers.forEach(p => { upsertRoster(p.peerId, { name: p.name, mode: p.mode, cameraOff: p.mode !== 'video', screenSharing: p.screenSharing }) })
         const stream = getPublishStream() ?? localStreamRef.current
         if (stream && modeRef.current !== 'none') {
           const publishMode: CallMode = screenSharingRef.current ? 'video' : (modeRef.current as CallMode)
@@ -743,8 +777,9 @@ export function useCall(options: UseCallOptions) {
         if (!peerId) return
         const name = (typeof msg.name === 'string' && msg.name) || 'Anon'
         const joinedMode: CallMode = msg.mode === 'video' ? 'video' : 'audio'
+        const joinedScreen = msg.screenSharing === true
         if (peerId !== myPeerId) {
-          upsertRoster(peerId, { name, mode: joinedMode, cameraOff: joinedMode !== 'video' })
+          upsertRoster(peerId, { name, mode: joinedMode, cameraOff: joinedMode !== 'video', screenSharing: joinedScreen })
         }
         return
       }
@@ -890,7 +925,7 @@ export function useCall(options: UseCallOptions) {
       if (isHost) {
         const existingPeerIds: string[] = Array.from(rosterRef.current.keys())
         existingPeerIds.forEach(pid => callPeerWithStream(pid, stream, 'audio'))
-        broadcast?.({ type: 'call-peer-joined', peerId: myPeerId!, name: myNameRef.current, mode: 'audio', from: myPeerId! } satisfies CallMsg)
+        broadcast?.({ type: 'call-peer-joined', peerId: myPeerId!, name: myNameRef.current, mode: 'audio', screenSharing: false, from: myPeerId! } satisfies CallMsg)
       } else {
         sendToHost?.({ type: 'call-join', mode: 'audio', name: myNameRef.current, from: myPeerId! } satisfies CallMsg)
       }
@@ -954,6 +989,54 @@ export function useCall(options: UseCallOptions) {
     })
   }, [])
 
+  const swapAudioTrack = useCallback((track: MediaStreamTrack | null): void => {
+    mediaConnsRef.current.forEach(mc => {
+      const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+      if (!pc) return
+      pc.getSenders().forEach(sender => {
+        if (sender.track?.kind === 'audio') {
+          sender.replaceTrack(track).catch(() => {})
+        }
+      })
+    })
+  }, [])
+
+  // Apply screen-share encoder tuning to every video sender on a PC:
+  //  - contentHint='motion' tells the encoder this is high-motion content,
+  //    prioritising frame rate over spatial detail (better for scrolling,
+  //    video playback inside the shared tab, etc).
+  //  - maxBitrate caps the outgoing bitrate so a fat LAN doesn't starve
+  //    the opposite direction. 2 Mbps is a balanced floor for 1080p30
+  //    screen content; go higher if quality is unacceptable, lower if lag
+  //    persists on poor uplinks.
+  //  - maxFramerate mirrors the getDisplayMedia constraint so the SFU/PC
+  //    doesn't waste bandwidth on overshoot frames.
+  const tuneScreenSenders = useCallback((pc: RTCPeerConnection): void => {
+    pc.getSenders().forEach(sender => {
+      if (sender.track?.kind !== 'video') return
+      try { sender.track.contentHint = 'motion' } catch {}
+      try {
+        const params = sender.getParameters()
+        const enc = params.encodings?.[0] ?? {}
+        enc.maxBitrate = 2_000_000
+        enc.maxFramerate = 30
+        params.encodings = [enc]
+        void sender.setParameters(params)
+      } catch {}
+    })
+  }, [])
+
+  const tuneAllScreenSenders = useCallback((): void => {
+    mediaConnsRef.current.forEach(mc => {
+      const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+      if (pc) tuneScreenSenders(pc)
+    })
+  }, [tuneScreenSenders])
+
+  // Keep the forward-reference ref current so callPeerWithStream / incoming
+  // answer handler can tune newly-established PCs without a circular dep.
+  useEffect(() => { tuneScreenSendersRef.current = tuneScreenSenders }, [tuneScreenSenders])
+
   // Close every MediaConnection and re-call each roster peer with the given
   // stream. Used to (re)publish video senders when switching between
   // audio-only and audio+screen publication modes.
@@ -977,13 +1060,22 @@ export function useCall(options: UseCallOptions) {
     if (s) {
       s.getTracks().forEach(t => { try { t.stop() } catch {} })
     }
+    // Tear down the mic + screen-audio mixer, if we built one. Restore the
+    // raw mic track on every audio sender so peers keep hearing the user.
+    if (screenAudioCtxRef.current) {
+      try { void screenAudioCtxRef.current.close() } catch {}
+      screenAudioCtxRef.current = null
+    }
+    mixedAudioTrackRef.current = null
+    const localStream = localStreamRef.current
+    const micTrack = localStream?.getAudioTracks()[0] || null
+    swapAudioTrack(micTrack)
     // Restore based on what the user was publishing before the share:
     //   - If they still have a camera track (mode 'video'), swap it back
     //     into the existing video senders — no reconnect needed.
     //   - Otherwise the PCs carry a stale screen video sender from our
     //     combined-stream re-call; tear them down and re-call with plain
     //     audio so senders match mode.
-    const localStream = localStreamRef.current
     const camTrack = localStream?.getVideoTracks()[0] || null
     if (camTrack) {
       swapVideoTrack(camTrack)
@@ -1002,7 +1094,7 @@ export function useCall(options: UseCallOptions) {
     }
     setScreenSharing(false)
     broadcastScreenState(false)
-  }, [swapVideoTrack, broadcastScreenState, recallAllPeersWith, isHost, broadcast, sendToHost, myPeerId])
+  }, [swapVideoTrack, swapAudioTrack, broadcastScreenState, recallAllPeersWith, isHost, broadcast, sendToHost, myPeerId])
 
   const startScreenShare = useCallback(async (): Promise<void> => {
     if (screenSharingRef.current || screenShareStarting) return
@@ -1017,9 +1109,17 @@ export function useCall(options: UseCallOptions) {
     setScreenShareStarting(true)
     setScreenShareError(null)
     try {
+      // Request tab/system audio alongside the video track. Chromium
+      // honours `audio: true` when the user picks a tab or whole screen;
+      // Firefox silently returns video only. Either way the video track
+      // is guaranteed and we gracefully handle the missing-audio case.
       const share = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 30, max: 60 } },
-        audio: false,
+        video: { frameRate: { ideal: 30, max: 30 } },
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
       })
       if (!joinedRef.current) {
         share.getTracks().forEach(t => { try { t.stop() } catch {} })
@@ -1030,10 +1130,54 @@ export function useCall(options: UseCallOptions) {
         share.getTracks().forEach(t => { try { t.stop() } catch {} })
         throw new Error('No video track in screen share stream')
       }
+      // Encoder hint before the track is attached so the first frames
+      // already use motion-biased rate control.
+      try { videoTrack.contentHint = 'motion' } catch {}
+
       screenStreamRef.current = share
       screenSharingRef.current = true
+
+      // Build a mic+screen-audio mixer when the user granted tab audio.
+      // WebAudio graph: (mic) → gain → dest  and  (screen) → gain → dest.
+      // The destination's single track is what every peer connection
+      // publishes, so each listener hears mic + tab audio mixed.
+      const screenAudioTrack = share.getAudioTracks()[0] || null
+      const micTrack = localStreamRef.current?.getAudioTracks()[0] || null
+      if (screenAudioTrack) {
+        try {
+          const ctx = new AudioContext()
+          const dest = ctx.createMediaStreamDestination()
+          if (micTrack && micTrack.readyState !== 'ended') {
+            ctx.createMediaStreamSource(new MediaStream([micTrack])).connect(dest)
+          }
+          ctx.createMediaStreamSource(new MediaStream([screenAudioTrack])).connect(dest)
+          const mixed = dest.stream.getAudioTracks()[0] || null
+          if (mixed) {
+            screenAudioCtxRef.current = ctx
+            mixedAudioTrackRef.current = mixed
+            // If the user revokes tab audio (closes tab being shared), the
+            // audio track ends. Swap back to raw mic so peers still hear us.
+            screenAudioTrack.addEventListener('ended', () => {
+              if (mixedAudioTrackRef.current !== mixed) return
+              mixedAudioTrackRef.current = null
+              if (screenAudioCtxRef.current === ctx) {
+                try { void ctx.close() } catch {}
+                screenAudioCtxRef.current = null
+              }
+              const fallback = localStreamRef.current?.getAudioTracks()[0] || null
+              swapAudioTrack(fallback)
+            })
+          } else {
+            try { void ctx.close() } catch {}
+          }
+        } catch {
+          // WebAudio unavailable / construction failed — fall through with
+          // the raw mic track still in use, so sharing works without tab audio.
+        }
+      }
+
       // Auto-stop when the user hits the browser's native "Stop sharing"
-      // chrome. The track fires `ended` without any JS action.
+      // chrome. The video track fires `ended` without any JS action.
       videoTrack.addEventListener('ended', () => {
         if (screenStreamRef.current === share) stopScreenShare()
       })
@@ -1046,12 +1190,28 @@ export function useCall(options: UseCallOptions) {
         // each MediaConnection. Remote sees this as a mode change to video
         // — the call-screen-state flag we broadcast below flips the UI to
         // screen-tile rendering.
-        const audioTrack = localStreamRef.current?.getAudioTracks()[0]
         const combined = new MediaStream()
-        if (audioTrack) combined.addTrack(audioTrack)
+        const outgoingAudio = mixedAudioTrackRef.current ?? micTrack
+        if (outgoingAudio) combined.addTrack(outgoingAudio)
         combined.addTrack(videoTrack)
         recallAllPeersWith(combined, 'video')
       }
+
+      // After the video sender is wired up (immediately for replaceTrack,
+      // or on the next animation frame for the renegotiation path), push
+      // encoder params so the first seconds of share don't burn 10+ Mbps.
+      // Peerjs attaches `peerConnection` synchronously in the replaceTrack
+      // path; for recall we wait a tick to let the new mcs register.
+      if (modeRef.current === 'video') tuneAllScreenSenders()
+      else requestAnimationFrame(() => tuneAllScreenSenders())
+
+      // Publish the mixed audio track to existing senders when we built
+      // one. The recall path already used it via the combined stream, so
+      // this only matters for the replaceTrack / video-mode branch.
+      if (mixedAudioTrackRef.current && modeRef.current === 'video') {
+        swapAudioTrack(mixedAudioTrackRef.current)
+      }
+
       setScreenSharing(true)
       broadcastScreenState(true)
       // Tell the room we're publishing video now (even if local camera is
@@ -1076,7 +1236,7 @@ export function useCall(options: UseCallOptions) {
     } finally {
       setScreenShareStarting(false)
     }
-  }, [screenShareStarting, swapVideoTrack, broadcastScreenState, stopScreenShare, recallAllPeersWith, isHost, broadcast, sendToHost, myPeerId])
+  }, [screenShareStarting, swapVideoTrack, swapAudioTrack, broadcastScreenState, stopScreenShare, recallAllPeersWith, tuneAllScreenSenders, isHost, broadcast, sendToHost, myPeerId])
 
   const dismissScreenShareError = useCallback((): void => setScreenShareError(null), [])
 
@@ -1084,12 +1244,18 @@ export function useCall(options: UseCallOptions) {
     // Invalidate any in-flight join attempt.
     joinAttemptRef.current = Symbol('leave')
     // Stop any active screen share so tracks are released and remote tiles
-    // flip back to camera view on rejoin.
+    // flip back to camera view on rejoin. Tear down the audio mixer too so
+    // the AudioContext releases the audio hardware.
     if (screenSharingRef.current) {
       const s = screenStreamRef.current
       screenStreamRef.current = null
       screenSharingRef.current = false
       if (s) s.getTracks().forEach(t => { try { t.stop() } catch {} })
+      if (screenAudioCtxRef.current) {
+        try { void screenAudioCtxRef.current.close() } catch {}
+        screenAudioCtxRef.current = null
+      }
+      mixedAudioTrackRef.current = null
       setScreenSharing(false)
     }
     mediaConnsRef.current.forEach(mc => { try { mc.close() } catch {} })
