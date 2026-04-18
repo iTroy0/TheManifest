@@ -3,8 +3,11 @@ dist
 .claude
 *.log
 .env
+.env.local
+.env.*.local
 .omc
 CLAUDE.md
 playwright-report
 test-results
 .playwright.vite/
+.vite/

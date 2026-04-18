@@ -6,6 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:signal": "peerjs --port 9000 --path /signal --allow_discovery true",
+    "dev:all": "concurrently -n vite,signal -c cyan,magenta \"npm:dev\" \"npm:dev:signal\"",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
@@ -38,6 +40,7 @@
     "@types/streamsaver": "^2.0.5",
     "@vercel/node": "^5.7.4",
     "@vitejs/plugin-react": "^4.5.2",
+    "concurrently": "^9.2.1",
     "express": "^5.2.1",
     "peer": "^1.0.2",
     "tailwindcss": "^4.2.2",
