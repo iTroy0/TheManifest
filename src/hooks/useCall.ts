@@ -126,6 +126,37 @@ function streamHasLiveVideo(stream: MediaStream | null): boolean {
   return tracks.length > 0 && tracks.some(t => t.readyState !== 'ended' && t.enabled)
 }
 
+// Prefer VP9 for every video transceiver on the given PC. VP9 compresses
+// text and UI chrome ~30% better than VP8 at equivalent bitrate, which is
+// the bulk of what users share. Falls back silently on browsers that don't
+// expose getCapabilities (Safari) or don't offer VP9 encode (Safari again).
+//
+// Called synchronously after peer.call / mc.answer — peerjs creates the PC,
+// adds tracks, then queues createOffer/Answer on the microtask queue, so
+// mutating transceiver codec preferences now lands before the SDP is
+// generated.
+function preferVp9OnPc(pc: RTCPeerConnection | null | undefined): void {
+  if (!pc) return
+  if (typeof RTCRtpReceiver === 'undefined') return
+  if (typeof RTCRtpReceiver.getCapabilities !== 'function') return
+  const caps = RTCRtpReceiver.getCapabilities('video')
+  if (!caps || !caps.codecs) return
+  const preferred: RTCRtpCodec[] = []
+  const fallback: RTCRtpCodec[] = []
+  for (const c of caps.codecs) {
+    const mime = c.mimeType.toLowerCase()
+    if (mime === 'video/vp9') preferred.push(c)
+    else fallback.push(c)
+  }
+  if (preferred.length === 0) return
+  const ordered = [...preferred, ...fallback]
+  pc.getTransceivers().forEach(tx => {
+    const kind = tx.sender?.track?.kind ?? tx.receiver?.track?.kind
+    if (kind !== 'video') return
+    try { tx.setCodecPreferences(ordered) } catch {}
+  })
+}
+
 // Minimum shape of a roster-snapshot entry sent by the host. We parse
 // with runtime checks rather than trusting a blind cast — a malformed
 // payload (wrong types, nested junk) could otherwise crash the signaling
@@ -410,6 +441,9 @@ export function useCall(options: UseCallOptions) {
     try {
       const mc = peer.call(peerId, stream, { metadata: { kind: 'manifest-call', mode: myMode, name: myNameRef.current } })
       mediaConnsRef.current.set(peerId, mc)
+      // Prefer VP9 before the offer is serialised. peerjs queues its
+      // createOffer on the microtask queue, so this sync call lands first.
+      preferVp9OnPc((mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection)
       mc.on('stream', (remoteStream: MediaStream) => {
         clearRetryState(peerId)
         upsertRoster(peerId, {
@@ -534,6 +568,8 @@ export function useCall(options: UseCallOptions) {
       const answerStream = getPublishStream() ?? localStreamRef.current
       try { mc.answer(answerStream) } catch { return }
       mediaConnsRef.current.set(mc.peer, mc)
+      // Prefer VP9 before peerjs's createAnswer runs on the microtask queue.
+      preferVp9OnPc((mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection)
 
       // Existing roster name (from the host's snapshot or call-peer-joined
       // broadcast) ALWAYS wins over the metadata name a peer claims for
