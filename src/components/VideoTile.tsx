@@ -50,6 +50,13 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
   const [srcAspect, setSrcAspect] = useState<number>(16 / 9)
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false)
   const [isPip, setIsPip] = useState<boolean>(false)
+  // Controls auto-hide: hidden by default, revealed on mouse-move
+  // (desktop) or tap (mobile/coarse pointer), and faded out again after
+  // a short idle window. Replaces the old hover-reveal + always-visible-
+  // on-touch behaviour that had controls permanently covering the tile.
+  const [controlsShown, setControlsShown] = useState<boolean>(false)
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const CONTROLS_IDLE_MS = 2500
 
   // Bind srcObject and kick playback. Mobile browsers (iOS Safari in
   // particular) don't always autoplay when srcObject changes on an
@@ -229,9 +236,26 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
   const avatarSize: string = mini ? 'w-8 h-8' : 'w-14 h-14'
   const avatarIcon: string = mini ? 'w-4 h-4' : 'w-7 h-7'
 
-  const handleClick = (): void => {
+  const handleClick = useCallback((): void => {
     if (onToggleFocus) onToggleFocus()
-  }
+  }, [onToggleFocus])
+
+  const revealControls = useCallback((): void => {
+    setControlsShown(true)
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    hideTimerRef.current = setTimeout(() => setControlsShown(false), CONTROLS_IDLE_MS)
+  }, [])
+
+  const dismissControls = useCallback((): void => {
+    if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null }
+    setControlsShown(false)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    }
+  }, [])
 
   // Mini PiP overlay tiles (the small strip in focused mode) stay locked
   // to a landscape shape so the strip layout stays neat. Full-size tiles
@@ -283,11 +307,36 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     ? `${name}${self ? ' (you)' : ''}. ${focused ? 'Focused tile. Press Enter or Escape to unfocus.' : 'Press Enter to focus.'}`
     : undefined
 
+  // Click semantics vary by pointer type:
+  //   - Fine pointer (mouse / trackpad): click the tile background →
+  //     toggle focus. Hovering already reveals controls via onMouseMove.
+  //   - Coarse pointer (touch): tap the tile → reveal controls if hidden,
+  //     hide them if shown. Focus is then triggered via a dedicated
+  //     button in the control cluster. Prevents the "tap = accidentally
+  //     focused" mistake on phones.
+  const onTileClick = interactive
+    ? (e: React.MouseEvent<HTMLDivElement>): void => {
+        if (e.target !== e.currentTarget) return
+        // Mini tiles (the overlay strip during focus) always treat taps
+        // as focus requests — they're too small to host a control cluster.
+        if (mini) { handleClick(); return }
+        const pointerType = (e.nativeEvent as PointerEvent).pointerType
+        if (pointerType === 'touch' || pointerType === 'pen') {
+          if (controlsShown) dismissControls()
+          else revealControls()
+        } else {
+          handleClick()
+        }
+      }
+    : undefined
+
   return (
     <div
       ref={containerRef}
-      onClick={interactive ? handleClick : undefined}
+      onClick={onTileClick}
       onKeyDown={onKeyDown}
+      onMouseMove={interactive ? revealControls : undefined}
+      onMouseLeave={interactive ? dismissControls : undefined}
       tabIndex={interactive ? 0 : undefined}
       role={interactive ? 'button' : undefined}
       aria-pressed={interactive ? focused : undefined}
@@ -296,7 +345,6 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
       className={`relative w-full rounded-xl overflow-hidden bg-surface-2/80 border border-border group ${
         interactive ? 'cursor-pointer hover:border-accent/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg' : ''
       } ${focused ? 'ring-2 ring-accent/60' : ''} ${isSpeaking ? 'shadow-[0_0_0_2px_rgba(100,255,218,0.45)]' : ''}`}
-      title={interactive ? (focused ? 'Click to unfocus' : 'Click to focus') : undefined}
     >
       <video
         ref={videoRef}
@@ -323,53 +371,69 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
         </div>
       )}
 
-      {/* Control cluster: per-peer mute, PiP, fullscreen, focus toggle.
-          Hidden by default on hover-capable pointers and revealed on
-          group-hover; always visible on touch devices (no hover). */}
+      {/* Control cluster. Bottom-center, single row, auto-hides after
+          idle. Strip by context:
+            - mini tiles: no controls at all (picture-in-picture overlays
+              stay clean)
+            - self tile: skip per-peer mute + PiP (both are meaningless
+              for the local preview)
+            - focused tile: full cluster. */}
       {showControls && (
-        <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
-          {!self && onToggleMutedForMe && (
+        <div
+          className={`absolute inset-x-0 bottom-8 flex items-center justify-center gap-1.5 px-2 pointer-events-none transition-opacity duration-200 ${
+            controlsShown ? 'opacity-100' : 'opacity-0'
+          }`}
+          aria-hidden={!controlsShown}
+        >
+          <div
+            className={`flex items-center gap-1.5 rounded-full px-2 py-1 bg-black/50 backdrop-blur-sm shadow-lg pointer-events-auto ${
+              controlsShown ? '' : 'pointer-events-none'
+            }`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {!self && onToggleMutedForMe && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onToggleMutedForMe(); revealControls() }}
+                className={`${controlButtonBase} ${
+                  mutedForMe ? 'bg-danger/80 hover:bg-danger text-white' : 'bg-white/0 hover:bg-white/15 text-white'
+                }`}
+                aria-label={mutedForMe ? 'Unmute for me' : 'Mute for me'}
+                title={mutedForMe ? 'Unmute for me' : 'Mute for me'}
+              >
+                {mutedForMe ? <VolumeX className={controlIconSize} /> : <Volume2 className={controlIconSize} />}
+              </button>
+            )}
+            {!self && hasAnyVideoTrack && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); void togglePip(); revealControls() }}
+                className={`${controlButtonBase} bg-white/0 hover:bg-white/15 text-white`}
+                aria-label={isPip ? 'Exit Picture-in-Picture' : 'Picture-in-Picture'}
+                title={isPip ? 'Exit PiP' : 'Picture-in-Picture'}
+              >
+                <PictureInPicture2 className={controlIconSize} />
+              </button>
+            )}
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); onToggleMutedForMe() }}
-              className={`${controlButtonBase} ${
-                mutedForMe ? 'bg-danger/70 hover:bg-danger/90 text-white' : 'bg-black/60 hover:bg-black/80 text-white'
-              }`}
-              aria-label={mutedForMe ? 'Unmute for me' : 'Mute for me'}
-              title={mutedForMe ? 'Unmute for me' : 'Mute for me'}
+              onClick={(e) => { e.stopPropagation(); void toggleFullscreen(); revealControls() }}
+              className={`${controlButtonBase} bg-white/0 hover:bg-white/15 text-white`}
+              aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+              title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
             >
-              {mutedForMe ? <VolumeX className={controlIconSize} /> : <Volume2 className={controlIconSize} />}
+              <Maximize className={controlIconSize} />
             </button>
-          )}
-          {hasAnyVideoTrack && (
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); void togglePip() }}
-              className={`${controlButtonBase} bg-black/60 hover:bg-black/80 text-white`}
-              aria-label={isPip ? 'Exit Picture-in-Picture' : 'Picture-in-Picture'}
-              title={isPip ? 'Exit PiP' : 'Picture-in-Picture'}
+              onClick={(e) => { e.stopPropagation(); handleClick() }}
+              className={`${controlButtonBase} bg-white/0 hover:bg-white/15 text-white`}
+              aria-label={focused ? 'Unfocus' : 'Focus'}
+              title={focused ? 'Back to grid' : 'Focus'}
             >
-              <PictureInPicture2 className={controlIconSize} />
+              {focused ? <Minimize2 className={controlIconSize} /> : <Maximize2 className={controlIconSize} />}
             </button>
-          )}
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); void toggleFullscreen() }}
-            className={`${controlButtonBase} bg-black/60 hover:bg-black/80 text-white`}
-            aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
-            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-          >
-            <Maximize className={controlIconSize} />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); handleClick() }}
-            className={`${controlButtonBase} bg-black/60 hover:bg-black/80 text-white`}
-            aria-label={focused ? 'Unfocus' : 'Focus'}
-            title={focused ? 'Back to grid' : 'Focus'}
-          >
-            {focused ? <Minimize2 className={controlIconSize} /> : <Maximize2 className={controlIconSize} />}
-          </button>
+          </div>
         </div>
       )}
 

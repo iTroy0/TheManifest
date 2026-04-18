@@ -130,7 +130,7 @@ export default function Home() {
   return (
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
 
-      <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80 sticky top-0 z-10">
+      <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80">
         <div className="max-w-[720px] mx-auto px-6 py-5 flex items-center justify-between">
           <Link to="/" className="group" onClick={isActive ? (e) => { e.preventDefault(); handleNewSession() } : undefined} aria-label="The Manifest — go to home">
             <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
