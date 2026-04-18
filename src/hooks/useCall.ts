@@ -894,16 +894,19 @@ export function useCall(options: UseCallOptions) {
   }, [peer, myPeerId, joining, localMediaStart, isHost, hostPeerId, broadcast, sendToHost, callPeerWithStream])
 
   // ── Screen share ───────────────────────────────────────────────────────
-  // Publishing a screen share piggy-backs on the existing MediaConnections:
-  // we acquire `getDisplayMedia`, then `sender.replaceTrack` the screen
-  // video track into the video sender on every peer connection. The remote
-  // sees frames swap without renegotiation. A separate signaling message
-  // (`call-screen-state`) flips a roster flag so the UI can render the
-  // remote tile as a screen-share (contain fit, no mirror, labeled).
+  // Screen share does NOT depend on the local camera being on. Two paths:
+  //   1. Local mode === 'video' → a video sender already exists on every
+  //      RTCPeerConnection, so we just `sender.replaceTrack(screenTrack)`.
+  //      No renegotiation; the remote sees frames swap instantly.
+  //   2. Local mode === 'audio' → no video sender exists. We close every
+  //      MediaConnection and re-call each peer with a combined stream
+  //      (existing audio track + screen video track). peerjs renegotiates
+  //      on the new call, matching how mode toggles already work.
   //
-  // Precondition: must be joined AND publishing video (so a video sender
-  // already exists on every PC). If we're audio-only we reconnect via the
-  // camera toggle first so a video sender exists before the swap.
+  // A separate `call-screen-state` signaling message flips a roster flag so
+  // the UI can render the remote tile as a screen-share (contain fit, no
+  // mirror, labeled). We never call getUserMedia for camera access —
+  // cameraless devices (desktops without webcams) can share their screen.
   const broadcastScreenState = useCallback((active: boolean): void => {
     if (!joinedRef.current || !myPeerId) return
     const payload: CallMsg = { type: 'call-screen-state', active, from: myPeerId }
@@ -923,6 +926,22 @@ export function useCall(options: UseCallOptions) {
     })
   }, [])
 
+  // Close every MediaConnection and re-call each roster peer with the given
+  // stream. Used to (re)publish video senders when switching between
+  // audio-only and audio+screen publication modes.
+  const recallAllPeersWith = useCallback((stream: MediaStream, asMode: CallMode): void => {
+    const peerIds = Array.from(mediaConnsRef.current.keys())
+    peerIds.forEach(pid => {
+      const mc = mediaConnsRef.current.get(pid)
+      if (mc) { try { mc.close() } catch {} }
+      mediaConnsRef.current.delete(pid)
+      clearRetryState(pid)
+    })
+    rosterRef.current.forEach((_, pid) => {
+      callPeerWithStream(pid, stream, asMode)
+    })
+  }, [callPeerWithStream, clearRetryState])
+
   const stopScreenShare = useCallback((): void => {
     const s = screenStreamRef.current
     screenStreamRef.current = null
@@ -930,12 +949,32 @@ export function useCall(options: UseCallOptions) {
     if (s) {
       s.getTracks().forEach(t => { try { t.stop() } catch {} })
     }
-    // Restore the camera track (or null if camera off) on every video sender.
-    const camTrack = localStreamRef.current?.getVideoTracks()[0] || null
-    swapVideoTrack(camTrack)
+    // Restore based on what the user was publishing before the share:
+    //   - If they still have a camera track (mode 'video'), swap it back
+    //     into the existing video senders — no reconnect needed.
+    //   - Otherwise the PCs carry a stale screen video sender from our
+    //     combined-stream re-call; tear them down and re-call with plain
+    //     audio so senders match mode.
+    const localStream = localStreamRef.current
+    const camTrack = localStream?.getVideoTracks()[0] || null
+    if (camTrack) {
+      swapVideoTrack(camTrack)
+    } else if (localStream && modeRef.current === 'audio') {
+      recallAllPeersWith(localStream, 'audio')
+      // Tell everyone our mode is back to audio so their tile strips video.
+      const trackPayload: CallMsg = {
+        type: 'call-track-state',
+        micMuted: micMutedRef.current,
+        cameraOff: true,
+        mode: 'audio',
+        from: myPeerId!,
+      }
+      if (isHost) broadcast?.(trackPayload)
+      else sendToHost?.(trackPayload)
+    }
     setScreenSharing(false)
     broadcastScreenState(false)
-  }, [swapVideoTrack, broadcastScreenState])
+  }, [swapVideoTrack, broadcastScreenState, recallAllPeersWith, isHost, broadcast, sendToHost, myPeerId])
 
   const startScreenShare = useCallback(async (): Promise<void> => {
     if (screenSharingRef.current || screenShareStarting) return
@@ -950,22 +989,6 @@ export function useCall(options: UseCallOptions) {
     setScreenShareStarting(true)
     setScreenShareError(null)
     try {
-      // Must be in video mode so every PC already has a video sender to
-      // swap into. If the user was audio-only, flip camera on and wait for
-      // the mode-change reconnect to finish wiring video senders.
-      if (modeRef.current !== 'video') {
-        try {
-          await localMediaStart('video')
-        } catch (e) {
-          if ((e as Error).name === 'AbortError') return
-          throw e
-        }
-        // Give the mode-change effect a tick to re-call every peer with the
-        // new video stream. The effect runs synchronously on state change,
-        // but the resulting `peer.call` only produces senders once the PC
-        // negotiates. In practice we see senders on the next microtask.
-        await new Promise(r => setTimeout(r, 200))
-      }
       const share = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 30, max: 60 } },
         audio: false,
@@ -986,7 +1009,21 @@ export function useCall(options: UseCallOptions) {
       videoTrack.addEventListener('ended', () => {
         if (screenStreamRef.current === share) stopScreenShare()
       })
-      swapVideoTrack(videoTrack)
+
+      if (modeRef.current === 'video') {
+        // Fast path: swap into existing video senders. No renegotiation.
+        swapVideoTrack(videoTrack)
+      } else {
+        // No video sender exists. Build a combined stream and renegotiate
+        // each MediaConnection. Remote sees this as a mode change to video
+        // — the call-screen-state flag we broadcast below flips the UI to
+        // screen-tile rendering.
+        const audioTrack = localStreamRef.current?.getAudioTracks()[0]
+        const combined = new MediaStream()
+        if (audioTrack) combined.addTrack(audioTrack)
+        combined.addTrack(videoTrack)
+        recallAllPeersWith(combined, 'video')
+      }
       setScreenSharing(true)
       broadcastScreenState(true)
     } catch (e) {
@@ -999,7 +1036,7 @@ export function useCall(options: UseCallOptions) {
     } finally {
       setScreenShareStarting(false)
     }
-  }, [screenShareStarting, localMediaStart, swapVideoTrack, broadcastScreenState, stopScreenShare])
+  }, [screenShareStarting, swapVideoTrack, broadcastScreenState, stopScreenShare, recallAllPeersWith])
 
   const dismissScreenShareError = useCallback((): void => setScreenShareError(null), [])
 
