@@ -6,6 +6,7 @@ import {
   Lock,
   Loader2,
   Users,
+  User,
   Upload,
   Download,
   Crown,
@@ -167,7 +168,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
                 onClick={guest.enableRelay}
                 className="inline-flex items-center gap-2.5 px-6 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all"
               >
-                <Radio className="w-4 h-4" /> Enable Relay (uses TURN)
+                <Radio className="w-4 h-4" /> Connect via Relay
               </button>
             </div>
           </div>
@@ -299,7 +300,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
                     <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-accent/5 border border-accent/20">
                       <div className="flex items-center gap-2 flex-1 min-w-0">
                         <div className="w-6 h-6 rounded-full bg-accent/20 flex items-center justify-center shrink-0">
-                          <Users className="w-3 h-3 text-accent" />
+                          <User className="w-3 h-3 text-accent" />
                         </div>
                         {editingName ? (
                           <input

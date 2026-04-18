@@ -523,6 +523,8 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
     >
       {isPopout && !isMobile && (
         <div
+          role="separator"
+          aria-label="Resize call panel"
           className="absolute -top-1 -left-1 w-5 h-5 cursor-nw-resize z-10 flex items-center justify-center opacity-40 hover:opacity-100 transition-opacity"
           onMouseDown={popout.onResizeStart}
           onTouchStart={popout.onResizeStart}
@@ -544,7 +546,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
           <Phone className="w-3 h-3 text-accent" />
         </div>
         <span className="font-mono text-[11px] text-text font-medium truncate">{headerLabel}</span>
-        <span className="font-mono text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-warning/15 text-warning border border-warning/30 shrink-0">
+        <span className="font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-warning/15 text-warning border border-warning/30 shrink-0">
           Beta
         </span>
         {call.joined && !isReconnecting && (

@@ -626,8 +626,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                       )}
                     </div>
                     <div className="flex items-center justify-between mt-1">
-                      <span className="text-[10px] text-zinc-500">{editName.length}/20</span>
-                      {nameSaved && <span className="text-xs text-emerald-400">Saved</span>}
+                      <span className="text-[10px] text-muted">{editName.length}/20</span>
+                      {nameSaved && <span className="text-xs text-accent">Saved</span>}
                     </div>
                   </div>
                 )}
@@ -773,7 +773,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                         placeholder:text-muted/50 focus:outline-none"
                     />
                   </div>
-                  <span className="text-[10px] text-zinc-500">{editName.length}/20</span>
+                  <span className="text-[10px] text-muted">{editName.length}/20</span>
                   {nameChanged && (
                     <button
                       onClick={handleSetName}
@@ -784,7 +784,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                       Save
                     </button>
                   )}
-                  {nameSaved && <span className="text-xs text-emerald-400">Saved</span>}
+                  {nameSaved && <span className="text-xs text-accent">Saved</span>}
                 </div>
               )}
               <div className="flex items-center gap-1 ml-auto">
@@ -820,7 +820,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             <div
               ref={scrollRef}
               onScroll={handleScroll}
-              className={`relative overflow-y-auto space-y-3 scrollbar-thin overscroll-contain ${
+              className={`relative overflow-y-auto space-y-3 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent overscroll-contain ${
                 isFullscreen || isPopout
                   ? 'flex-1 min-h-0 px-4 py-3 bg-bg'
                   : 'h-[320px] pr-1'
@@ -1122,7 +1122,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                     className="flex-1 min-w-0 bg-bg border border-border rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 font-mono text-[16px] sm:text-sm text-text
                       placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-all
                       disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px] max-h-[120px]
-                      resize-none overflow-y-auto scrollbar-thin"
+                      resize-none overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
                   />
                   {!text.trim() && !imagePreview ? (
                     <button
@@ -1164,7 +1164,21 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           onClick={() => dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } })}
           onKeyDown={(e: React.KeyboardEvent) => {
             if (e.key === 'Escape') dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } })
-            if (e.key === 'Tab') e.preventDefault()
+            if (e.key === 'Tab') {
+              const root = clearConfirmRef.current
+              if (!root) return
+              const focusables = root.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])')
+              if (focusables.length === 0) return
+              const first = focusables[0]
+              const last = focusables[focusables.length - 1]
+              if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault()
+                last.focus()
+              } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault()
+                first.focus()
+              }
+            }
           }}
           role="dialog"
           aria-modal="true"

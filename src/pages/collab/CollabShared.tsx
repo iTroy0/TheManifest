@@ -7,12 +7,13 @@ export interface FingerprintEntry {
   fingerprint?: string
 }
 
-// First 8 hex chars formatted as "XXXX XXXX" for quick visual compare.
+// First 16 hex chars formatted as "XXXX XXXX XXXX XXXX" for real
+// out-of-band verification (64 bits of disambiguation).
 export function formatFingerprint(fp: string | null | undefined): string {
   if (!fp) return '—'
   const clean = fp.replace(/[^0-9a-fA-F]/g, '').toLowerCase()
-  if (clean.length < 8) return clean
-  return `${clean.slice(0, 4)} ${clean.slice(4, 8)}`
+  if (clean.length < 16) return clean
+  return `${clean.slice(0, 4)} ${clean.slice(4, 8)} ${clean.slice(8, 12)} ${clean.slice(12, 16)}`
 }
 
 // Collapsible panel listing each peer's fingerprint so participants can
@@ -24,6 +25,7 @@ export function VerifyConnectionsPanel({ entries }: { entries: FingerprintEntry[
     <div className="border-t border-border">
       <button
         onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
         className="w-full flex items-center justify-between px-5 py-3 text-left hover:bg-surface-2/30 transition-colors"
       >
         <div className="flex items-center gap-2">

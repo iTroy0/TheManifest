@@ -230,26 +230,33 @@ export default function CollabHostView() {
                     const isSet = host.passwordRequired
                     return (
                       <>
-                        {!isSet && (
+                        {!isSet && !hasGuests && (
                           <div className="mt-3 flex items-center gap-2">
                             <input
                               type="password"
                               aria-label="Set room password"
-                              placeholder={hasGuests ? 'Password locked — guests connected' : 'Set password (optional)'}
+                              placeholder="Set password (optional)"
                               value={passwordInput}
                               onChange={e => setPasswordInput(e.target.value)}
-                              disabled={hasGuests}
-                              className="flex-1 bg-bg border border-border rounded-xl px-4 py-3 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="flex-1 bg-bg border border-border rounded-xl px-4 py-3 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all"
                             />
                             <button
                               onClick={handlePasswordSet}
-                              disabled={!passwordInput.trim() || hasGuests}
-                              title={hasGuests ? 'Cannot set a password while guests are in the room' : 'Set password'}
+                              disabled={!passwordInput.trim()}
+                              title="Set password"
                               aria-label="Set password"
                               className="px-4 py-3 rounded-xl font-mono text-sm border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                             >
                               <Lock className="w-4 h-4" />
                             </button>
+                          </div>
+                        )}
+                        {!isSet && hasGuests && (
+                          <div className="mt-3 flex items-center gap-2 bg-surface-2/50 border border-border rounded-xl px-3 py-2.5">
+                            <Lock className="w-3.5 h-3.5 text-muted shrink-0" />
+                            <p className="flex-1 font-mono text-[11px] text-muted leading-relaxed">
+                              Password can&apos;t be changed while guests are connected.
+                            </p>
                           </div>
                         )}
                         {isSet && (

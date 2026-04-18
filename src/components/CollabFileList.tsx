@@ -148,15 +148,6 @@ function OverflowMenu({ onRemove, removeConfirming }: OverflowMenuProps) {
           >
             {removeConfirming ? 'Confirm?' : 'Remove'}
           </button>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setOpen(false) }}
-            className="w-full px-3 py-1.5 text-left font-mono text-[11px] text-muted/60 hover:text-muted"
-            title="Coming soon"
-            disabled
-          >
-            Rename
-          </button>
         </div>
       )}
     </div>

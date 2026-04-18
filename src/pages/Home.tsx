@@ -130,7 +130,7 @@ export default function Home() {
   return (
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
 
-      <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80 sm:sticky sm:top-0 z-10">
+      <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80 sticky top-0 z-10">
         <div className="max-w-[720px] mx-auto px-6 py-5 flex items-center justify-between">
           <Link to="/" className="group" onClick={isActive ? (e) => { e.preventDefault(); handleNewSession() } : undefined} aria-label="The Manifest — go to home">
             <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
@@ -144,6 +144,7 @@ export default function Home() {
             {isActive && !isFinished && (
               <button
                 onClick={handleNewSession}
+                aria-label="New session"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs
                   bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
               >
@@ -206,7 +207,7 @@ export default function Home() {
 
         {!isActive && (
           <div className="animate-fade-in-up" style={{ animationDelay: '350ms' }}>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 [&>*:last-child:nth-child(odd)]:col-span-2 sm:[&>*:last-child:nth-child(odd)]:col-span-1">
               <InfoCard icon={Shield} title="E2E encrypted" desc="Double encryption — AES-256-GCM + WebRTC DTLS. Even relays can't see your data." />
               <InfoCard icon={EyeOff} title="Zero knowledge" desc="No accounts. No logs. No analytics. Self-hosted signaling for full privacy." />
               <InfoCard icon={Zap} title="Ephemeral" desc="Close the tab and it's gone. No traces left behind." />
@@ -495,7 +496,7 @@ interface StepDetail {
 }
 
 function HowItWorks() {
-  const [open, setOpen] = useState<boolean>(false)
+  const [open, setOpen] = useState<boolean>(true)
 
   const steps: StepDetail[] = [
     {

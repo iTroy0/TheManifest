@@ -160,7 +160,9 @@ export default function Portal() {
                 className="space-y-4"
               >
                 <div className="relative">
+                  <label htmlFor="portal-unlock-password" className="sr-only">Portal password</label>
                   <input
+                    id="portal-unlock-password"
                     type={showPassword ? 'text' : 'password'}
                     aria-label="Portal password"
                     value={passwordInput}
