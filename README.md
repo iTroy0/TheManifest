@@ -75,10 +75,12 @@
 - **No file size limit** — StreamSaver writes directly to disk (tested with 1GB+)
 - **Adaptive chunking** — Auto-adjusts chunk size (64KB-1MB) based on connection quality
 - **Backpressure-aware** — Buffer drain between chunks prevents congestion
-- **Pause, resume, cancel** — Full transfer control per file
+- **Pause, resume, cancel, retry** — Full transfer control per file with automatic retry on error
 - **Auto-reconnect** — Resumes from last chunk on disconnect
 - **Live file sharing** — Add or remove files while recipients are connected
-- **Bulk zip download** — Download all files as a single streaming archive
+- **Drag-reorder** — Sender can rearrange the file queue before or between transfers
+- **Bulk zip download** — Download all files as a single streaming archive (fflate, no RAM buildup)
+- **Download all visible** — One-click grab of every not-yet-saved file in a collab room
 - **File previews** — Image/video thumbnails & text previews via Web Worker
 
 ### Collaborative Rooms
@@ -101,19 +103,24 @@
 - **Emoji reactions** — React to any message
 - **Reply threads** — Quote and reply to messages
 - **Sound & notifications** — Configurable alerts for new messages
-- **Fullscreen & popout** — Moveable, resizable popout chat on desktop; fullscreen on mobile
+- **Auto link detection** — http(s) URLs become safe `rel="noopener noreferrer"` links inline
+- **Fullscreen & popout** — Moveable, resizable popout chat on desktop; fullscreen on mobile with iOS keyboard-aware viewport + safe-area insets
 - **RTL support** — Arabic and other RTL languages work natively
 - **Clear messages** — Local-only clear with confirmation dialog
 
 ### Voice & Video Calls (Beta)
 - **Live voice calls** — Up to 20 participants in a P2P mesh with speaking indicators
 - **Live video calls** — 1:1 video with Discord-style click-to-focus spotlight
+- **Screen sharing** — Share a window, tab, or whole screen over the same encrypted mesh; the shared stream gets its own tile and inherits focus/pin behaviour
+- **VP9 video codec** — Preferred for camera and screen share (~30% smaller than VP8 for text/UI), with encoder tuning for bitrate and framerate
+- **Picture-in-Picture** — Pop any video tile into a floating PiP window (standards API with Safari legacy presentation-mode fallback)
+- **Per-tile fullscreen** — Maximise a single video tile to the whole screen with one tap
 - **DTLS-SRTP encrypted** — End-to-end encryption built into WebRTC — no server can listen
 - **Hot-swap devices** — Switch microphone or camera mid-call without dropping the connection
-- **Remote volume control** — Master volume slider and quick mute-speakers button
+- **Master volume + per-peer mute** — Global slider plus local mute-for-me on any participant (doesn't affect anyone else)
 - **Mobile-first controls** — 44px tap targets, portrait-aware video grid, orientation-change aware
 - **Popout window** — Draggable and resizable floating call window on desktop
-- **Track-state sync** — Mute and camera-off state propagate to every peer in the call
+- **Track-state sync** — Mute, camera-off, and screen-share state propagate to every peer in the call
 
 ### Reliability
 - **Multiple recipients** — Unlimited simultaneous connections
