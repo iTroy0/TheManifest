@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "dev:signal": "peerjs --port 9000 --path /signal --allow_discovery true",
-    "dev:all": "concurrently -n vite,signal -c cyan,magenta \"vite\" \"peerjs --port 9000 --path /signal --allow_discovery true\"",
+    "dev:all": "node scripts/dev-all.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
