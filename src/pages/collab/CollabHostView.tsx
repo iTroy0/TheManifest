@@ -119,7 +119,7 @@ export default function CollabHostView() {
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
       {/* Header */}
       <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80">
-        <div className="max-w-[720px] mx-auto px-6 py-5">
+        <div className="max-w-5xl mx-auto px-6 py-5">
           <Link to="/" className="flex items-center gap-2 text-muted hover:text-accent transition-colors mb-3 w-fit group">
             <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
             <span className="font-mono text-[11px]">Back to home</span>
@@ -144,7 +144,7 @@ export default function CollabHostView() {
       </header>
 
       {/* Main */}
-      <main className="flex-1 max-w-[720px] w-full mx-auto px-6 py-8 space-y-6">
+      <main className="flex-1 w-full max-w-5xl mx-auto px-6 py-8 space-y-6">
         {host.status === 'initializing' && (
           <div className="text-center py-16 animate-fade-in-up">
             <Loader2 className="w-8 h-8 animate-spin text-accent mx-auto mb-4" />
@@ -169,6 +169,8 @@ export default function CollabHostView() {
         )}
 
         {isConnected && (
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] items-start">
+            <div className="space-y-6 min-w-0">
           <div className="glow-card overflow-hidden animate-fade-in-up">
             <button
               onClick={() => setRoomExpanded(o => !o)}
@@ -390,9 +392,7 @@ export default function CollabHostView() {
               </div>
             </div>
           </div>
-        )}
 
-        {isConnected && (
           <div className="glow-card overflow-hidden animate-fade-in-up">
             <button
               onClick={() => setFilesExpanded(o => !o)}
@@ -460,44 +460,45 @@ export default function CollabHostView() {
               </div>
             </div>
           </div>
-        )}
 
-        {isConnected && (
-          <>
-            <ComponentErrorBoundary name="Call">
-              <CallPanelLazy
-                callOptions={{
-                  peer: host.peer,
-                  myPeerId: host.myPeerId,
-                  myName: host.myName,
-                  isHost: true,
-                  hostPeerId: host.myPeerId,
-                  participants: host.participantsList,
-                  broadcast: host.broadcastCallMessage,
-                  sendToPeer: host.sendCallMessage,
-                  setMessageHandler: host.setCallMessageHandler,
-                }}
-                myName={host.myName}
-                disabled={isDead}
-                connectionStatus={connectionStatus}
-              />
-            </ComponentErrorBoundary>
+            </div>
 
-            <ComponentErrorBoundary name="Chat">
-              <ChatPanel
-                messages={host.messages}
-                onSend={host.sendMessage}
-                onClearMessages={host.clearMessages}
-                disabled={isDead}
-                nickname={host.myName}
-                onNicknameChange={host.changeNickname}
-                onlineCount={host.onlineCount + 1}
-                typingUsers={host.typingUsers}
-                onTyping={host.sendTyping}
-                onReaction={host.sendReaction}
-              />
-            </ComponentErrorBoundary>
-          </>
+            <aside className="space-y-6 lg:sticky lg:top-6">
+              <ComponentErrorBoundary name="Call">
+                <CallPanelLazy
+                  callOptions={{
+                    peer: host.peer,
+                    myPeerId: host.myPeerId,
+                    myName: host.myName,
+                    isHost: true,
+                    hostPeerId: host.myPeerId,
+                    participants: host.participantsList,
+                    broadcast: host.broadcastCallMessage,
+                    sendToPeer: host.sendCallMessage,
+                    setMessageHandler: host.setCallMessageHandler,
+                  }}
+                  myName={host.myName}
+                  disabled={isDead}
+                  connectionStatus={connectionStatus}
+                />
+              </ComponentErrorBoundary>
+
+              <ComponentErrorBoundary name="Chat">
+                <ChatPanel
+                  messages={host.messages}
+                  onSend={host.sendMessage}
+                  onClearMessages={host.clearMessages}
+                  disabled={isDead}
+                  nickname={host.myName}
+                  onNicknameChange={host.changeNickname}
+                  onlineCount={host.onlineCount + 1}
+                  typingUsers={host.typingUsers}
+                  onTyping={host.sendTyping}
+                  onReaction={host.sendReaction}
+                />
+              </ComponentErrorBoundary>
+            </aside>
+          </div>
         )}
       </main>
 

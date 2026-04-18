@@ -131,7 +131,7 @@ export default function Home() {
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
 
       <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80">
-        <div className="max-w-[720px] mx-auto px-6 py-5 flex items-center justify-between">
+        <div className="max-w-5xl mx-auto px-6 py-5 flex items-center justify-between">
           <Link to="/" className="group" onClick={isActive ? (e) => { e.preventDefault(); handleNewSession() } : undefined} aria-label="The Manifest — go to home">
             <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
               The Manifest
@@ -163,22 +163,20 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="flex-1 max-w-[720px] w-full mx-auto px-6 py-8 space-y-6">
+      <main className="flex-1 w-full max-w-5xl mx-auto px-6 py-8">
 
         {!isActive && (
-          <div className="text-center py-6 animate-fade-in-up">
-            <h2 className="font-mono text-2xl sm:text-3xl font-bold text-text-bright mb-3 tracking-tight text-balance">
-              Share files & chat. No servers. No trace.
-            </h2>
-            <p className="text-sm text-muted-light max-w-md mx-auto leading-relaxed text-pretty">
-              Files and messages stream directly browser-to-browser via WebRTC.
-              End-to-end encrypted. Close the tab and it&apos;s gone.
-            </p>
-          </div>
-        )}
+          <div className="max-w-[720px] mx-auto space-y-6">
+            <div className="text-center py-6 animate-fade-in-up">
+              <h2 className="font-mono text-2xl sm:text-3xl font-bold text-text-bright mb-3 tracking-tight text-balance">
+                Share files & chat. No servers. No trace.
+              </h2>
+              <p className="text-sm text-muted-light max-w-md mx-auto leading-relaxed text-pretty">
+                Files and messages stream directly browser-to-browser via WebRTC.
+                End-to-end encrypted. Close the tab and it&apos;s gone.
+              </p>
+            </div>
 
-        {!isActive && (
-          <>
             <DropZone onFiles={handleFiles} disabled={isTransferring || isFinished} />
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4">
               <div className="h-px flex-1 bg-border/50 hidden sm:block" />
@@ -200,29 +198,28 @@ export default function Home() {
               </Link>
               <div className="h-px flex-1 bg-border/50 hidden sm:block" />
             </div>
-          </>
-        )}
 
-        {!isActive && <HowItWorks />}
+            <HowItWorks />
 
-        {!isActive && (
-          <div className="animate-fade-in-up" style={{ animationDelay: '350ms' }}>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 [&>*:last-child:nth-child(odd)]:col-span-2 sm:[&>*:last-child:nth-child(odd)]:col-span-1">
-              <InfoCard icon={Shield} title="E2E encrypted" desc="Double encryption — AES-256-GCM + WebRTC DTLS. Even relays can't see your data." />
-              <InfoCard icon={EyeOff} title="Zero knowledge" desc="No accounts. No logs. No analytics. Self-hosted signaling for full privacy." />
-              <InfoCard icon={Zap} title="Ephemeral" desc="Close the tab and it's gone. No traces left behind." />
-              <InfoCard icon={Users} title="Multi-recipient" desc="Unlimited simultaneous connections. Each gets their own encrypted channel." />
-              <InfoCard icon={Lock} title="Password protect" desc="Lock your portal, chat, or collab room with an encrypted password." />
-              <InfoCard icon={MessagesSquare} title="Chat rooms" desc="Encrypted group chat with reactions, replies, image sharing, and typing indicators." />
-              <InfoCard icon={Share2} title="Collaborative rooms" desc="Multi-party workspaces where every guest can share files. Direct mesh P2P with per-pair fingerprints." />
-              <InfoCard icon={Phone} title="Voice & video calls" desc="Live voice up to 20 peers, 1:1 video. DTLS-SRTP encrypted, mobile-friendly controls." />
-              <InfoCard icon={Mic} title="Voice notes" desc="Record and send encrypted voice messages up to 3 minutes with seekable playback." />
+            <div className="animate-fade-in-up" style={{ animationDelay: '350ms' }}>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 [&>*:last-child:nth-child(odd)]:col-span-2 sm:[&>*:last-child:nth-child(odd)]:col-span-1">
+                <InfoCard icon={Shield} title="E2E encrypted" desc="Double encryption — AES-256-GCM + WebRTC DTLS. Even relays can't see your data." />
+                <InfoCard icon={EyeOff} title="Zero knowledge" desc="No accounts. No logs. No analytics. Self-hosted signaling for full privacy." />
+                <InfoCard icon={Zap} title="Ephemeral" desc="Close the tab and it's gone. No traces left behind." />
+                <InfoCard icon={Users} title="Multi-recipient" desc="Unlimited simultaneous connections. Each gets their own encrypted channel." />
+                <InfoCard icon={Lock} title="Password protect" desc="Lock your portal, chat, or collab room with an encrypted password." />
+                <InfoCard icon={MessagesSquare} title="Chat rooms" desc="Encrypted group chat with reactions, replies, image sharing, and typing indicators." />
+                <InfoCard icon={Share2} title="Collaborative rooms" desc="Multi-party workspaces where every guest can share files. Direct mesh P2P with per-pair fingerprints." />
+                <InfoCard icon={Phone} title="Voice & video calls" desc="Live voice up to 20 peers, 1:1 video. DTLS-SRTP encrypted, mobile-friendly controls." />
+                <InfoCard icon={Mic} title="Voice notes" desc="Record and send encrypted voice messages up to 3 minutes with seekable playback." />
+              </div>
             </div>
           </div>
         )}
 
         {isActive && !isFinished && (
-          <>
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] items-start">
+            <div className="space-y-6 min-w-0">
             <input
               ref={addInputRef}
               type="file"
@@ -234,10 +231,6 @@ export default function Home() {
               }}
               className="hidden"
             />
-
-            {!isTransferring && !isFinished && recipientCount === 0 && (
-              <PasswordSection password={passwordInput} onChange={(v: string) => { setPasswordInput(v); setPassword(v) }} />
-            )}
 
             <div className="glow-card overflow-hidden animate-fade-in-up">
               <div className="px-4 py-3 space-y-2">
@@ -373,35 +366,42 @@ export default function Home() {
                   <PortalLink peerId={peerId} />
                 </div>
               )}
+
+              {!isTransferring && recipientCount === 0 && !chatMode && (
+                <InlinePasswordRow
+                  password={passwordInput}
+                  onChange={(v: string) => { setPasswordInput(v); setPassword(v) }}
+                />
+              )}
+            </div>
             </div>
 
-            {(recipientCount > 0 || chatMode) && !isFinished && (
-              <ComponentErrorBoundary name="Call">
-                <CallPanelLazy
-                  callOptions={{
-                    peer,
-                    myPeerId: peerId,
-                    myName: senderName,
-                    isHost: true,
-                    hostPeerId: null,
-                    participants,
-                    sendToPeer: sendCallMessage,
-                    broadcast: broadcastCallMessage,
-                    setMessageHandler: setCallMessageHandler,
-                  }}
-                  myName={senderName}
-                  disabled={recipientCount === 0}
-                  connectionStatus={status}
-                />
-              </ComponentErrorBoundary>
-            )}
-
-            {(recipientCount > 0 || chatMode) && !isFinished && (
-              <ComponentErrorBoundary name="Chat">
-                <ChatPanel messages={messages} onSend={sendMessage} onClearMessages={clearMessages} disabled={recipientCount === 0} onlineCount={recipientCount + 1} nickname={senderName} onNicknameChange={changeSenderName} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
-              </ComponentErrorBoundary>
-            )}
-          </>
+            {(recipientCount > 0 || chatMode) && !isFinished ? (
+              <aside className="space-y-6 lg:sticky lg:top-6">
+                <ComponentErrorBoundary name="Call">
+                  <CallPanelLazy
+                    callOptions={{
+                      peer,
+                      myPeerId: peerId,
+                      myName: senderName,
+                      isHost: true,
+                      hostPeerId: null,
+                      participants,
+                      sendToPeer: sendCallMessage,
+                      broadcast: broadcastCallMessage,
+                      setMessageHandler: setCallMessageHandler,
+                    }}
+                    myName={senderName}
+                    disabled={recipientCount === 0}
+                    connectionStatus={status}
+                  />
+                </ComponentErrorBoundary>
+                <ComponentErrorBoundary name="Chat">
+                  <ChatPanel messages={messages} onSend={sendMessage} onClearMessages={clearMessages} disabled={recipientCount === 0} onlineCount={recipientCount + 1} nickname={senderName} onNicknameChange={changeSenderName} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
+                </ComponentErrorBoundary>
+              </aside>
+            ) : null}
+          </div>
         )}
 
         {error && (
@@ -587,61 +587,76 @@ function HowItWorks() {
   )
 }
 
-interface PasswordSectionProps {
+interface InlinePasswordRowProps {
   password: string
   onChange: (value: string) => void
 }
 
-function PasswordSection({ password, onChange }: PasswordSectionProps) {
-  const [open, setOpen] = useState<boolean>(false)
+// Inline password controls matching the collab-host layout: a single row
+// inside the session card. Typing stages a value; clicking Lock commits
+// it. Once set, the row collapses to a confirmation chip + Unset button.
+// Intentionally terse — this isn't a landing-page feature, it's a tweak
+// on an already-live session.
+function InlinePasswordRow({ password, onChange }: InlinePasswordRowProps) {
+  const [staged, setStaged] = useState<string>('')
   const [showPassword, setShowPassword] = useState<boolean>(false)
+  const isSet = password.length > 0
+
+  if (isSet) {
+    return (
+      <div className="border-t border-border px-4 py-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-accent">
+          <Lock className="w-3.5 h-3.5" />
+          <span className="font-mono text-xs">Password protected</span>
+        </div>
+        <button
+          onClick={() => { onChange(''); setStaged('') }}
+          className="px-2.5 py-1.5 rounded-lg font-mono text-[11px] border border-border text-muted hover:border-danger/40 hover:text-danger transition-colors"
+        >
+          Unset
+        </button>
+      </div>
+    )
+  }
+
+  const commit = (): void => {
+    const v = staged.trim()
+    if (!v) return
+    onChange(v)
+    setStaged('')
+  }
 
   return (
-    <div className="glow-card overflow-hidden animate-fade-in-up">
-      <button
-        onClick={() => setOpen(o => !o)}
-        aria-expanded={open}
-        className="w-full flex items-center justify-between p-4 text-left group hover:bg-surface-2/30 transition-colors"
-      >
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
-            <Lock className="w-4 h-4 text-accent" />
-          </div>
-          <div>
-            <span className="font-mono text-sm text-text font-medium">Password protect</span>
-            <p className="font-mono text-[10px] text-muted">
-              {password ? 'Password set' : 'Optional security'}
-            </p>
-          </div>
-        </div>
-        <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
-      </button>
-      <div className={`grid transition-all duration-400 ease-in-out ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-        <div className="overflow-hidden">
-          <div className="px-4 pb-4">
-            <label htmlFor="portal-password" className="sr-only">Portal password</label>
-            <div className="relative">
-              <input
-                id="portal-password"
-                type={showPassword ? 'text' : 'password'}
-                placeholder="Enter a password..."
-                value={password}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
-                className="w-full bg-bg border border-border rounded-xl px-4 py-3 pr-10 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(v => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-accent transition-colors"
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
-              >
-                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-            <p className="font-mono text-[10px] text-muted mt-2 px-1">Recipients will need this password to access the portal</p>
-          </div>
-        </div>
+    <div className="border-t border-border px-4 py-3 flex items-center gap-2">
+      <label htmlFor="portal-password" className="sr-only">Portal password</label>
+      <div className="relative flex-1">
+        <input
+          id="portal-password"
+          type={showPassword ? 'text' : 'password'}
+          placeholder="Set password (optional)"
+          value={staged}
+          onChange={(e: ChangeEvent<HTMLInputElement>) => setStaged(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commit() } }}
+          className="w-full bg-bg border border-border rounded-xl px-4 py-3 pr-10 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all"
+        />
+        <button
+          type="button"
+          onClick={() => setShowPassword(v => !v)}
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-accent transition-colors"
+          aria-label={showPassword ? 'Hide password' : 'Show password'}
+        >
+          {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+        </button>
       </div>
+      <button
+        onClick={commit}
+        disabled={!staged.trim()}
+        aria-label="Set password"
+        title="Set password"
+        className="px-4 py-3 rounded-xl font-mono text-sm border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        <Lock className="w-4 h-4" />
+      </button>
     </div>
   )
 }

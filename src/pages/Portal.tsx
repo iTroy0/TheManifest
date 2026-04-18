@@ -77,7 +77,7 @@ export default function Portal() {
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
 
       <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80">
-        <div className="max-w-[720px] mx-auto px-6 py-5">
+        <div className="max-w-5xl mx-auto px-6 py-5">
           <Link to="/" className="flex items-center gap-2 text-muted hover:text-accent transition-colors mb-3 w-fit group">
             <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
             <span className="font-mono text-[11px]">Create your own portal</span>
@@ -105,7 +105,7 @@ export default function Portal() {
         </div>
       </header>
 
-      <main className="flex-1 max-w-[720px] w-full mx-auto px-6 py-8 space-y-6">
+      <main className="flex-1 w-full max-w-5xl mx-auto px-6 py-8 space-y-6">
 
         {!showManifest && (
           <StatusIndicator status={status} />
@@ -229,7 +229,9 @@ export default function Portal() {
         )}
 
         {showManifest && (
-          <div className="glow-card overflow-hidden animate-fade-in-up">
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] items-start">
+            <div className="space-y-6 min-w-0">
+              <div className="glow-card overflow-hidden animate-fade-in-up">
             <div className="px-4 py-3 space-y-2">
               {isChatOnly && (
                 <div className="flex items-center gap-2">
@@ -364,36 +366,44 @@ export default function Portal() {
                 )}
               </div>
             )}
+              </div>
+            </div>
+
+            <aside className="space-y-6 lg:sticky lg:top-6">
+              {!isDead && (
+                <ComponentErrorBoundary name="Call">
+                  <CallPanelLazy
+                    callOptions={{
+                      peer: receiverPeer,
+                      myPeerId: receiverPeer?.id ?? null,
+                      myName: nickname,
+                      isHost: false,
+                      hostPeerId,
+                      participants: [],
+                      sendToHost: sendCallMessage,
+                      setMessageHandler: setCallMessageHandler,
+                    }}
+                    myName={nickname}
+                    disabled={isDead}
+                    connectionStatus={status}
+                  />
+                </ComponentErrorBoundary>
+              )}
+              <ComponentErrorBoundary name="Chat">
+                <ChatPanel messages={messages} onSend={sendMessage} onClearMessages={clearMessages} disabled={isDead} nickname={nickname} onNicknameChange={changeNickname} onlineCount={onlineCount} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
+              </ComponentErrorBoundary>
+            </aside>
           </div>
         )}
 
-
-        {/* Call — only while live (no point showing after disconnect) */}
-        {showManifest && !isDead && (
-          <ComponentErrorBoundary name="Call">
-            <CallPanelLazy
-              callOptions={{
-                peer: receiverPeer,
-                myPeerId: receiverPeer?.id ?? null,
-                myName: nickname,
-                isHost: false,
-                hostPeerId,
-                participants: [],
-                sendToHost: sendCallMessage,
-                setMessageHandler: setCallMessageHandler,
-              }}
-              myName={nickname}
-              disabled={isDead}
-              connectionStatus={status}
-            />
-          </ComponentErrorBoundary>
-        )}
-
-        {/* Chat — keep visible after disconnect so the user can still read history */}
-        {(showManifest || (manifest && isDead)) && (
-          <ComponentErrorBoundary name="Chat">
-            <ChatPanel messages={messages} onSend={sendMessage} onClearMessages={clearMessages} disabled={isDead} nickname={nickname} onNicknameChange={changeNickname} onlineCount={onlineCount} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
-          </ComponentErrorBoundary>
+        {/* Chat-only after disconnect when the manifest has already
+            loaded — keep history visible but without the grid layout. */}
+        {!showManifest && manifest && isDead && (
+          <div className="max-w-[720px] mx-auto">
+            <ComponentErrorBoundary name="Chat">
+              <ChatPanel messages={messages} onSend={sendMessage} onClearMessages={clearMessages} disabled={isDead} nickname={nickname} onNicknameChange={changeNickname} onlineCount={onlineCount} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
+            </ComponentErrorBoundary>
+          </div>
         )}
 
       </main>

@@ -104,7 +104,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
   return (
     <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
       <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80">
-        <div className="max-w-[720px] mx-auto px-6 py-5">
+        <div className="max-w-5xl mx-auto px-6 py-5">
           <Link to="/" className="flex items-center gap-2 text-muted hover:text-accent transition-colors mb-3 w-fit group">
             <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
             <span className="font-mono text-[11px]">Create your own portal</span>
@@ -128,7 +128,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
         </div>
       </header>
 
-      <main className="flex-1 max-w-[720px] w-full mx-auto px-6 py-8 space-y-6">
+      <main className="flex-1 w-full max-w-5xl mx-auto px-6 py-8 space-y-6">
         {isConnecting && (
           <div className="text-center py-16 animate-fade-in-up">
             <div className="relative w-20 h-20 mx-auto mb-6">
@@ -275,6 +275,8 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
         )}
 
         {isConnected && (
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] items-start">
+            <div className="space-y-6 min-w-0">
           <div className="glow-card overflow-hidden animate-fade-in-up">
             <button
               onClick={() => setRoomExpanded(o => !o)}
@@ -364,9 +366,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
               </div>
             </div>
           </div>
-        )}
 
-        {isConnected && (
           <div className="glow-card overflow-hidden animate-fade-in-up">
             <button
               onClick={() => setFilesExpanded(o => !o)}
@@ -449,43 +449,44 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
               </div>
             </div>
           </div>
-        )}
 
-        {isConnected && (
-          <>
-            <ComponentErrorBoundary name="Call">
-              <CallPanelLazy
-                callOptions={{
-                  peer: guest.peer,
-                  myPeerId: guest.myPeerId,
-                  myName: guest.myName,
-                  isHost: false,
-                  hostPeerId: guest.hostPeerId,
-                  participants: guest.participantsList,
-                  sendToHost: guest.sendCallMessage,
-                  setMessageHandler: guest.setCallMessageHandler,
-                }}
-                myName={guest.myName}
-                disabled={isDead}
-                connectionStatus={guest.status}
-              />
-            </ComponentErrorBoundary>
+            </div>
 
-            <ComponentErrorBoundary name="Chat">
-              <ChatPanel
-                messages={guest.messages}
-                onSend={guest.sendMessage}
-                onClearMessages={guest.clearMessages}
-                disabled={isDead}
-                nickname={guest.myName}
-                onNicknameChange={guest.changeNickname}
-                onlineCount={guest.onlineCount}
-                typingUsers={guest.typingUsers}
-                onTyping={guest.sendTyping}
-                onReaction={guest.sendReaction}
-              />
-            </ComponentErrorBoundary>
-          </>
+            <aside className="space-y-6 lg:sticky lg:top-6">
+              <ComponentErrorBoundary name="Call">
+                <CallPanelLazy
+                  callOptions={{
+                    peer: guest.peer,
+                    myPeerId: guest.myPeerId,
+                    myName: guest.myName,
+                    isHost: false,
+                    hostPeerId: guest.hostPeerId,
+                    participants: guest.participantsList,
+                    sendToHost: guest.sendCallMessage,
+                    setMessageHandler: guest.setCallMessageHandler,
+                  }}
+                  myName={guest.myName}
+                  disabled={isDead}
+                  connectionStatus={guest.status}
+                />
+              </ComponentErrorBoundary>
+
+              <ComponentErrorBoundary name="Chat">
+                <ChatPanel
+                  messages={guest.messages}
+                  onSend={guest.sendMessage}
+                  onClearMessages={guest.clearMessages}
+                  disabled={isDead}
+                  nickname={guest.myName}
+                  onNicknameChange={guest.changeNickname}
+                  onlineCount={guest.onlineCount}
+                  typingUsers={guest.typingUsers}
+                  onTyping={guest.sendTyping}
+                  onReaction={guest.sendReaction}
+                />
+              </ComponentErrorBoundary>
+            </aside>
+          </div>
         )}
       </main>
 
