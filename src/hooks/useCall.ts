@@ -1021,6 +1021,10 @@ export function useCall(options: UseCallOptions) {
         enc.maxBitrate = 2_000_000
         enc.maxFramerate = 30
         params.encodings = [enc]
+        // Prefer lower resolution over dropped frames when bandwidth
+        // tightens — smoother perceived motion for screen content.
+        type ParamsWithDegradation = RTCRtpSendParameters & { degradationPreference?: string }
+        ;(params as ParamsWithDegradation).degradationPreference = 'maintain-framerate'
         void sender.setParameters(params)
       } catch {}
     })
@@ -1036,6 +1040,36 @@ export function useCall(options: UseCallOptions) {
   // Keep the forward-reference ref current so callPeerWithStream / incoming
   // answer handler can tune newly-established PCs without a circular dep.
   useEffect(() => { tuneScreenSendersRef.current = tuneScreenSenders }, [tuneScreenSenders])
+
+  // Sender-side visibility nudge: when the sharer's tab regains focus,
+  // Chromium may have paused encoding while backgrounded. Toggle every
+  // outgoing video track's `enabled` flag to force a fresh keyframe so
+  // viewers' decoders resync instead of staring at a frozen frame for
+  // 5–10 seconds until the next regular keyframe.
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const onVisibility = (): void => {
+      if (document.visibilityState !== 'visible') return
+      if (!joinedRef.current) return
+      if (!screenSharingRef.current && modeRef.current !== 'video') return
+      mediaConnsRef.current.forEach(mc => {
+        const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+        if (!pc) return
+        pc.getSenders().forEach(sender => {
+          const track = sender.track
+          if (!track || track.kind !== 'video' || track.readyState === 'ended') return
+          try {
+            track.enabled = false
+            setTimeout(() => {
+              try { if (track.readyState !== 'ended') track.enabled = true } catch {}
+            }, 60)
+          } catch {}
+        })
+      })
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => { document.removeEventListener('visibilitychange', onVisibility) }
+  }, [])
 
   // Close every MediaConnection and re-call each roster peer with the given
   // stream. Used to (re)publish video senders when switching between

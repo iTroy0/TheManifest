@@ -77,6 +77,24 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     }
   }, [stream])
 
+  // Unfreeze on tab refocus: when the viewer returns to the tab, the
+  // decoder may have paused while backgrounded. Re-attach srcObject and
+  // resume playback so the next keyframe from the sender renders
+  // immediately instead of waiting for the browser to notice the tile
+  // is visible again.
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const onVisible = (): void => {
+      if (document.visibilityState !== 'visible') return
+      const el = videoRef.current
+      if (!el || !stream) return
+      if (el.srcObject !== stream) el.srcObject = stream
+      if (el.paused) el.play().catch(() => {})
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => { document.removeEventListener('visibilitychange', onVisible) }
+  }, [stream])
+
   useEffect(() => {
     const el = videoRef.current
     if (!el) return
