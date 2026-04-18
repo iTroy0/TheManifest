@@ -119,7 +119,11 @@ function classifyMediaError(
 function streamHasLiveVideo(stream: MediaStream | null): boolean {
   if (!stream) return false
   const tracks = stream.getVideoTracks()
-  return tracks.length > 0 && tracks.some(t => t.readyState !== 'ended')
+  // Require `enabled` too so the 2x2 dummy track we attach to every offer
+  // for SDP-negotiation purposes doesn't get misread as a real video
+  // publication. Dummy tracks ship with enabled=false; real camera /
+  // screen tracks default to enabled=true.
+  return tracks.length > 0 && tracks.some(t => t.readyState !== 'ended' && t.enabled)
 }
 
 // Minimum shape of a roster-snapshot entry sent by the host. We parse
@@ -247,27 +251,80 @@ export function useCall(options: UseCallOptions) {
   // audio hardware.
   const screenAudioCtxRef = useRef<AudioContext | null>(null)
 
+  // A tiny always-on video track. peerjs uses pc.addStream(...) which
+  // only negotiates m-lines for tracks present in the OFFER. If a joiner
+  // offers audio-only and the remote is screen-sharing, the remote's
+  // video track has no matching m-line and gets silently dropped — the
+  // viewer hears audio but sees black. Including this dummy track in
+  // every outbound offer guarantees a video m-line, which the remote
+  // can then answer with their real screen (or camera) track.
+  const dummyVideoTrackRef = useRef<MediaStreamTrack | null>(null)
+  const getDummyVideoTrack = useCallback((): MediaStreamTrack | null => {
+    const existing = dummyVideoTrackRef.current
+    if (existing && existing.readyState !== 'ended') return existing
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = 2
+      canvas.height = 2
+      const ctx = canvas.getContext('2d')
+      if (ctx) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 2, 2) }
+      // 1fps + tiny resolution ≈ nothing on the wire; this exists for the
+      // SDP m-line, not for a viewer to watch.
+      type CanvasWithCapture = HTMLCanvasElement & { captureStream?: (fps?: number) => MediaStream }
+      const capture = (canvas as CanvasWithCapture).captureStream
+      if (typeof capture !== 'function') return null
+      const s = capture.call(canvas, 1)
+      const t = s.getVideoTracks()[0] || null
+      if (t) {
+        // Disabled so streamHasLiveVideo() correctly reports "no real
+        // video" — this track exists purely to force an SDP m-line.
+        t.enabled = false
+        try { t.contentHint = 'detail' } catch {}
+        dummyVideoTrackRef.current = t
+      }
+      return t
+    } catch {
+      return null
+    }
+  }, [])
+
   // Returns the stream we should publish to a NEW peer connection right now.
   // When screen-sharing is active we hand out a fresh MediaStream carrying
   // (a) the mixed audio track if we captured tab audio, otherwise the raw
-  // mic track, and (b) the screen video track. Late joiners and retry
-  // callers get the current share instead of a stale camera feed. When not
-  // sharing, returns the normal local stream.
+  // mic track, and (b) the screen video track. When NOT sharing we still
+  // include a dummy video track so the offer negotiates a video m-line —
+  // that lets us receive a screen share from a peer who starts sharing
+  // AFTER the PC is established, without renegotiation. Without this,
+  // late joiners to a room where someone is already sharing would hear
+  // audio but see black.
   const getPublishStream = useCallback((): MediaStream | null => {
     const local = localStreamRef.current
-    if (!screenSharingRef.current || !screenStreamRef.current) return local
-    const screenVideo = screenStreamRef.current.getVideoTracks()[0]
-    if (!screenVideo) return local
-    const out = new MediaStream()
-    const mixed = mixedAudioTrackRef.current
-    if (mixed && mixed.readyState !== 'ended') {
-      out.addTrack(mixed)
-    } else {
-      local?.getAudioTracks().forEach(t => out.addTrack(t))
+    if (screenSharingRef.current && screenStreamRef.current) {
+      const screenVideo = screenStreamRef.current.getVideoTracks()[0]
+      if (screenVideo) {
+        const out = new MediaStream()
+        const mixed = mixedAudioTrackRef.current
+        if (mixed && mixed.readyState !== 'ended') {
+          out.addTrack(mixed)
+        } else {
+          local?.getAudioTracks().forEach(t => out.addTrack(t))
+        }
+        out.addTrack(screenVideo)
+        return out
+      }
     }
-    out.addTrack(screenVideo)
+    if (!local) return null
+    // Not sharing: if the local stream already has a video track (camera
+    // on), just pass it through. Otherwise attach the dummy so the offer
+    // still includes a video m-line.
+    if (local.getVideoTracks().length > 0) return local
+    const dummy = getDummyVideoTrack()
+    if (!dummy) return local
+    const out = new MediaStream()
+    local.getAudioTracks().forEach(t => out.addTrack(t))
+    out.addTrack(dummy)
     return out
-  }, [])
+  }, [getDummyVideoTrack])
 
   useEffect(() => { joinedRef.current = joined }, [joined])
   useEffect(() => { modeRef.current = mode }, [mode])
@@ -342,6 +399,10 @@ export function useCall(options: UseCallOptions) {
   // can invoke it from mc stream handlers without forward-declaration
   // gymnastics.
   const tuneScreenSendersRef = useRef<((pc: RTCPeerConnection) => void) | null>(null)
+  // Same forward-reference for forceKeyframe — called on every new mc
+  // stream event during a share so late joiners get frames instantly
+  // instead of waiting for the next regular keyframe.
+  const forceKeyframeRef = useRef<((pc: RTCPeerConnection) => void) | null>(null)
 
   const callPeerWithStream = useCallback<CallPeerFn>((peerId, stream, myMode) => {
     if (!peer || peerId === myPeerId) return
@@ -359,7 +420,13 @@ export function useCall(options: UseCallOptions) {
         // established video sender so late joiners benefit too.
         if (screenSharingRef.current) {
           const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
-          if (pc) tuneScreenSendersRef.current?.(pc)
+          if (pc) {
+            tuneScreenSendersRef.current?.(pc)
+            // Kick a fresh keyframe out on this PC so the late joiner's
+            // decoder has an anchor frame right away instead of waiting
+            // for the next regular interval.
+            forceKeyframeRef.current?.(pc)
+          }
         }
       })
       mc.on('close', () => {
@@ -488,7 +555,13 @@ export function useCall(options: UseCallOptions) {
         })
         if (screenSharingRef.current) {
           const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
-          if (pc) tuneScreenSendersRef.current?.(pc)
+          if (pc) {
+            tuneScreenSendersRef.current?.(pc)
+            // Kick a fresh keyframe out on this PC so the late joiner's
+            // decoder has an anchor frame right away instead of waiting
+            // for the next regular interval.
+            forceKeyframeRef.current?.(pc)
+          }
         }
       })
       mc.on('close', () => {
@@ -641,9 +714,12 @@ export function useCall(options: UseCallOptions) {
       // A reconnect invalidates any retry state for this peer — start fresh.
       clearRetryState(pid)
     })
-    // Re-call every roster member with the new stream.
+    // Re-call every roster member with the publish stream so the offer
+    // still carries a video m-line even in audio mode (dummy track) and
+    // carries screen video if a share is active.
+    const publishStream = getPublishStream() ?? stream
     rosterRef.current.forEach((_, pid) => {
-      callPeerWithStream(pid, stream, newMode as CallMode)
+      callPeerWithStream(pid, publishStream, newMode as CallMode)
     })
     // Tell everyone our new track-state so their tile renders the right kind.
     const payload = {
@@ -655,7 +731,7 @@ export function useCall(options: UseCallOptions) {
     } satisfies CallMsg
     if (isHost) broadcast?.(payload)
     else sendToHost?.(payload)
-  }, [localMedia.mode, isHost, broadcast, sendToHost, myPeerId, callPeerWithStream, clearRetryState])
+  }, [localMedia.mode, isHost, broadcast, sendToHost, myPeerId, callPeerWithStream, clearRetryState, getPublishStream])
 
   // ── Signaling message handler ──────────────────────────────────────────
 
@@ -924,7 +1000,12 @@ export function useCall(options: UseCallOptions) {
 
       if (isHost) {
         const existingPeerIds: string[] = Array.from(rosterRef.current.keys())
-        existingPeerIds.forEach(pid => callPeerWithStream(pid, stream, 'audio'))
+        // Publish via getPublishStream so the offer carries a video
+        // m-line (from the dummy track) — without it, a peer who starts
+        // screen-sharing later can't send us frames because our PC has
+        // no video sender slot to answer with.
+        const publishStream = getPublishStream() ?? stream
+        existingPeerIds.forEach(pid => callPeerWithStream(pid, publishStream, 'audio'))
         broadcast?.({ type: 'call-peer-joined', peerId: myPeerId!, name: myNameRef.current, mode: 'audio', screenSharing: false, from: myPeerId! } satisfies CallMsg)
       } else {
         sendToHost?.({ type: 'call-join', mode: 'audio', name: myNameRef.current, from: myPeerId! } satisfies CallMsg)
@@ -954,7 +1035,7 @@ export function useCall(options: UseCallOptions) {
     } finally {
       if (joinAttemptRef.current === attempt) setJoining(false)
     }
-  }, [peer, myPeerId, joining, localMediaStart, isHost, hostPeerId, broadcast, sendToHost, callPeerWithStream])
+  }, [peer, myPeerId, joining, localMediaStart, isHost, hostPeerId, broadcast, sendToHost, callPeerWithStream, getPublishStream])
 
   // ── Screen share ───────────────────────────────────────────────────────
   // Screen share does NOT depend on the local camera being on. Two paths:
@@ -1014,11 +1095,14 @@ export function useCall(options: UseCallOptions) {
   const tuneScreenSenders = useCallback((pc: RTCPeerConnection): void => {
     pc.getSenders().forEach(sender => {
       if (sender.track?.kind !== 'video') return
-      try { sender.track.contentHint = 'motion' } catch {}
+      // 'detail' biases the encoder toward spatial quality (crisp text and
+      // UI edges) over temporal smoothness — the right tradeoff for code
+      // editors, docs, and slides, which are the bulk of what users share.
+      try { sender.track.contentHint = 'detail' } catch {}
       try {
         const params = sender.getParameters()
         const enc = params.encodings?.[0] ?? {}
-        enc.maxBitrate = 2_000_000
+        enc.maxBitrate = 4_000_000
         enc.maxFramerate = 30
         params.encodings = [enc]
         // Prefer lower resolution over dropped frames when bandwidth
@@ -1026,6 +1110,25 @@ export function useCall(options: UseCallOptions) {
         type ParamsWithDegradation = RTCRtpSendParameters & { degradationPreference?: string }
         ;(params as ParamsWithDegradation).degradationPreference = 'maintain-framerate'
         void sender.setParameters(params)
+      } catch {}
+    })
+  }, [])
+
+  // Force the encoder to emit a keyframe on the given PC's video senders.
+  // Toggling track.enabled false -> true is the most reliable cross-
+  // browser nudge; Chromium emits a fresh keyframe on re-enable so a
+  // freshly-negotiated receiver doesn't stare at black while waiting for
+  // the next regular keyframe. Called after every new mc.on('stream')
+  // during an active share.
+  const forceKeyframe = useCallback((pc: RTCPeerConnection): void => {
+    pc.getSenders().forEach(sender => {
+      const track = sender.track
+      if (!track || track.kind !== 'video' || track.readyState === 'ended') return
+      try {
+        track.enabled = false
+        setTimeout(() => {
+          try { if (track.readyState !== 'ended') track.enabled = true } catch {}
+        }, 60)
       } catch {}
     })
   }, [])
@@ -1040,6 +1143,7 @@ export function useCall(options: UseCallOptions) {
   // Keep the forward-reference ref current so callPeerWithStream / incoming
   // answer handler can tune newly-established PCs without a circular dep.
   useEffect(() => { tuneScreenSendersRef.current = tuneScreenSenders }, [tuneScreenSenders])
+  useEffect(() => { forceKeyframeRef.current = forceKeyframe }, [forceKeyframe])
 
   // Sender-side visibility nudge: when the sharer's tab regains focus,
   // Chromium may have paused encoding while backgrounded. Toggle every
