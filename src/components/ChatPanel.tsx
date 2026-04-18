@@ -475,9 +475,9 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       ref={popoutRef}
       className={`animate-fade-in-up ${
         isFullscreen
-          ? 'fixed left-0 right-0 z-50 bg-bg flex flex-col'
+          ? 'fixed left-0 right-0 z-[60] bg-bg flex flex-col'
           : isPopout
-            ? 'fixed z-50 rounded-2xl shadow-2xl border border-border bg-bg flex flex-col overflow-hidden'
+            ? 'fixed z-[60] rounded-2xl shadow-2xl glass-strong flex flex-col overflow-hidden'
             : 'glow-card overflow-hidden transition-all duration-300'
       }`}
       style={
@@ -516,7 +516,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             </svg>
           </div>
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-xl glass-accent flex items-center justify-center">
               <MessageCircle className="w-4 h-4 text-accent" />
             </div>
             <div>
@@ -698,7 +698,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         >
           <div className="flex items-center gap-3">
             <div className="relative">
-              <div className="w-8 h-8 rounded-xl bg-accent/10 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-xl glass-accent flex items-center justify-center">
                 <MessageCircle className="w-4 h-4 text-accent" />
               </div>
               {unread > 0 && (
@@ -829,7 +829,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
             >
               {messages.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-12 text-center">
-                  <div className="w-12 h-12 rounded-xl bg-accent/5 border border-accent/10 flex items-center justify-center mb-3">
+                  <div className="w-12 h-12 rounded-xl glass-accent flex items-center justify-center mb-3">
                     <MessageCircle className="w-5 h-5 text-accent/40" />
                   </div>
                   <p className="font-mono text-xs text-muted">No messages yet</p>
@@ -1185,7 +1185,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           aria-labelledby="clear-confirm-title"
           tabIndex={-1}
         >
-          <div className="bg-surface border border-border rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+          <div className="glass-strong rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-danger/10 flex items-center justify-center shrink-0">
                 <Trash2 className="w-5 h-5 text-danger" />

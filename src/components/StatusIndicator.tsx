@@ -26,11 +26,11 @@ interface StatusConfig {
 
 const statusConfig: Record<StatusKey, StatusConfig> = {
   initializing:        { color: 'bg-muted',      ring: 'ring-muted/30',      text: 'Initializing...', pulse: true },
-  waiting:             { color: 'bg-yellow-400',  ring: 'ring-yellow-400/30', text: 'Waiting for recipient...', pulse: true },
-  connecting:          { color: 'bg-yellow-400',  ring: 'ring-yellow-400/30', text: 'Connecting...', pulse: true },
-  retrying:            { color: 'bg-yellow-400',  ring: 'ring-yellow-400/30', text: 'Retrying...', pulse: true },
-  reconnecting:        { color: 'bg-yellow-400',  ring: 'ring-yellow-400/30', text: 'Reconnecting...', pulse: true },
-  'password-required': { color: 'bg-yellow-400',  ring: 'ring-yellow-400/30', text: 'Password required', pulse: true },
+  waiting:             { color: 'bg-warning-mid', ring: 'ring-warning-mid/30', text: 'Waiting for recipient...', pulse: true },
+  connecting:          { color: 'bg-warning-mid', ring: 'ring-warning-mid/30', text: 'Connecting...', pulse: true },
+  retrying:            { color: 'bg-warning-mid', ring: 'ring-warning-mid/30', text: 'Retrying...', pulse: true },
+  reconnecting:        { color: 'bg-warning-mid', ring: 'ring-warning-mid/30', text: 'Reconnecting...', pulse: true },
+  'password-required': { color: 'bg-warning-mid', ring: 'ring-warning-mid/30', text: 'Password required', pulse: true },
   'direct-failed':     { color: 'bg-warning',     ring: 'ring-warning/30',    text: 'Direct connection failed', pulse: false },
   connected:           { color: 'bg-accent',      ring: 'ring-accent/30',     text: 'Connected', pulse: false },
   'manifest-received': { color: 'bg-accent',      ring: 'ring-accent/30',     text: 'Connected', pulse: false },

@@ -116,26 +116,32 @@ export default function CollabHostView() {
   const connectionStatus = host.status === 'waiting' ? 'connected' : host.status
 
   return (
-    <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
+    <div className="min-h-screen flex flex-col bg-grid">
       {/* Header */}
-      <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80">
+      <header className="border-b border-border/60 glass">
         <div className="max-w-5xl mx-auto px-6 py-5">
           <Link to="/" className="flex items-center gap-2 text-muted hover:text-accent transition-colors mb-3 w-fit group">
             <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
             <span className="font-mono text-[11px]">Back to home</span>
           </Link>
           <div className="flex items-center justify-between">
-            <Link to="/" className="group">
-              <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
-                The Manifest
-              </h1>
-              <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide flex items-center gap-1.5">
-                <Users className="w-3 h-3" /> Collaborative Portal
-              </p>
+            <Link to="/" className="group flex items-center gap-3">
+              <span className="relative inline-flex w-9 h-9 rounded-xl items-center justify-center glass-accent shrink-0">
+                <Users className="w-4 h-4 text-accent" strokeWidth={2} />
+                <span className="absolute inset-0 rounded-xl bg-accent/10 blur-md -z-10" />
+              </span>
+              <span>
+                <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
+                  The Manifest
+                </h1>
+                <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide flex items-center gap-1.5">
+                  <Users className="w-3 h-3" /> Collaborative Portal
+                </p>
+              </span>
             </Link>
             <Link
               to="/faq"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs glass text-muted-light hover:text-accent hover:border-accent/40 transition-colors"
             >
               FAQ
             </Link>
@@ -154,17 +160,19 @@ export default function CollabHostView() {
 
         {host.status === 'error' && (
           <div className="text-center py-16 animate-fade-in-up">
-            <div className="w-18 h-18 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto mb-6 ring-4 ring-danger/5">
-              <AlertCircle className="w-9 h-9 text-danger" strokeWidth={1.5} />
+            <div className="max-w-sm mx-auto space-y-5 glass-strong rounded-3xl px-8 py-10">
+              <div className="w-18 h-18 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto ring-4 ring-danger/5">
+                <AlertCircle className="w-9 h-9 text-danger" strokeWidth={1.5} />
+              </div>
+              <p className="font-mono text-lg text-text-bright font-medium mb-2">Failed to create room</p>
+              <p className="text-sm text-muted-light mb-2">Could not establish a connection. Check your internet and try again.</p>
+              <button
+                onClick={() => window.location.reload()}
+                className="px-5 py-2.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-bright shadow-[0_0_20px_var(--color-accent-glow)] transition-colors"
+              >
+                Try Again
+              </button>
             </div>
-            <p className="font-mono text-lg text-text font-medium mb-2">Failed to create room</p>
-            <p className="text-sm text-muted mb-6">Could not establish a connection. Check your internet and try again.</p>
-            <button
-              onClick={() => window.location.reload()}
-              className="px-5 py-2.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim transition-colors"
-            >
-              Try Again
-            </button>
           </div>
         )}
 
@@ -196,7 +204,7 @@ export default function CollabHostView() {
                     </div>
                     <button
                       onClick={copyLink}
-                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-xs bg-accent text-bg font-medium hover:bg-accent-dim transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg font-mono text-xs bg-accent text-bg font-medium hover:bg-accent-bright transition-colors"
                     >
                       {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                       {copied ? 'Copied' : 'Copy'}

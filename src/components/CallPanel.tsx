@@ -182,7 +182,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
     const showEndReason = lastReason !== null && lastReason !== 'user-left'
     return (
     <div className="flex flex-col items-center justify-center gap-5 py-6 px-4 text-center">
-      <div className="w-14 h-14 rounded-2xl bg-accent/10 flex items-center justify-center ring-2 ring-accent/20">
+      <div className="w-14 h-14 rounded-2xl glass-accent flex items-center justify-center">
         <Phone className="w-6 h-6 text-accent" strokeWidth={1.75} />
       </div>
       <div>
@@ -642,7 +642,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         </div>
         <span className="font-mono text-[11px] text-text font-medium truncate">{headerLabel}</span>
         {call.joined && !isReconnecting && (
-          <span className="w-1.5 h-1.5 rounded-full bg-accent shadow-[0_0_6px_rgba(100,255,218,0.8)] animate-pulse shrink-0" />
+          <span className="w-1.5 h-1.5 rounded-full bg-accent shadow-[0_0_8px_rgba(34,211,238,0.9)] animate-pulse shrink-0" />
         )}
         {isReconnecting && (
           <span className="w-1.5 h-1.5 rounded-full bg-warning shadow-[0_0_6px_rgba(250,204,21,0.8)] animate-pulse shrink-0" />
@@ -693,7 +693,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
       ref={popout.elementRef}
       className={`animate-fade-in-up ${
         popoutActive
-          ? 'fixed z-50 rounded-2xl shadow-2xl border border-border bg-bg flex flex-col overflow-hidden'
+          ? 'fixed z-[60] rounded-2xl shadow-2xl border border-border bg-bg flex flex-col overflow-hidden'
           : 'glow-card overflow-hidden flex flex-col'
       }`}
       style={

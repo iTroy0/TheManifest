@@ -19,18 +19,18 @@ export default function ProgressBar({ percent, label }: ProgressBarProps) {
           </span>
         </div>
       )}
-      <div className="h-2 bg-surface-2 rounded-full overflow-hidden border border-border/30">
+      <div className="h-2 bg-surface-2 rounded-full overflow-hidden border border-border/40">
         <div
           className={`h-full rounded-full relative transition-all duration-500 ease-out ${!isComplete ? 'shimmer-bar' : ''}`}
           style={{
             width: `${percent}%`,
             background: isComplete
-              ? 'var(--color-accent)'
-              : 'linear-gradient(90deg, var(--color-info), #6bb8ff)',
+              ? 'linear-gradient(90deg, var(--color-accent-dim), var(--color-accent), var(--color-accent-bright))'
+              : 'linear-gradient(90deg, var(--color-info), var(--color-accent))',
             boxShadow: percent > 0
               ? isComplete
-                ? '0 0 12px var(--color-accent-glow)'
-                : '0 0 8px rgba(74, 158, 255, 0.3)'
+                ? '0 0 14px var(--color-accent-glow), 0 0 28px rgba(34, 211, 238, 0.15)'
+                : '0 0 10px rgba(139, 92, 246, 0.4)'
               : 'none',
           }}
         />

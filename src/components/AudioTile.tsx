@@ -42,7 +42,7 @@ export default function AudioTile({ stream, name, self = false, micMuted = false
     <div
       className={`relative flex items-center gap-2 rounded-xl px-3 py-2 border transition-all duration-150 ${
         isSpeaking
-          ? 'bg-accent/10 border-accent/50 shadow-[0_0_0_2px_rgba(100,255,218,0.15)]'
+          ? 'bg-accent/10 border-accent/50 shadow-[0_0_0_2px_var(--color-accent-glow)]'
           : 'bg-surface-2/60 border-border'
       }`}
     >

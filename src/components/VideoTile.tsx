@@ -344,7 +344,7 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
       style={{ aspectRatio: isFullscreen ? undefined : `${effectiveAspect}`, maxHeight }}
       className={`relative w-full rounded-xl overflow-hidden bg-surface-2/80 border border-border group ${
         interactive ? 'cursor-pointer hover:border-accent/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg' : ''
-      } ${focused ? 'ring-2 ring-accent/60' : ''} ${isSpeaking ? 'shadow-[0_0_0_2px_rgba(100,255,218,0.45)]' : ''}`}
+      } ${focused ? 'ring-2 ring-accent/60' : ''} ${isSpeaking ? 'shadow-[0_0_0_2px_rgba(34,211,238,0.55),0_0_20px_rgba(34,211,238,0.25)]' : ''}`}
     >
       <video
         ref={videoRef}
@@ -359,7 +359,7 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
 
       {shouldShowBlackout && (
         <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-2 to-bg">
-          <div className={`${avatarSize} rounded-2xl bg-accent/10 flex items-center justify-center ring-2 ring-accent/20`}>
+          <div className={`${avatarSize} rounded-2xl glass-accent flex items-center justify-center`}>
             {cameraOff ? <VideoOff className={`${avatarIcon} text-muted-light`} /> : <User className={`${avatarIcon} text-accent`} />}
           </div>
         </div>

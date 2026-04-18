@@ -242,10 +242,10 @@ function Section({ icon: Icon, title, children }: SectionProps) {
   return (
     <div className="glow-card overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-3 border-b border-border/50 bg-surface-2/30">
-        <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
+        <div className="w-8 h-8 rounded-lg glass-accent flex items-center justify-center">
           <Icon className="w-4 h-4 text-accent" />
         </div>
-        <h2 className="font-mono text-sm font-medium text-text">{title}</h2>
+        <h2 className="font-mono text-sm font-medium text-text-bright">{title}</h2>
       </div>
       <div className="px-4 py-4">{children}</div>
     </div>
@@ -256,23 +256,29 @@ export default function Privacy() {
   usePageTitle('Privacy')
 
   return (
-    <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
+    <div className="min-h-screen flex flex-col bg-grid">
 
       {/* Header */}
-      <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80 sm:sticky sm:top-0 z-10">
+      <header className="border-b border-border/60 glass">
         <div className="max-w-[720px] mx-auto px-6 py-5">
           <Link to="/" className="flex items-center gap-2 text-muted hover:text-accent transition-colors mb-3 w-fit group">
             <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
             <span className="font-mono text-xs">Back to app</span>
           </Link>
           <div className="flex items-center justify-between">
-            <Link to="/" className="group">
-              <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
-                The Manifest
-              </h1>
-              <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide">
-                Privacy Policy
-              </p>
+            <Link to="/" className="group flex items-center gap-3">
+              <span className="relative inline-flex w-9 h-9 rounded-xl items-center justify-center glass-accent shrink-0">
+                <Shield className="w-4 h-4 text-accent" strokeWidth={2} />
+                <span className="absolute inset-0 rounded-xl bg-accent/10 blur-md -z-10" />
+              </span>
+              <span>
+                <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
+                  The Manifest
+                </h1>
+                <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide">
+                  Privacy Policy
+                </p>
+              </span>
             </Link>
           </div>
         </div>
@@ -283,8 +289,8 @@ export default function Privacy() {
 
         {/* Intro */}
         <div className="text-center py-4 animate-fade-in-up">
-          <h2 className="font-mono text-xl font-bold text-text-bright mb-2">
-            Privacy is the product
+          <h2 className="font-mono text-2xl font-bold mb-2">
+            <span className="text-gradient-accent">Privacy is the product</span>
           </h2>
           <p className="text-sm text-muted-light max-w-md mx-auto">
             The Manifest is built so that we cannot spy on you even if we wanted to. Here is

@@ -128,17 +128,23 @@ export default function Home() {
   }, [sessionStarted, performReset])
 
   return (
-    <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
+    <div className="min-h-screen flex flex-col bg-grid">
 
-      <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80">
+      <header className="border-b border-border/60 glass">
         <div className="max-w-5xl mx-auto px-6 py-5 flex items-center justify-between">
-          <Link to="/" className="group" onClick={isActive ? (e) => { e.preventDefault(); handleNewSession() } : undefined} aria-label="The Manifest — go to home">
-            <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
-              The Manifest
-            </h1>
-            <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide">
-              Encrypted file sharing & chat
-            </p>
+          <Link to="/" className="group flex items-center gap-3" onClick={isActive ? (e) => { e.preventDefault(); handleNewSession() } : undefined} aria-label="The Manifest — go to home">
+            <span className="relative inline-flex w-9 h-9 rounded-xl items-center justify-center glass-accent shrink-0">
+              <Shield className="w-4 h-4 text-accent" strokeWidth={2} />
+              <span className="absolute inset-0 rounded-xl bg-accent/10 blur-md -z-10" />
+            </span>
+            <span>
+              <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
+                The Manifest
+              </h1>
+              <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide">
+                Encrypted file sharing & chat
+              </p>
+            </span>
           </Link>
           <div className="flex items-center gap-2">
             {isActive && !isFinished && (
@@ -168,8 +174,13 @@ export default function Home() {
         {!isActive && (
           <div className="max-w-[720px] mx-auto space-y-6">
             <div className="text-center py-6 animate-fade-in-up">
-              <h2 className="font-mono text-2xl sm:text-3xl font-bold text-text-bright mb-3 tracking-tight text-balance">
-                Share files & chat. No servers. No trace.
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 mb-4 rounded-full glass-accent text-[10px] font-mono text-accent uppercase tracking-[0.18em]">
+                <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+                Zero server &middot; Zero trace
+              </span>
+              <h2 className="font-mono text-2xl sm:text-3xl font-bold mb-3 tracking-tight text-balance">
+                <span className="text-text-bright">Share files &amp; chat. </span>
+                <span className="text-gradient-accent">No servers. No trace.</span>
               </h2>
               <p className="text-sm text-muted-light max-w-md mx-auto leading-relaxed text-pretty">
                 Files and messages stream directly browser-to-browser via WebRTC.
@@ -183,7 +194,7 @@ export default function Home() {
               <button
                 onClick={startChatRoom}
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm
-                  bg-surface-2/50 border border-border text-muted hover:border-accent/40 hover:text-accent hover:bg-surface-2 active:scale-[0.98] transition-all"
+                  glass text-muted-light hover:text-accent hover:border-accent/40 active:scale-[0.98] transition-all"
               >
                 <MessagesSquare className="w-4 h-4" />
                 Start a chat room
@@ -191,7 +202,7 @@ export default function Home() {
               <Link
                 to="/collab"
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm
-                  bg-accent/10 border border-accent/30 text-accent hover:bg-accent/20 hover:border-accent/50 active:scale-[0.98] transition-all"
+                  glass-accent text-accent hover:text-accent-bright hover:border-accent/50 active:scale-[0.98] transition-all"
               >
                 <Share2 className="w-4 h-4" />
                 Collaborative room
@@ -558,7 +569,7 @@ function HowItWorks() {
                 <div key={step.num}>
                   {i > 0 && <div className="ml-[18px] w-px h-4 bg-border" />}
                   <div className="flex gap-4 items-start">
-                    <div className="w-9 h-9 rounded-xl bg-accent/10 flex items-center justify-center shrink-0">
+                    <div className="w-9 h-9 rounded-xl glass-accent flex items-center justify-center shrink-0">
                       <step.icon className="w-4 h-4 text-accent" strokeWidth={1.5} />
                     </div>
                     <div className="pt-1 pb-1">
@@ -669,12 +680,13 @@ interface InfoCardProps {
 
 function InfoCard({ icon: Icon, title, desc }: InfoCardProps) {
   return (
-    <div className="group bg-surface border border-border rounded-xl p-4 space-y-2.5 hover:border-accent/30 hover:bg-surface-2/30 transition-all duration-300">
-      <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center group-hover:bg-accent/15 transition-colors">
+    <div className="group relative overflow-hidden glass rounded-xl p-4 space-y-2.5 hover:border-accent/30 transition-all duration-300">
+      <div className="absolute -top-16 -right-16 w-32 h-32 rounded-full bg-accent/10 blur-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-500" aria-hidden />
+      <div className="relative w-9 h-9 rounded-lg glass-accent flex items-center justify-center">
         <Icon className="w-4 h-4 text-accent" strokeWidth={1.5} />
       </div>
-      <p className="font-mono text-sm text-text font-medium">{title}</p>
-      <p className="text-xs text-muted-light leading-relaxed">{desc}</p>
+      <p className="relative font-mono text-sm text-text-bright font-medium">{title}</p>
+      <p className="relative text-xs text-muted-light leading-relaxed">{desc}</p>
     </div>
   )
 }

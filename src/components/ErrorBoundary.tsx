@@ -26,19 +26,19 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen bg-bg flex items-center justify-center px-6">
-          <div className="text-center space-y-4 max-w-sm">
+        <div className="min-h-screen bg-bg bg-grid flex items-center justify-center px-6">
+          <div className="text-center space-y-4 max-w-sm glass-strong rounded-3xl px-8 py-10">
             <div className="w-16 h-16 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto ring-4 ring-danger/5">
               <AlertTriangle className="w-8 h-8 text-danger" />
             </div>
-            <p className="font-mono text-lg text-text font-medium">Something went wrong</p>
-            <p className="text-sm text-muted leading-relaxed">
+            <p className="font-mono text-lg text-text-bright font-medium">Something went wrong</p>
+            <p className="text-sm text-muted-light leading-relaxed">
               The app encountered an unexpected error. Refreshing the page should fix it.
             </p>
             <button
               onClick={() => window.location.reload()}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm
-                bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all"
+                bg-accent text-bg font-medium hover:bg-accent-bright shadow-[0_0_24px_var(--color-accent-glow)] active:scale-[0.98] transition-all"
             >
               <RefreshCw className="w-4 h-4" />
               Refresh Page

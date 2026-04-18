@@ -102,25 +102,31 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
   }, [isPasswordRequired, guest.passwordError])
 
   return (
-    <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
-      <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80">
+    <div className="min-h-screen flex flex-col bg-grid">
+      <header className="border-b border-border/60 glass">
         <div className="max-w-5xl mx-auto px-6 py-5">
           <Link to="/" className="flex items-center gap-2 text-muted hover:text-accent transition-colors mb-3 w-fit group">
             <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
             <span className="font-mono text-[11px]">Create your own portal</span>
           </Link>
           <div className="flex items-center justify-between">
-            <Link to="/" className="group">
-              <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
-                The Manifest
-              </h1>
-              <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide flex items-center gap-1.5">
-                <Users className="w-3 h-3" /> Collaborative Portal
-              </p>
+            <Link to="/" className="group flex items-center gap-3">
+              <span className="relative inline-flex w-9 h-9 rounded-xl items-center justify-center glass-accent shrink-0">
+                <Users className="w-4 h-4 text-accent" strokeWidth={2} />
+                <span className="absolute inset-0 rounded-xl bg-accent/10 blur-md -z-10" />
+              </span>
+              <span>
+                <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
+                  The Manifest
+                </h1>
+                <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide flex items-center gap-1.5">
+                  <Users className="w-3 h-3" /> Collaborative Portal
+                </p>
+              </span>
             </Link>
             <Link
               to="/faq"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs glass text-muted-light hover:text-accent hover:border-accent/40 transition-colors"
             >
               FAQ
             </Link>
@@ -148,17 +154,17 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
 
         {isDirectFailed && (
           <div className="text-center py-12 animate-fade-in-up">
-            <div className="max-w-sm mx-auto space-y-6">
+            <div className="max-w-sm mx-auto space-y-6 glass-strong rounded-3xl px-8 py-10">
               <div className="w-18 h-18 rounded-2xl bg-warning/10 flex items-center justify-center mx-auto ring-4 ring-warning/5">
                 <Radio className="w-9 h-9 text-warning" strokeWidth={1.5} />
               </div>
               <div>
-                <p className="font-mono text-lg text-text font-medium mb-2">Direct connection failed</p>
-                <p className="text-sm text-muted leading-relaxed">Your network doesn&apos;t allow a direct connection. You can use an encrypted relay instead.</p>
+                <p className="font-mono text-lg text-text-bright font-medium mb-2">Direct connection failed</p>
+                <p className="text-sm text-muted-light leading-relaxed">Your network doesn&apos;t allow a direct connection. You can use an encrypted relay instead.</p>
               </div>
-              <div className="bg-surface-2/50 border border-border rounded-xl p-4 text-left space-y-3">
+              <div className="glass rounded-xl p-4 text-left space-y-3">
                 <p className="font-mono text-xs text-accent font-medium">What does this mean?</p>
-                <ul className="space-y-2 text-sm text-muted leading-relaxed">
+                <ul className="space-y-2 text-sm text-muted-light leading-relaxed">
                   <li className="flex gap-2"><span className="text-accent shrink-0">1.</span>Files pass through a relay server</li>
                   <li className="flex gap-2"><span className="text-accent shrink-0">2.</span>All data is still end-to-end encrypted</li>
                   <li className="flex gap-2"><span className="text-accent shrink-0">3.</span>Speed may be slightly slower</li>
@@ -166,7 +172,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
               </div>
               <button
                 onClick={guest.enableRelay}
-                className="inline-flex items-center gap-2.5 px-6 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all"
+                className="inline-flex items-center gap-2.5 px-6 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-bright active:scale-[0.98] shadow-[0_0_24px_var(--color-accent-glow)] transition-all"
               >
                 <Radio className="w-4 h-4" /> Connect via Relay
               </button>
@@ -176,13 +182,13 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
 
         {isPasswordRequired && (
           <div className="text-center py-12 animate-fade-in-up">
-            <div className="max-w-sm mx-auto space-y-6">
-              <div className="w-18 h-18 rounded-2xl bg-accent/10 flex items-center justify-center mx-auto ring-4 ring-accent/5">
+            <div className="max-w-sm mx-auto space-y-6 glass-strong rounded-3xl px-8 py-10">
+              <div className="w-18 h-18 rounded-2xl glass-accent flex items-center justify-center mx-auto">
                 <Lock className="w-9 h-9 text-accent" strokeWidth={1.5} />
               </div>
               <div>
-                <p className="font-mono text-lg text-text font-medium mb-2">Password Protected</p>
-                <p className="text-sm text-muted">Enter the password to join this room.</p>
+                <p className="font-mono text-lg text-text-bright font-medium mb-2">Password Protected</p>
+                <p className="text-sm text-muted-light">Enter the password to join this room.</p>
               </div>
               <form onSubmit={handlePasswordSubmit} className="space-y-4">
                 <div className="relative">
@@ -214,7 +220,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
                 <button
                   type="submit"
                   disabled={passwordLoading || !passwordInput}
-                  className="w-full px-5 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="w-full px-5 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-bright active:scale-[0.98] shadow-[0_0_24px_var(--color-accent-glow)] transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
                 >
                   {passwordLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1.5" />Verifying...</> : 'Join Room'}
                 </button>
@@ -225,52 +231,58 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
 
         {guest.status === 'error' && (
           <div className="text-center py-16 animate-fade-in-up">
-            <div className="w-18 h-18 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto mb-6 ring-4 ring-danger/5">
-              <AlertCircle className="w-9 h-9 text-danger" strokeWidth={1.5} />
+            <div className="max-w-sm mx-auto space-y-5 glass-strong rounded-3xl px-8 py-10">
+              <div className="w-18 h-18 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto ring-4 ring-danger/5">
+                <AlertCircle className="w-9 h-9 text-danger" strokeWidth={1.5} />
+              </div>
+              <p className="font-mono text-lg text-text-bright font-medium">Connection Failed</p>
+              <p className="text-sm text-muted-light">{guest.errorMessage || 'Could not connect to the room. It may no longer exist.'}</p>
+              <Link
+                to="/"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm glass-accent text-accent hover:text-accent-bright hover:border-accent/50 transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Go Home
+              </Link>
             </div>
-            <p className="font-mono text-lg text-text font-medium mb-2">Connection Failed</p>
-            <p className="text-sm text-muted mb-6">{guest.errorMessage || 'Could not connect to the room. It may no longer exist.'}</p>
-            <Link
-              to="/"
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Go Home
-            </Link>
           </div>
         )}
 
         {guest.status === 'closed' && (
           <div className="text-center py-16 animate-fade-in-up">
-            <div className="w-18 h-18 rounded-2xl bg-warning/10 flex items-center justify-center mx-auto mb-6 ring-4 ring-warning/5">
-              <DoorOpen className="w-9 h-9 text-warning" strokeWidth={1.5} />
+            <div className="max-w-sm mx-auto space-y-5 glass-strong rounded-3xl px-8 py-10">
+              <div className="w-18 h-18 rounded-2xl bg-warning/10 flex items-center justify-center mx-auto ring-4 ring-warning/5">
+                <DoorOpen className="w-9 h-9 text-warning" strokeWidth={1.5} />
+              </div>
+              <p className="font-mono text-lg text-text-bright font-medium">Room Closed</p>
+              <p className="text-sm text-muted-light">The host has closed this room.</p>
+              <Link
+                to="/"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm glass-accent text-accent hover:text-accent-bright hover:border-accent/50 transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Go Home
+              </Link>
             </div>
-            <p className="font-mono text-lg text-text font-medium mb-2">Room Closed</p>
-            <p className="text-sm text-muted mb-6">The host has closed this room.</p>
-            <Link
-              to="/"
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Go Home
-            </Link>
           </div>
         )}
 
         {guest.status === 'kicked' && (
           <div className="text-center py-16 animate-fade-in-up">
-            <div className="w-18 h-18 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto mb-6 ring-4 ring-danger/5">
-              <UserMinus className="w-9 h-9 text-danger" strokeWidth={1.5} />
+            <div className="max-w-sm mx-auto space-y-5 glass-strong rounded-3xl px-8 py-10">
+              <div className="w-18 h-18 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto ring-4 ring-danger/5">
+                <UserMinus className="w-9 h-9 text-danger" strokeWidth={1.5} />
+              </div>
+              <p className="font-mono text-lg text-text-bright font-medium">Removed from Room</p>
+              <p className="text-sm text-muted-light">The host removed you from this room.</p>
+              <Link
+                to="/"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm glass-accent text-accent hover:text-accent-bright hover:border-accent/50 transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Go Home
+              </Link>
             </div>
-            <p className="font-mono text-lg text-text font-medium mb-2">Removed from Room</p>
-            <p className="text-sm text-muted mb-6">The host removed you from this room.</p>
-            <Link
-              to="/"
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Go Home
-            </Link>
           </div>
         )}
 

@@ -55,16 +55,16 @@ export default function Portal() {
 
   if (!peerId || peerId.trim().length === 0) {
     return (
-      <div className="min-h-screen flex flex-col bg-grid bg-radial-glow items-center justify-center">
-        <div className="text-center space-y-5 animate-fade-in-up">
+      <div className="min-h-screen flex flex-col bg-grid items-center justify-center px-6">
+        <div className="text-center space-y-5 animate-fade-in-up glass-strong rounded-3xl px-10 py-12 max-w-md">
           <div className="w-18 h-18 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto ring-4 ring-danger/5">
             <AlertCircle className="w-9 h-9 text-danger" strokeWidth={1.5} />
           </div>
           <div>
-            <p className="font-mono text-lg text-text font-medium mb-2">Invalid Portal Link</p>
-            <p className="text-sm text-muted leading-relaxed">This link appears to be incomplete or invalid.</p>
+            <p className="font-mono text-lg text-text-bright font-medium mb-2">Invalid Portal Link</p>
+            <p className="text-sm text-muted-light leading-relaxed">This link appears to be incomplete or invalid.</p>
           </div>
-          <Link to="/" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-muted-light hover:border-accent/40 hover:text-accent transition-colors">
+          <Link to="/" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm glass-accent text-accent hover:text-accent-bright hover:border-accent/50 transition-colors">
             <ArrowLeft className="w-4 h-4" />
             Go Home
           </Link>
@@ -74,30 +74,36 @@ export default function Portal() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-grid bg-radial-glow">
+    <div className="min-h-screen flex flex-col bg-grid">
 
-      <header className="border-b border-border/60 backdrop-blur-sm bg-bg/80">
+      <header className="border-b border-border/60 glass">
         <div className="max-w-5xl mx-auto px-6 py-5">
           <Link to="/" className="flex items-center gap-2 text-muted hover:text-accent transition-colors mb-3 w-fit group">
             <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
             <span className="font-mono text-[11px]">Create your own portal</span>
           </Link>
           <div className="flex items-center justify-between">
-            <Link to="/" className="group">
-              <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
-                The Manifest
-              </h1>
-              <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide flex items-center gap-1.5">
-                {isChatOnly
-                  ? <><MessagesSquare className="w-3 h-3" /> Chat room</>
-                  : <><Download className="w-3 h-3" /> Incoming file portal</>
-                }
-              </p>
+            <Link to="/" className="group flex items-center gap-3">
+              <span className="relative inline-flex w-9 h-9 rounded-xl items-center justify-center glass-accent shrink-0">
+                <Shield className="w-4 h-4 text-accent" strokeWidth={2} />
+                <span className="absolute inset-0 rounded-xl bg-accent/10 blur-md -z-10" />
+              </span>
+              <span>
+                <h1 className="font-mono font-bold text-lg tracking-[0.25em] uppercase title-engraved group-hover:opacity-80 transition-opacity">
+                  The Manifest
+                </h1>
+                <p className="font-mono text-[11px] text-muted-light mt-0.5 tracking-wide flex items-center gap-1.5">
+                  {isChatOnly
+                    ? <><MessagesSquare className="w-3 h-3" /> Chat room</>
+                    : <><Download className="w-3 h-3" /> Incoming file portal</>
+                  }
+                </p>
+              </span>
             </Link>
             <Link
               to="/faq"
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono text-xs
-                bg-surface border border-border text-muted hover:border-accent/40 hover:text-accent transition-colors"
+                glass text-muted-light hover:text-accent hover:border-accent/40 transition-colors"
             >
               <span>FAQ</span>
             </Link>
@@ -143,13 +149,13 @@ export default function Portal() {
 
         {status === 'password-required' && (
           <div className="text-center py-12 animate-fade-in-up">
-            <div className="max-w-sm mx-auto space-y-6">
-              <div className="w-18 h-18 rounded-2xl bg-accent/10 flex items-center justify-center mx-auto ring-4 ring-accent/5">
+            <div className="max-w-sm mx-auto space-y-6 glass-strong rounded-3xl px-8 py-10">
+              <div className="w-18 h-18 rounded-2xl glass-accent flex items-center justify-center mx-auto">
                 <Lock className="w-9 h-9 text-accent" strokeWidth={1.5} />
               </div>
               <div>
-                <p className="font-mono text-lg text-text font-medium mb-2">Password Protected</p>
-                <p className="text-sm text-muted">Enter the password to access this portal.</p>
+                <p className="font-mono text-lg text-text-bright font-medium mb-2">Password Protected</p>
+                <p className="text-sm text-muted-light">Enter the password to access this portal.</p>
               </div>
               <form
                 onSubmit={(e) => {
@@ -187,7 +193,7 @@ export default function Portal() {
                     <p className="font-mono text-sm">Wrong password. Try again.</p>
                   </div>
                 )}
-                <button type="submit" data-testid="portal-password-submit" disabled={passwordLoading || !passwordInput} className="w-full px-5 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                <button type="submit" data-testid="portal-password-submit" disabled={passwordLoading || !passwordInput} className="w-full px-5 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-bright active:scale-[0.98] shadow-[0_0_24px_var(--color-accent-glow)] transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none">
                   {passwordLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1.5" />Verifying...</> : 'Unlock Portal'}
                 </button>
               </form>
@@ -197,23 +203,23 @@ export default function Portal() {
 
         {status === 'direct-failed' && (
           <div className="text-center py-12 animate-fade-in-up">
-            <div className="max-w-sm mx-auto space-y-6">
+            <div className="max-w-sm mx-auto space-y-6 glass-strong rounded-3xl px-8 py-10">
               <div className="w-18 h-18 rounded-2xl bg-warning/10 flex items-center justify-center mx-auto ring-4 ring-warning/5">
                 <Radio className="w-9 h-9 text-warning" strokeWidth={1.5} />
               </div>
               <div>
-                <p className="font-mono text-lg text-text font-medium mb-2">Direct connection failed</p>
-                <p className="text-sm text-muted leading-relaxed">Your network doesn&apos;t allow a direct connection. You can use an encrypted relay instead.</p>
+                <p className="font-mono text-lg text-text-bright font-medium mb-2">Direct connection failed</p>
+                <p className="text-sm text-muted-light leading-relaxed">Your network doesn&apos;t allow a direct connection. You can use an encrypted relay instead.</p>
               </div>
-              <div className="bg-surface-2/50 border border-border rounded-xl p-4 text-left space-y-3">
+              <div className="glass rounded-xl p-4 text-left space-y-3">
                 <p className="font-mono text-xs text-accent font-medium">What does this mean?</p>
-                <ul className="space-y-2 text-sm text-muted leading-relaxed">
+                <ul className="space-y-2 text-sm text-muted-light leading-relaxed">
                   <li className="flex gap-2"><span className="text-accent shrink-0">1.</span>Files pass through a relay server</li>
                   <li className="flex gap-2"><span className="text-accent shrink-0">2.</span>All data is still end-to-end encrypted</li>
                   <li className="flex gap-2"><span className="text-accent shrink-0">3.</span>Speed may be slightly slower</li>
                 </ul>
               </div>
-              <button onClick={enableRelay} className="inline-flex items-center gap-2.5 px-6 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-all">
+              <button onClick={enableRelay} className="inline-flex items-center gap-2.5 px-6 py-3.5 rounded-xl font-mono text-sm bg-accent text-bg font-medium hover:bg-accent-bright active:scale-[0.98] shadow-[0_0_24px_var(--color-accent-glow)] transition-all">
                 <Radio className="w-4 h-4" /> Connect via Relay
               </button>
             </div>
@@ -290,8 +296,6 @@ export default function Portal() {
                     <div className="px-4 pb-4 space-y-3">
                       {(() => {
                         if (allDone || isDead || hasPending) return null
-                        // Count what's actually left — a partial-completed manifest
-                        // should drive the button based on remaining, not total.
                         const remainingIndices = manifest.files.map((_, i) => i).filter(i => !completedFiles[i])
                         if (remainingIndices.length === 0) return null
                         const singleRemaining = remainingIndices.length === 1
@@ -300,7 +304,7 @@ export default function Portal() {
                           <div className="flex items-center gap-3">
                             <button
                               onClick={singleRemaining ? () => requestFile(onlyIdx) : requestAllAsZip}
-                              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs bg-accent text-bg font-medium hover:bg-accent-dim active:scale-[0.98] transition-colors"
+                              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-xs bg-accent text-bg font-medium hover:bg-accent-bright active:scale-[0.98] shadow-[0_0_18px_var(--color-accent-glow)] transition-colors"
                             >
                               {singleRemaining
                                 ? <><Download className="w-3.5 h-3.5" /> Download</>
@@ -421,17 +425,17 @@ interface ErrorBlockProps {
 function ErrorBlock({ title, desc }: ErrorBlockProps) {
   return (
     <div className="text-center py-16 animate-fade-in-up">
-      <div className="max-w-sm mx-auto space-y-5">
+      <div className="max-w-sm mx-auto space-y-5 glass-strong rounded-3xl px-8 py-10">
         <div className="w-18 h-18 rounded-2xl bg-danger/10 flex items-center justify-center mx-auto ring-4 ring-danger/5">
           <AlertCircle className="w-9 h-9 text-danger" strokeWidth={1.5} />
         </div>
         <div>
-          <p className="font-mono text-lg text-text font-medium mb-2">{title}</p>
-          <p className="text-sm text-muted leading-relaxed">{desc}</p>
+          <p className="font-mono text-lg text-text-bright font-medium mb-2">{title}</p>
+          <p className="text-sm text-muted-light leading-relaxed">{desc}</p>
         </div>
         <Link
           to="/"
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm bg-surface border border-border text-muted-light hover:border-accent/40 hover:text-accent transition-colors"
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-mono text-sm glass-accent text-accent hover:text-accent-bright hover:border-accent/50 transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />
           Go to Home
