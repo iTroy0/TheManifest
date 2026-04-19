@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ComponentProps } from 'react'
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera, AlertTriangle, Loader2, RefreshCw, X, WifiOff, MonitorUp, MonitorOff } from 'lucide-react'
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera, AlertTriangle, Loader2, RefreshCw, X, WifiOff, MonitorUp, MonitorOff, Sparkles } from 'lucide-react'
 import { UseCallReturn } from '../hooks/useCall'
 import { useViewport } from '../hooks/useViewport'
 import { usePopout } from '../hooks/usePopout'
@@ -539,6 +539,22 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         </div>
       )}
 
+      {call.aiNoiseError && (
+        <div className="px-3 pb-2">
+          <div className="flex items-start gap-2 rounded-lg bg-warning/10 border border-warning/30 px-3 py-2">
+            <p className="flex-1 font-mono text-[10px] text-warning">{call.aiNoiseError}</p>
+            <button
+              type="button"
+              onClick={call.dismissAiNoiseError}
+              className="shrink-0 text-warning/60 hover:text-warning transition-colors"
+              aria-label="Dismiss noise suppression error"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="border-t border-border bg-surface-2/40 px-3 py-2">
         <div className="flex items-center justify-center gap-1.5 flex-wrap">
           <ControlButton
@@ -546,6 +562,20 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
             title={call.micMuted ? 'Unmute' : 'Mute'}
             icon={call.micMuted ? MicOff : Mic}
             danger={call.micMuted}
+          />
+          <ControlButton
+            onClick={() => { void call.toggleAiNoiseSuppression() }}
+            title={
+              call.aiNoiseStarting
+                ? 'Loading noise suppression…'
+                : call.aiNoiseSuppression
+                  ? 'AI noise suppression on (click to turn off)'
+                  : 'Turn on AI noise suppression'
+            }
+            icon={call.aiNoiseStarting ? Loader2 : Sparkles}
+            disabled={call.aiNoiseStarting}
+            spinning={call.aiNoiseStarting}
+            active={call.aiNoiseSuppression}
           />
           <ControlButton
             onClick={call.toggleCamera}
@@ -784,8 +814,12 @@ interface ControlButtonProps {
   danger?: boolean
   disabled?: boolean
   spinning?: boolean
+  // Visually emphasizes the button when its underlying toggle is on (e.g.,
+  // AI noise suppression). Renders a brighter accent ring without using the
+  // danger style. Falls back to default styling when omitted.
+  active?: boolean
 }
-function ControlButton({ icon: Icon, onClick, title, danger = false, disabled = false, spinning = false }: ControlButtonProps) {
+function ControlButton({ icon: Icon, onClick, title, danger = false, disabled = false, spinning = false, active = false }: ControlButtonProps) {
   return (
     <button
       type="button"
@@ -793,10 +827,13 @@ function ControlButton({ icon: Icon, onClick, title, danger = false, disabled = 
       disabled={disabled}
       title={title}
       aria-label={title}
+      aria-pressed={active}
       className={`flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 rounded-lg transition-all active:scale-[0.95] disabled:opacity-50 disabled:cursor-not-allowed ${
         danger
           ? 'bg-danger/15 hover:bg-danger/25 text-danger ring-1 ring-danger/30'
-          : 'bg-accent/10 hover:bg-accent/20 text-accent ring-1 ring-accent/20'
+          : active
+            ? 'bg-accent/30 hover:bg-accent/40 text-accent ring-1 ring-accent/60'
+            : 'bg-accent/10 hover:bg-accent/20 text-accent ring-1 ring-accent/20'
       }`}
     >
       <Icon className={`w-5 h-5 sm:w-4 sm:h-4 ${spinning ? 'animate-spin' : ''}`} />

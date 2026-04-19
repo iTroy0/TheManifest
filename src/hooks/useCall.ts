@@ -6,6 +6,8 @@ import {
   tryClaim, refreshClaim, releaseClaim, getStableTabId,
   CLAIM_HEARTBEAT_MS,
 } from '../utils/callTabClaim'
+import type { RnnoisePipeline } from '../utils/rnnoise'
+import { getSharedAudioContext, ensureAudioContextRunning } from '../utils/audioContext'
 
 export type CallMode = 'audio' | 'video'
 
@@ -260,6 +262,20 @@ export function useCall(options: UseCallOptions) {
   // signal for *acoustic* echo from speakers → mic, but here both inputs
   // arrive as separate clean digital streams that the mixer concatenates.
   const [screenAudioShared, setScreenAudioShared] = useState<boolean>(false)
+
+  // RNNoise (neural noise suppression) toggle. Lazy-loads the WASM blob
+  // (~80 KB) on first enable and never reloads. The processed track replaces
+  // the raw mic on every PC's audio sender via swapAudioTrack — peers hear
+  // the denoised audio. Raw mic stays in localStream for everything else
+  // (speaking-level analysers, screen-share mixer). Composition with the
+  // screen-share mixer is intentionally not handled in v1: while sharing
+  // a screen with audio, the mixer reads raw mic, so denoise is bypassed
+  // for the mix duration. Toggle continues to track its UI state through
+  // the screen share so it re-applies cleanly on stop.
+  const [aiNoiseSuppression, setAiNoiseSuppression] = useState<boolean>(false)
+  const [aiNoiseStarting, setAiNoiseStarting] = useState<boolean>(false)
+  const [aiNoiseError, setAiNoiseError] = useState<string | null>(null)
+  const rnnoisePipelineRef = useRef<RnnoisePipeline | null>(null)
 
   const mediaConnsRef = useRef<Map<string, MediaConnection>>(new Map())
   const joinedRef = useRef<boolean>(false)
@@ -1105,6 +1121,11 @@ export function useCall(options: UseCallOptions) {
         releaseClaim(claimedHostRef.current, TAB_ID)
         claimedHostRef.current = null
       }
+      if (rnnoisePipelineRef.current) {
+        try { rnnoisePipelineRef.current.dispose() } catch { /* ignore */ }
+        rnnoisePipelineRef.current = null
+        setAiNoiseSuppression(false)
+      }
       // AbortError comes from useLocalMedia when the attempt was
       // superseded (e.g., the user hit Leave during the permission prompt,
       // or the component unmounted). Don't surface it as an error banner.
@@ -1165,6 +1186,62 @@ export function useCall(options: UseCallOptions) {
       })
     })
   }, [])
+
+  // RNNoise lazy enable. Loads WASM on first call (~80 KB), builds an
+  // AudioContext processing graph wrapping the raw mic, then swaps the
+  // resulting track onto every PC. Subsequent toggles reuse the same
+  // pipeline if still alive, or rebuild after a disable.
+  const enableAiNoiseSuppression = useCallback(async (): Promise<void> => {
+    if (rnnoisePipelineRef.current || aiNoiseStarting) return
+    const localStream = localStreamRef.current
+    const micTrack = localStream?.getAudioTracks()[0] || null
+    if (!micTrack) {
+      setAiNoiseError('Microphone not available yet — join the call first.')
+      return
+    }
+    const ctx = getSharedAudioContext()
+    if (!ctx) {
+      setAiNoiseError('Browser audio engine unavailable.')
+      return
+    }
+    ensureAudioContextRunning()
+    setAiNoiseStarting(true)
+    setAiNoiseError(null)
+    try {
+      // Dynamic import keeps the rnnoise loader (~11 KB) + WASM (~112 KB)
+      // off CallPanelRuntime; the chunk only loads on the user's first
+      // click. Subsequent toggles reuse the cached chunk.
+      const { buildRnnoisePipeline } = await import('../utils/rnnoise')
+      const pipeline = await buildRnnoisePipeline(ctx, micTrack)
+      rnnoisePipelineRef.current = pipeline
+      setAiNoiseSuppression(true)
+      swapAudioTrack(pipeline.track)
+    } catch (e) {
+      console.warn('useCall.enableAiNoise failed', e)
+      setAiNoiseError('Failed to load noise suppression.')
+    } finally {
+      setAiNoiseStarting(false)
+    }
+  }, [aiNoiseStarting, swapAudioTrack])
+
+  const disableAiNoiseSuppression = useCallback((): void => {
+    const pipeline = rnnoisePipelineRef.current
+    if (!pipeline) return
+    rnnoisePipelineRef.current = null
+    setAiNoiseSuppression(false)
+    setAiNoiseError(null)
+    const localStream = localStreamRef.current
+    const micTrack = localStream?.getAudioTracks()[0] || null
+    swapAudioTrack(micTrack)
+    pipeline.dispose()
+  }, [swapAudioTrack])
+
+  const toggleAiNoiseSuppression = useCallback(async (): Promise<void> => {
+    if (rnnoisePipelineRef.current) disableAiNoiseSuppression()
+    else await enableAiNoiseSuppression()
+  }, [disableAiNoiseSuppression, enableAiNoiseSuppression])
+
+  const dismissAiNoiseError = useCallback((): void => setAiNoiseError(null), [])
 
   // Apply screen-share encoder tuning to every video sender on a PC:
   //  - contentHint='motion' tells the encoder this is high-motion content,
@@ -1703,6 +1780,11 @@ export function useCall(options: UseCallOptions) {
         releaseClaim(claimedHostRef.current, TAB_ID)
         claimedHostRef.current = null
       }
+      if (rnnoisePipelineRef.current) {
+        try { rnnoisePipelineRef.current.dispose() } catch { /* ignore */ }
+        rnnoisePipelineRef.current = null
+        setAiNoiseSuppression(false)
+      }
       if (joinedRef.current) {
         try { localMediaStop() } catch {}
         setMode('none')
@@ -1758,6 +1840,14 @@ export function useCall(options: UseCallOptions) {
     stopScreenShare,
     dismissScreenShareError,
     screenStream: screenSharing ? screenStreamRef.current : null,
+    // RNNoise opt-in toggle. `aiNoiseStarting` is true during the first
+    // WASM load so the UI can show a spinner; subsequent toggles are
+    // synchronous (pipeline is rebuilt but WASM stays cached).
+    aiNoiseSuppression,
+    aiNoiseStarting,
+    aiNoiseError,
+    toggleAiNoiseSuppression,
+    dismissAiNoiseError,
   }
 }
 
