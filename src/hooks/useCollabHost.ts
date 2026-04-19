@@ -722,6 +722,10 @@ export function useCollabHost() {
         }
 
         // Password verification (C4 — rate limit after 5 wrong attempts).
+        // M-c — always decrypt, always compare, single accept/reject
+        // branch. Previously a decrypt failure short-circuited down a
+        // different code path than a successful decrypt with a wrong
+        // password, leaking the distinction via timing.
         if (msg.type === 'password-encrypted') {
           if (!session.encryptKey || !msg.data) return
           let password = ''
@@ -730,17 +734,12 @@ export function useCollabHost() {
             password = new TextDecoder().decode(decrypted)
           } catch (e) {
             log.warn('useCollabHost.password.decrypt', e)
-            const attempts = session.incrementPasswordAttempts()
-            if (attempts >= MAX_PASSWORD_ATTEMPTS) {
-              try { session.send({ type: 'password-rate-limited' } satisfies CollabUnencryptedMsg) } catch (e2) { log.warn('useCollabHost.password.rateLimitSend', e2) }
-              setTimeout(() => { try { conn.close() } catch (e2) { log.warn('useCollabHost.password.lockClose', e2) } }, 1000)
-              return
-            }
-            try { session.send({ type: 'password-wrong' } satisfies CollabUnencryptedMsg) } catch (e2) { log.warn('useCollabHost.password.wrongSend', e2) }
-            return
+            // Fall through with empty password so the compare runs either way.
           }
 
-          if (timingSafeEqual(password, passwordRef.current ?? '')) {
+          const matched = password.length > 0 && timingSafeEqual(password, passwordRef.current ?? '')
+
+          if (matched) {
             try { session.send({ type: 'password-accepted' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.password.acceptedSend', e) }
             session.setPasswordVerified()
             session.passwordAttempts = 0

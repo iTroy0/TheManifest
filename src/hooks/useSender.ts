@@ -49,6 +49,10 @@ interface SenderMeta {
   chunker?: InstanceType<typeof AdaptiveChunker>
   progressThrottler?: InstanceType<typeof ProgressThrottler>
   pendingJoinAnnounce?: boolean
+  // M-d — per-connection backoff timestamp. Replaces the old hook-global
+  // `lastPasswordAttemptTime` so one attacker can no longer stall every
+  // legitimate receiver by burning the shared timer.
+  lastPasswordAttempt?: number
 }
 
 interface ConnEntry {
@@ -85,8 +89,6 @@ export function useSender() {
   const passwordRef = useRef<string | null>(null)
   const chatOnlyRef = useRef<boolean>(false)
   const imageBlobUrlsRef = useRef<string[]>([])
-  const globalPasswordAttempts = useRef<number>(0)
-  const lastPasswordAttemptTime = useRef<number>(0)
 
   const [peerInstance, setPeerInstance] = useState<InstanceType<typeof Peer> | null>(null)
   const [participants, setParticipants] = useState<Array<{ peerId: string; name: string }>>([])
@@ -383,34 +385,43 @@ export function useSender() {
 
         if (msg.type === 'password-encrypted') {
           const now = Date.now()
-          // Exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 30s
-          const backoffMs = Math.min(30_000, 1000 * Math.pow(2, Math.max(0, globalPasswordAttempts.current - 1)))
-          if (now - lastPasswordAttemptTime.current < backoffMs) {
+          // M-d — per-connection backoff keyed off this session's own
+          // attempt count, not a hook-global counter.
+          const attempts = session.passwordAttempts
+          const backoffMs = Math.min(30_000, 1000 * Math.pow(2, Math.max(0, attempts - 1)))
+          if (now - (meta.lastPasswordAttempt ?? 0) < backoffMs) {
             try { session.send({ type: 'password-rate-limited' } satisfies PortalMsg) } catch (e) { log.warn('useSender.passwordRateLimited.send', e) }
             return
           }
-          lastPasswordAttemptTime.current = now
-          globalPasswordAttempts.current += 1
-          const attempts = session.incrementPasswordAttempts()
-          if (globalPasswordAttempts.current > 8 || attempts > 5) {
+          meta.lastPasswordAttempt = now
+          const next = session.incrementPasswordAttempts()
+          if (next > 5) {
             try { session.send({ type: 'password-locked' } satisfies PortalMsg) } catch (e) { log.warn('useSender.passwordLocked.send', e) }
             conn.close()
             return
           }
+
+          // M-c — unified timing. Always run the decrypt + the
+          // timingSafeEqual, even on decrypt failure (empty password falls
+          // through). Distinguishing "wrong key" from "right key, wrong
+          // password" was previously possible from network-layer timing.
           let password = ''
           if (session.encryptKey && msg.data) {
             try {
               const decrypted = await decryptChunk(session.encryptKey, base64ToUint8(msg.data as string))
               password = new TextDecoder().decode(decrypted)
-            } catch (e) { log.warn('useSender.passwordDecrypt', e); try { session.send({ type: 'password-wrong' } satisfies PortalMsg) } catch (err) { log.warn('useSender.passwordWrong.send', err) }; return }
+            } catch (e) {
+              log.warn('useSender.passwordDecrypt', e)
+              // Fall through to compare against an empty string so the
+              // branch latency matches the "wrong password" path.
+            }
           }
           const expected = passwordRef.current || ''
           const matched = password.length > 0 && timingSafeEqual(password, expected)
 
           if (matched) {
-            globalPasswordAttempts.current = 0
-            lastPasswordAttemptTime.current = 0
             session.passwordAttempts = 0
+            meta.lastPasswordAttempt = 0
             session.setPasswordVerified()
             try { session.send({ type: 'password-accepted' } satisfies PortalMsg) } catch (e) { log.warn('useSender.passwordAccepted.send', e) }
             if (meta.pendingJoinAnnounce) {
