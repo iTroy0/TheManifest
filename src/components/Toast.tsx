@@ -14,13 +14,17 @@ export default function Toast({ message, visible, onHide, duration = 3500 }: Toa
   useEffect(() => {
     if (visible) {
       setShow(true)
+      // H15 — depend on `message` too. If the parent re-triggers the toast
+      // with a new message while an older timer is still running, cleanup
+      // clears the stale timer and a fresh duration starts; otherwise the
+      // old timer would hide the new message early.
       const timer = setTimeout(() => {
         setShow(false)
         setTimeout(onHide, 300) // wait for exit animation
       }, duration)
       return () => clearTimeout(timer)
     }
-  }, [visible, onHide])
+  }, [visible, onHide, message])
 
   if (!visible && !show) return null
 
