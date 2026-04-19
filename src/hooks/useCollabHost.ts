@@ -614,9 +614,14 @@ export function useCollabHost() {
               localPublic: pubKeyBytes,
               remotePublic: session.pendingRemoteKey,
             })
-            session.dispatch({ type: 'keys-derived', encryptKey, fingerprint, requiresPassword: !!passwordRef.current })
+            session.dispatch({ type: 'keys-derived', encryptKey, fingerprint, requiresPassword: session.passwordRequired })
             session.pendingRemoteKey = null
-            if (passwordRef.current) {
+            // H8: branch on the session-latched `passwordRequired` (frozen at
+            // createSession for this connection) rather than the live ref, so
+            // a mid-handshake setPassword toggle cannot admit the guest
+            // through the no-password branch after we already signalled
+            // password-required to the peer (or vice versa).
+            if (session.passwordRequired) {
               try { session.send({ type: 'password-required' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.sendPasswordRequired', e) }
             } else {
               session.setPasswordVerified()
@@ -682,9 +687,11 @@ export function useCollabHost() {
               localPublic: localPubBytes,
               remotePublic: remoteKeyRaw,
             })
-            session.dispatch({ type: 'keys-derived', encryptKey, fingerprint, requiresPassword: !!passwordRef.current })
+            session.dispatch({ type: 'keys-derived', encryptKey, fingerprint, requiresPassword: session.passwordRequired })
 
-            if (passwordRef.current) {
+            // H8: see comment on the other keys-derived branch — branch on
+            // the session-latched flag, not the live ref.
+            if (session.passwordRequired) {
               try { session.send({ type: 'password-required' } satisfies CollabUnencryptedMsg) } catch (e) { log.warn('useCollabHost.sendPasswordRequired', e) }
             } else {
               session.setPasswordVerified()
@@ -737,7 +744,10 @@ export function useCollabHost() {
         // Join message
         if (msg.type === 'join') {
           session.setNickname(((msg.nickname as string) || 'Anon').slice(0, 32))
-          if (!passwordRef.current && session.encryptKey) {
+          // H8: branch on the session-latched flag. If this session was
+          // created while the room required a password, announceJoin is
+          // driven by the password-verify path, not the plain join.
+          if (!session.passwordRequired && session.encryptKey) {
             announceJoin()
           }
           return
@@ -1133,10 +1143,27 @@ export function useCollabHost() {
           return
         }
 
-        // P2P signaling relay between guests
+        // P2P signaling relay between guests.
+        // H6: validate the sender is authenticated, the target is a current
+        // participant, and the signal payload is shaped like a non-null
+        // object (offer/answer/candidate envelope). Previously a guest
+        // could spray arbitrary payloads to arbitrary peerIds with no gate.
         if (msg.type === 'collab-signal') {
-          const target = msg.target as string
-          relaySignal(session.peerId, target, msg.signal)
+          if (!session.passwordVerified && session.passwordRequired) {
+            log.warn('useCollabHost.collabSignal.unverified', session.peerId)
+            return
+          }
+          const target = typeof msg.target === 'string' ? msg.target : ''
+          if (!target || !connectionsRef.current.has(target)) {
+            log.warn('useCollabHost.collabSignal.unknownTarget', target)
+            return
+          }
+          const signal = msg.signal
+          if (!signal || typeof signal !== 'object') {
+            log.warn('useCollabHost.collabSignal.badShape', session.peerId)
+            return
+          }
+          relaySignal(session.peerId, target, signal)
           return
         }
 

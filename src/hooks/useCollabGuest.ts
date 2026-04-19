@@ -930,9 +930,12 @@ export function useCollabGuest(roomId: string) {
             return
           }
 
-          // Online count
+          // H7: online-count is now derived from `participants.length` in
+          // the reducer (every ADD/REMOVE/SET_PARTICIPANTS action recomputes
+          // it). The host still broadcasts the count for protocol
+          // back-compat; we accept and ignore so the two sources can never
+          // drift.
           if (msg.type === 'online-count') {
-            dispatchParticipants({ type: 'SET_ONLINE_COUNT', count: msg.count as number })
             return
           }
 

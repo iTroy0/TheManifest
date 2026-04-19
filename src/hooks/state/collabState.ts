@@ -225,7 +225,6 @@ export type ParticipantsAction =
   | { type: 'ADD_PARTICIPANT'; payload: CollabParticipant }
   | { type: 'REMOVE_PARTICIPANT'; peerId: string }
   | { type: 'UPDATE_PARTICIPANT'; peerId: string; payload: Partial<CollabParticipant> }
-  | { type: 'SET_ONLINE_COUNT'; count: number }
   | { type: 'RESET' }
 
 export const initialParticipantsState: CollabParticipantsState = {
@@ -254,8 +253,6 @@ export function participantsReducer(state: CollabParticipantsState, action: Part
       )
       return { ...state, participants: newList }
     }
-    case 'SET_ONLINE_COUNT':
-      return { ...state, onlineCount: action.count }
     case 'RESET':
       return initialParticipantsState
     default:
