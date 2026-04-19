@@ -8,8 +8,10 @@ export const URL_REGEX = /(https?:\/\/[^\s<>"']+[^\s<>"'.,;:!?\])}>])/
 export function safeUrl(raw: string): string {
   try {
     const u = new URL(raw)
-    if (u.protocol === 'http:' || u.protocol === 'https:') return u.toString()
-    return '#'
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '#'
+    // Reject userinfo-in-URL (https://evil@real-bank.com) — classic phishing vector.
+    if (u.username || u.password) return '#'
+    return u.toString()
   } catch {
     return '#'
   }

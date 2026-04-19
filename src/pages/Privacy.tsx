@@ -1,9 +1,7 @@
 import { Link } from 'react-router-dom'
-import { useState } from 'react'
-import { ArrowLeft, Shield, EyeOff, Server, Globe, Mail, Database, ClipboardList, type LucideIcon } from 'lucide-react'
+import { ArrowLeft, Shield, EyeOff, Server, Globe, Mail, Database, type LucideIcon } from 'lucide-react'
 import { usePageTitle } from '../hooks/usePageTitle'
 import AppFooter from '../components/AppFooter'
-import { copyDiagnostics, clearDiagnostics, getDiagnosticsBuffer } from '../utils/logger'
 
 interface SectionData {
   icon: LucideIcon
@@ -144,11 +142,6 @@ const sections: SectionData[] = [
     ),
   },
   {
-    icon: ClipboardList,
-    title: 'Diagnostics',
-    body: <DiagnosticsBody />,
-  },
-  {
     icon: Mail,
     title: 'Contact',
     body: (
@@ -168,69 +161,6 @@ const sections: SectionData[] = [
     ),
   },
 ]
-
-function DiagnosticsBody() {
-  const [status, setStatus] = useState<'idle' | 'copied' | 'empty' | 'failed'>('idle')
-  const [count, setCount] = useState<number>(() => getDiagnosticsBuffer().length)
-
-  async function onCopy(): Promise<void> {
-    const text = copyDiagnostics()
-    if (!text) {
-      setStatus('empty')
-      setTimeout(() => setStatus('idle'), 1500)
-      return
-    }
-    try {
-      await navigator.clipboard.writeText(text)
-      setStatus('copied')
-    } catch {
-      setStatus('failed')
-    }
-    setTimeout(() => setStatus('idle'), 1500)
-  }
-
-  function onClear(): void {
-    clearDiagnostics()
-    setCount(0)
-    setStatus('idle')
-  }
-
-  const label =
-    status === 'copied' ? 'Copied ✓' :
-    status === 'empty' ? 'Nothing to copy' :
-    status === 'failed' ? 'Copy failed' :
-    'Copy diagnostics'
-
-  return (
-    <div className="space-y-3 text-sm text-muted-light leading-relaxed">
-      <p>
-        The app keeps a rolling in-memory log of recent errors (last 200 entries, no message
-        content or file names) so you can include it in a bug report. Nothing is sent anywhere
-        automatically — the button below copies the log to your clipboard so you can paste it
-        into an issue.
-      </p>
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={onCopy}
-          className="px-3 py-1.5 rounded-md bg-accent/10 hover:bg-accent/15 text-accent text-xs font-mono border border-accent/20 transition-colors"
-        >
-          {label}
-        </button>
-        <button
-          type="button"
-          onClick={onClear}
-          className="px-3 py-1.5 rounded-md bg-surface-2/50 hover:bg-surface-2 text-muted-light text-xs font-mono border border-border/50 transition-colors"
-        >
-          Clear
-        </button>
-        <span className="font-mono text-[11px] text-muted">
-          {count} {count === 1 ? 'entry' : 'entries'} buffered
-        </span>
-      </div>
-    </div>
-  )
-}
 
 interface SectionProps {
   icon: LucideIcon

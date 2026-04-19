@@ -61,6 +61,10 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const prevLen = useRef(messages.length)
+  // Messages mirror so the alert effect can read latest items without
+  // putting `messages` in its deps (reactions/edits change the ref without
+  // changing length and would otherwise re-run the effect for no reason).
+  const messagesRef = useRef(messages)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const textInputRef = useRef<HTMLTextAreaElement | null>(null)
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -112,18 +116,23 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     return () => observer.disconnect()
   }, [open, isNearBottom])
 
+  // Sync the messages mirror every render. Must be declared before the
+  // alert effect so its slice() reads the latest items.
+  useEffect(() => { messagesRef.current = messages })
+
   useEffect(() => {
-    if (messages.length > prevLen.current) {
+    const prev = prevLen.current
+    const cur = messages.length
+    if (cur > prev) {
       if (open && scrollRef.current && isNearBottom) {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight
       }
       if (!open) {
-        dispatchPanel({ type: 'INCREMENT_UNREAD', count: messages.length - prevLen.current })
+        dispatchPanel({ type: 'INCREMENT_UNREAD', count: cur - prev })
       }
-      const newMsgs = messages.slice(prevLen.current)
+      const newMsgs = messagesRef.current.slice(prev, cur)
       // Only alert when the user is unlikely to already see the message:
-      // panel closed or tab backgrounded. Playing dings while actively
-      // reading is noise.
+      // panel closed or tab backgrounded.
       const shouldAlert = !open || (typeof document !== 'undefined' && document.hidden)
       for (const msg of newMsgs) {
         if (!msg.self && msg.from !== 'system') {
@@ -132,8 +141,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         }
       }
     }
-    prevLen.current = messages.length
-  }, [messages.length, open, isNearBottom, soundEnabled, notifyEnabled, messages])
+    prevLen.current = cur
+  }, [messages.length, open, isNearBottom, soundEnabled, notifyEnabled])
 
   useEffect(() => {
     if (open) dispatchPanel({ type: 'SET', payload: { unread: 0 } })

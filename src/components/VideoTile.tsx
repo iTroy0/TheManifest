@@ -105,10 +105,11 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
   useEffect(() => {
     const el = videoRef.current
     if (!el) return
-    el.volume = Math.max(0, Math.min(1, volume))
-    // The local self preview is hard-muted via the `muted` attribute below
-    // (loop-prevention). Per-peer mute only matters for remotes.
-    if (!self) el.muted = mutedForMe
+    const v = Math.max(0, Math.min(1, volume))
+    el.volume = v
+    // iOS Safari ignores `element.volume`; only `muted` actually silences.
+    // Setting muted when volume === 0 makes master-to-zero a true mute on iOS.
+    if (!self) el.muted = mutedForMe || v === 0
   }, [volume, mutedForMe, self])
 
   useEffect(() => {

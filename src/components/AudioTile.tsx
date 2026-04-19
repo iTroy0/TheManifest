@@ -29,8 +29,9 @@ export default function AudioTile({ stream, name, self = false, micMuted = false
   useEffect(() => {
     const el = audioRef.current
     if (!el) return
-    el.volume = Math.max(0, Math.min(1, volume))
-    el.muted = mutedForMe
+    const v = Math.max(0, Math.min(1, volume))
+    el.volume = v
+    el.muted = mutedForMe || v === 0
   }, [volume, mutedForMe])
 
   // Speaking ring is suppressed when the listener has muted this peer —

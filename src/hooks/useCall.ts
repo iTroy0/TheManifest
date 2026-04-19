@@ -1320,6 +1320,12 @@ export function useCall(options: UseCallOptions) {
       if (screenAudioTrack) {
         try {
           const ctx = new AudioContext()
+          // iOS Safari / Chromium autoplay policy can hand back a suspended
+          // context. A suspended destination silently emits no samples, so
+          // peers would hear nothing until the user happens to interact with
+          // the page again. The startScreenShare call sits behind a user
+          // gesture (click on the share button), so resume() is permitted.
+          if (ctx.state === 'suspended') void ctx.resume().catch(() => {})
           const dest = ctx.createMediaStreamDestination()
           if (micTrack && micTrack.readyState !== 'ended') {
             ctx.createMediaStreamSource(new MediaStream([micTrack])).connect(dest)
