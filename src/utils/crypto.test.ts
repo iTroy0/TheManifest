@@ -252,6 +252,22 @@ describe('importPublicKey edge cases', () => {
   it('throws when importing an empty Uint8Array', async () => {
     await expect(importPublicKey(new Uint8Array(0))).rejects.toThrow()
   })
+
+  it('rejects truncated bytes with CryptoDecodeError (length check)', async () => {
+    await expect(importPublicKey(new Uint8Array(64))).rejects.toThrow(/65 bytes/)
+  })
+
+  it('rejects wrong-prefix bytes with CryptoDecodeError (0x04 check)', async () => {
+    const wrong = new Uint8Array(65)
+    wrong[0] = 0x02
+    await expect(importPublicKey(wrong)).rejects.toThrow(/0x04/)
+  })
+
+  it('rejects oversize bytes (>65) with length error', async () => {
+    const oversize = new Uint8Array(66)
+    oversize[0] = 0x04
+    await expect(importPublicKey(oversize)).rejects.toThrow(/65 bytes/)
+  })
 })
 
 describe('AES-256-GCM additional edge cases', () => {

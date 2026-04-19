@@ -45,7 +45,15 @@ export interface CallError {
 // to distinguish between BroadcastChannel messages we sent ourselves vs.
 // ones from a sibling tab. Generated once per module load (so within a
 // hot-reload cycle it can change; that's fine).
-const TAB_ID = Math.random().toString(36).slice(2) + Date.now().toString(36)
+// M-f — crypto.randomUUID gives ~122 bits of entropy vs the ~60 bits of
+// Math.random + Date.now, which made TAB_ID collisions + prediction
+// (same browser, predictable Math.random seed) a non-trivial attack
+// surface for the BroadcastChannel probe. Fall back to the old pattern
+// only if the Web Crypto primitive is unavailable.
+const TAB_ID =
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2) + Date.now().toString(36)
 
 // Why a call ended — surfaced after `leave()` so the UI can post-mortem
 // honestly instead of silently snapping back to the pre-join screen.

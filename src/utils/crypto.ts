@@ -53,7 +53,21 @@ export async function exportPublicKey(publicKey: CryptoKey): Promise<Uint8Array>
 }
 
 export async function importPublicKey(rawBytes: Uint8Array | ArrayBuffer): Promise<CryptoKey> {
-  const buffer: ArrayBuffer = rawBytes instanceof ArrayBuffer ? rawBytes : (rawBytes.buffer as ArrayBuffer).slice(rawBytes.byteOffset, rawBytes.byteOffset + rawBytes.byteLength)
+  const u8: Uint8Array =
+    rawBytes instanceof Uint8Array
+      ? rawBytes
+      : new Uint8Array(rawBytes)
+  // M-b — belt-and-braces validation before the WebCrypto call. Uncompressed
+  // P-256 public keys are exactly 65 bytes with a leading 0x04 prefix;
+  // rejecting anything else up front closes historical curve-validation
+  // CVEs in older Safari/Firefox that WebCrypto may not catch itself.
+  if (u8.byteLength !== 65) {
+    throw new CryptoDecodeError(`P-256 public key must be 65 bytes (got ${u8.byteLength})`)
+  }
+  if (u8[0] !== 0x04) {
+    throw new CryptoDecodeError('P-256 public key must start with 0x04 (uncompressed form)')
+  }
+  const buffer: ArrayBuffer = (u8.buffer as ArrayBuffer).slice(u8.byteOffset, u8.byteOffset + u8.byteLength)
   return crypto.subtle.importKey(
     'raw',
     buffer,
