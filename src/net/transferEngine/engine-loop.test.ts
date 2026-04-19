@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { sendFile, createFileReceiver, portalWire } from './index'
+import { sendFile, createFileReceiver, portalWire, IntegrityError } from './index'
 import { createSession } from '../session'
 import { finalizeKeyExchange } from '../keyExchange'
 import { parseChunkPacket } from '../../utils/fileChunker'
@@ -275,5 +275,102 @@ describe('engine-loop integration', () => {
     expect(bOut.byteLength).toBe(bytesB.byteLength)
     expect(await sha256(aOut)).toBe(await sha256(bytesA))
     expect(await sha256(bOut)).toBe(await sha256(bytesB))
+  })
+
+  // ── M-i: end-to-end integrity threading ─────────────────────────────────
+  it('integrity hex from sender file-end verifies on receiver close', async () => {
+    const bytes = new Uint8Array(64 * 1024)
+    for (let off = 0; off < bytes.byteLength; off += 65536) {
+      crypto.getRandomValues(bytes.subarray(off, Math.min(off + 65536, bytes.byteLength)))
+    }
+    const file = new File([bytes], 'verified.bin')
+
+    const chunks: Uint8Array[] = []
+    const receiver = createFileReceiver(receiverSession, portalWire)
+    const sink = new WritableStream<Uint8Array>({ write(c) { chunks.push(c) } })
+
+    let recvQueue = Promise.resolve()
+    let closeOk = false
+    let closeErr: unknown = null
+    connB.on('data', (msg: unknown) => {
+      recvQueue = recvQueue.then(async () => {
+        if (msg instanceof ArrayBuffer) {
+          await receiver.onChunk(parseChunkPacket(msg))
+        } else {
+          const m = msg as { type: string; index?: number; size?: number; totalChunks?: number; integrity?: string }
+          const fileId = portalWire.fileIdForPacketIndex(m.index ?? 0) ?? 'file-0'
+          if (m.type === 'file-start') {
+            await receiver.onFileStart({ fileId, totalBytes: m.size ?? 0, totalChunks: m.totalChunks ?? 0, sink })
+          } else if (m.type === 'file-end') {
+            try {
+              await receiver.onFileEnd(fileId, m.integrity)
+              closeOk = true
+            } catch (err) {
+              closeErr = err
+            }
+          }
+        }
+      })
+    })
+
+    const result = await sendFile(senderSession, file, portalWire, { fileId: 'file-0' })
+    expect(result).toBe('complete')
+    await new Promise(r => setTimeout(r, 50))
+    await recvQueue
+
+    expect(closeErr).toBeNull()
+    expect(closeOk).toBe(true)
+    const total = chunks.reduce((n, c) => n + c.byteLength, 0)
+    expect(total).toBe(bytes.byteLength)
+  })
+
+  it('tampered ciphertext drops chunk → IntegrityError(incomplete) on close', async () => {
+    const bytes = new Uint8Array(2 * 256 * 1024) // 2 chunks at default 256 KB
+    for (let off = 0; off < bytes.byteLength; off += 65536) {
+      crypto.getRandomValues(bytes.subarray(off, Math.min(off + 65536, bytes.byteLength)))
+    }
+    const file = new File([bytes], 'tampered.bin')
+
+    const receiver = createFileReceiver(receiverSession, portalWire)
+    const sink = new WritableStream<Uint8Array>({ write() {} })
+
+    let recvQueue = Promise.resolve()
+    let closeErr: IntegrityError | null = null
+    let chunkCount = 0
+    connB.on('data', (msg: unknown) => {
+      recvQueue = recvQueue.then(async () => {
+        if (msg instanceof ArrayBuffer) {
+          chunkCount++
+          // Flip one byte deep inside the second chunk's ciphertext payload
+          // (offset past the 6-byte header + 12-byte AES-GCM IV). AES-GCM
+          // authentication then rejects the chunk → receiver silently drops
+          // it → count check fails on close.
+          if (chunkCount === 2) {
+            const view = new Uint8Array(msg)
+            view[view.byteLength - 4] ^= 0xff
+          }
+          await receiver.onChunk(parseChunkPacket(msg))
+        } else {
+          const m = msg as { type: string; index?: number; size?: number; totalChunks?: number; integrity?: string }
+          const fileId = portalWire.fileIdForPacketIndex(m.index ?? 0) ?? 'file-0'
+          if (m.type === 'file-start') {
+            await receiver.onFileStart({ fileId, totalBytes: m.size ?? 0, totalChunks: m.totalChunks ?? 0, sink })
+          } else if (m.type === 'file-end') {
+            try { await receiver.onFileEnd(fileId, m.integrity) }
+            catch (err) { if (err instanceof IntegrityError) closeErr = err }
+          }
+        }
+      })
+    })
+
+    const result = await sendFile(senderSession, file, portalWire, { fileId: 'file-0' })
+    expect(result).toBe('complete')
+    await new Promise(r => setTimeout(r, 50))
+    await recvQueue
+
+    expect(closeErr).not.toBeNull()
+    expect((closeErr as unknown as IntegrityError).kind).toBe('incomplete')
+    // Receiver dropped the entry; further `has` is false.
+    expect(receiver.has('file-0')).toBe(false)
   })
 })

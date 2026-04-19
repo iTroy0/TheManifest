@@ -7,7 +7,7 @@ import { STUN_ONLY, getWithTurn } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { parseChunkPacket, buildChunkPacket, waitForBufferDrain, CHAT_IMAGE_FILE_INDEX } from '../utils/fileChunker'
 import { createFileStream, type FileStreamHandle } from '../utils/streamWriter'
-import { sendFile, createFileReceiver, createCollabWire, type CollabWire, type FileReceiver } from '../net/transferEngine'
+import { sendFile, createFileReceiver, createCollabWire, IntegrityError, type CollabWire, type FileReceiver } from '../net/transferEngine'
 import { generateThumbnailAsync, generateVideoThumbnail, generateTextPreview } from '../utils/thumbnailWorker'
 import { ChatMessage } from '../types'
 import { generateNickname } from '../utils/nickname'
@@ -583,8 +583,17 @@ export function useCollabGuest(roomId: string) {
         if (payload.type === 'collab-file-end') {
           await session.chunkQueue
           const fileId = payload.fileId as string
-          await current.meta.receiver.onFileEnd(fileId)
-          dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'complete', progress: 100 } })
+          try {
+            await current.meta.receiver.onFileEnd(fileId, payload.integrity)
+            dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'complete', progress: 100 } })
+          } catch (err) {
+            if (err instanceof IntegrityError) {
+              log.warn('useCollabGuest.mesh.integrityFail', { fileId, kind: err.kind, message: err.message })
+              dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'error', error: `integrity ${err.kind}` } })
+            } else {
+              throw err
+            }
+          }
           return
         }
 
@@ -1159,9 +1168,20 @@ export function useCollabGuest(roomId: string) {
               const fileId = payload.fileId as string
               const hm = hostMetaRef.current
               if (hm) {
-                await hm.receiver.onFileEnd(fileId)
+                try {
+                  await hm.receiver.onFileEnd(fileId, payload.integrity)
+                  dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'complete', progress: 100 } })
+                } catch (err) {
+                  if (err instanceof IntegrityError) {
+                    log.warn('useCollabGuest.host.integrityFail', { fileId, kind: err.kind, message: err.message })
+                    dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'error', error: `integrity ${err.kind}` } })
+                  } else {
+                    throw err
+                  }
+                }
+              } else {
+                dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'complete', progress: 100 } })
               }
-              dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'complete', progress: 100 } })
               return
             }
 

@@ -34,7 +34,7 @@ import {
 } from '../net/config'
 import type { CollabInnerMsg, CollabUnencryptedMsg } from '../net/protocol'
 import { log } from '../utils/logger'
-import { sendFile, createFileReceiver, createCollabWire, type FileReceiver, type CollabWire } from '../net/transferEngine'
+import { sendFile, createFileReceiver, createCollabWire, IntegrityError, type FileReceiver, type CollabWire } from '../net/transferEngine'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -1174,9 +1174,18 @@ export function useCollabHost() {
             // race against in-flight decrypts from OTHER guests' uploads.
             await session.chunkQueue
             const fileId = payload.fileId as string
-            await entry.meta.uploadReceiver.onFileEnd(fileId)
-            dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'complete', progress: 100 } })
-            // M12 — request satisfied; future pause/resume needs a fresh request.
+            try {
+              await entry.meta.uploadReceiver.onFileEnd(fileId, payload.integrity)
+              dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'complete', progress: 100 } })
+            } catch (err) {
+              if (err instanceof IntegrityError) {
+                log.warn('useCollabHost.upload.integrityFail', { fileId, kind: err.kind, message: err.message })
+                dispatchFiles({ type: 'UPDATE_DOWNLOAD', fileId, payload: { status: 'error', error: `integrity ${err.kind}` } })
+              } else {
+                throw err
+              }
+            }
+            // M12 — request satisfied (or failed); future pause/resume needs a fresh request.
             session.requestedFileIds.delete(fileId)
             return
           }

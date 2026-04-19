@@ -7,6 +7,11 @@ import {
   buildChunkPacket,
   waitForBufferDrain,
 } from '../../utils/fileChunker'
+import {
+  EMPTY_INTEGRITY_CHAIN,
+  bytesToHex,
+  chainNextHash,
+} from '../../utils/crypto'
 import type { Session, TransferHandle } from '../session'
 import type { SendFileOpts, SendResult, WireAdapter } from './types'
 
@@ -78,6 +83,12 @@ export async function sendFile(
   let bytesSent = Number.isFinite(opts.resumedBytes)
     ? Math.max(0, Math.min(file.size, Math.floor(opts.resumedBytes as number)))
     : Math.min(file.size, startAt * chunkSize)
+  // M-i: rolling chain hash over plaintext bytes. Skipped on resumed
+  // transfers — we'd be hashing only the tail and the receiver has nothing
+  // to compare against. The receiver's chunk-count check still catches
+  // truncation in that mode.
+  const computeIntegrity = startAt === 0
+  let integrityChain: Uint8Array = EMPTY_INTEGRITY_CHAIN
 
   if (result === 'complete' && file.size > 0) {
     for await (const { buffer } of chunkFileAdaptive(file, opts.chunker ?? null)) {
@@ -100,6 +111,9 @@ export async function sendFile(
       }
 
       try {
+        if (computeIntegrity) {
+          integrityChain = await chainNextHash(integrityChain, buffer)
+        }
         const ct = await adapter.encryptChunk(session, buffer)
         const packet = buildChunkPacket(
           adapter.packetIndexFor(opts.fileId),
@@ -137,8 +151,9 @@ export async function sendFile(
         )
       }
     } else {
+      const integrity = computeIntegrity ? bytesToHex(integrityChain) : undefined
       session.send(
-        (await adapter.buildFileEnd(session, opts.fileId)) as Record<string, unknown>,
+        (await adapter.buildFileEnd(session, opts.fileId, integrity)) as Record<string, unknown>,
       )
     }
   } catch {

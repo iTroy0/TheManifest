@@ -58,7 +58,11 @@ export interface FileStartMsg {
   totalChunks: number
   resumeFrom?: number
 }
-export interface FileEndMsg { type: 'file-end'; index: number }
+// `integrity` is the hex-encoded rolling chain hash from `utils/crypto.ts`
+// (`chainNextHash`). Optional for back-compat with peers that pre-date M-i;
+// when present the receiver verifies before closing the sink, when absent
+// the receiver still enforces the chunk-count check (see createFileReceiver).
+export interface FileEndMsg { type: 'file-end'; index: number; integrity?: string }
 export interface PasswordRequiredMsg { type: 'password-required' }
 export interface PasswordEncryptedMsg { type: 'password-encrypted'; data: string }
 export interface PasswordAcceptedMsg { type: 'password-accepted' }
@@ -129,7 +133,7 @@ export interface CollabEnvelope { type: 'collab-msg-enc'; data: string }
 export type CollabInnerMsg =
   | { type: 'collab-request-file'; fileId: string; owner?: string; requesterPeerId?: string }
   | { type: 'collab-file-start'; fileId: string; name: string; size: number; totalChunks: number; packetIndex: number }
-  | { type: 'collab-file-end'; fileId: string }
+  | { type: 'collab-file-end'; fileId: string; integrity?: string }
   | { type: 'collab-file-shared'; file: unknown; from?: string }
   | { type: 'collab-file-removed'; fileId: string; from?: string }
   | { type: 'collab-file-list'; files: unknown[] }

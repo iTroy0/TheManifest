@@ -49,8 +49,10 @@ export function createCollabWire(): CollabWire {
       }
       return wrap(session, inner)
     },
-    async buildFileEnd(session, fileId) {
-      const inner: CollabInnerMsg = { type: 'collab-file-end', fileId }
+    async buildFileEnd(session, fileId, integrity) {
+      const inner: CollabInnerMsg = integrity
+        ? { type: 'collab-file-end', fileId, integrity }
+        : { type: 'collab-file-end', fileId }
       return wrap(session, inner)
     },
     async buildFileCancelled(session, fileId) {

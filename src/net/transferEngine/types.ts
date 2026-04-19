@@ -38,7 +38,12 @@ export interface RecvOpts {
 export interface FileReceiver {
   onFileStart(opts: RecvOpts): Promise<void>
   onChunk(packet: ChunkPacket): Promise<void>
-  onFileEnd(fileId: string): Promise<void>
+  // `expectedIntegrity` is the hex chain hash from `FileEndMsg.integrity` /
+  // `collab-file-end.integrity`. When omitted (peer pre-dates M-i, or sender
+  // skipped it on resume), only the chunk-count check runs. Throws
+  // `IntegrityError` on either check failing — caller (hook) catches to
+  // dispatch a UI error.
+  onFileEnd(fileId: string, expectedIntegrity?: string): Promise<void>
   abort(fileId: string, reason: 'cancelled' | 'error'): Promise<void>
   getResumeCursor(fileId: string): number
   has(fileId: string): boolean
@@ -49,10 +54,33 @@ export interface WireAdapter {
     session: Session,
     m: { fileId: string; name: string; size: number; totalChunks: number; startChunk?: number },
   ): Promise<unknown>
-  buildFileEnd(session: Session, fileId: string): Promise<unknown>
+  // `integrity` is the hex-encoded rolling chain hash. Adapters serialize it
+  // into the wire message when present; receivers verify before close. Omitted
+  // by sendFile only on resumed transfers (startChunk > 0), where the sender
+  // can't replay the hash for skipped chunks — see M-i.
+  buildFileEnd(session: Session, fileId: string, integrity?: string): Promise<unknown>
   buildFileCancelled(session: Session, fileId: string): Promise<unknown>
   encryptChunk(session: Session, plaintext: ArrayBuffer): Promise<ArrayBuffer>
   decryptChunk(session: Session, ciphertext: ArrayBuffer): Promise<ArrayBuffer>
   packetIndexFor(fileId: string): number
   fileIdForPacketIndex(index: number): string | null
+}
+
+// Thrown by `FileReceiver.onFileEnd` when the chunk-count check or the
+// optional integrity-hash check fails. The receiver aborts the underlying
+// writer before throwing so the sink ends up in the errored state and any
+// partially-written disk file is deleted by StreamSaver / closed cleanly by
+// the in-memory fallback. Callers (hooks) catch this to dispatch a UI error
+// instead of letting the file silently truncate.
+export class IntegrityError extends Error {
+  // 'incomplete' = chunk-count check failed (truncation).
+  // 'mismatch'   = chain hash differs (substitution / reorder / corruption).
+  readonly kind: 'incomplete' | 'mismatch'
+  readonly fileId: string
+  constructor(kind: 'incomplete' | 'mismatch', fileId: string, message: string) {
+    super(message)
+    this.name = 'IntegrityError'
+    this.kind = kind
+    this.fileId = fileId
+  }
 }

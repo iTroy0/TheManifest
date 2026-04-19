@@ -180,6 +180,46 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0
 }
 
+// ── File-integrity rolling hash (M-i) ────────────────────────────────────
+//
+// WebCrypto has no streaming SHA-256 API, so the engine maintains a rolling
+// chain hash:
+//
+//   acc_0  = 32 zero bytes
+//   acc_i  = SHA256( acc_{i-1} || SHA256(chunk_plaintext_i) )
+//
+// Constant memory (32 bytes) on both sides. Not the file's standard SHA-256;
+// it's an integrity tag whose only contract is "sender and receiver agree
+// when no chunks were dropped, reordered, or substituted." Per-chunk
+// AES-GCM already authenticates each ciphertext, so this catches the gap
+// AES-GCM cannot: silent truncation (decrypt or sink-write failures
+// dropped chunks but the tail still closed) and out-of-order delivery
+// landing under a peer that ignores ordering.
+
+export const EMPTY_INTEGRITY_CHAIN: Uint8Array = new Uint8Array(32)
+
+export function bytesToHex(bytes: Uint8Array): string {
+  let out = ''
+  for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, '0')
+  return out
+}
+
+export async function sha256(data: Uint8Array | ArrayBuffer): Promise<Uint8Array> {
+  const buf = data instanceof Uint8Array ? data : new Uint8Array(data)
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', buf as BufferSource))
+}
+
+export async function chainNextHash(
+  acc: Uint8Array,
+  chunkPlaintext: Uint8Array | ArrayBuffer,
+): Promise<Uint8Array> {
+  const chunkHash = await sha256(chunkPlaintext)
+  const combined = new Uint8Array(acc.length + chunkHash.length)
+  combined.set(acc, 0)
+  combined.set(chunkHash, acc.length)
+  return sha256(combined)
+}
+
 // Generate a shared fingerprint from both public keys for visual verification.
 // Both sides produce the same fingerprint by sorting keys before hashing.
 export async function getKeyFingerprint(

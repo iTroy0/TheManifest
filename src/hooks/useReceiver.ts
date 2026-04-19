@@ -6,7 +6,7 @@ import { finalizeKeyExchange } from '../net/keyExchange'
 import { createSession, type Session } from '../net/session'
 import { createFileWritableStream } from '../utils/streamWriter'
 import { createStreamingZip } from '../utils/zipBuilder'
-import { createFileReceiver, portalWire } from '../net/transferEngine'
+import { createFileReceiver, portalWire, IntegrityError } from '../net/transferEngine'
 import type { FileReceiver } from '../net/transferEngine'
 import { STUN_ONLY, getWithTurn } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
@@ -540,7 +540,25 @@ export function useReceiver(peerId: string) {
             if (zipModeRef.current && zipWriterRef.current) {
               zipWriterRef.current.endFile()
             } else if (receiverRef.current?.has(`file-${idx}`)) {
-              await receiverRef.current.onFileEnd(`file-${idx}`)
+              try {
+                // M-i: pass `integrity` so the receiver verifies before
+                // closing the sink. Throws IntegrityError on truncation
+                // or hash mismatch — surface as a UI cancel + system
+                // message instead of letting the file silently truncate.
+                await receiverRef.current.onFileEnd(`file-${idx}`, msg.integrity)
+              } catch (err) {
+                if (err instanceof IntegrityError) {
+                  log.warn('useReceiver.integrityFail', { idx, kind: err.kind, message: err.message })
+                  dispatchTransfer({ type: 'CANCEL_FILE', index: idx, name: meta.name })
+                  setMessages(prev => [...prev, {
+                    text: `${meta.name} integrity check failed (${err.kind}) — file discarded`,
+                    from: 'system', time: Date.now(), self: false,
+                  }].slice(-500))
+                  wasTransferringRef.current = false
+                  return
+                }
+                throw err
+              }
             } else if (chunksRef.current[idx]) {
               const mimeType = manifestRef.current?.files?.[idx]?.type || 'application/octet-stream'
               const blob = new Blob(chunksRef.current[idx] as unknown as BlobPart[], { type: mimeType })

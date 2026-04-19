@@ -23,10 +23,11 @@ export const portalWire: WireAdapter = {
       ...(m.startChunk ? { resumeFrom: m.startChunk } : {}),
     } satisfies PortalMsg
   },
-  async buildFileEnd(_s, fileId) {
+  async buildFileEnd(_s, fileId, integrity) {
     return {
       type: 'file-end',
       index: portalPacketIndex(fileId),
+      ...(integrity ? { integrity } : {}),
     } satisfies PortalMsg
   },
   async buildFileCancelled(_s, fileId) {

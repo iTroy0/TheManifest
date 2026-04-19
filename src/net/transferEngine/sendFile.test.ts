@@ -163,4 +163,55 @@ describe('sendFile', () => {
     expect(adapter.encryptChunk).not.toHaveBeenCalled()
     expect(adapter.buildFileEnd).toHaveBeenCalledTimes(1)
   })
+
+  // ── M-i: rolling integrity hash ────────────────────────────────────────
+  it('passes a 64-hex integrity string to buildFileEnd on a fresh transfer', async () => {
+    const conn = mockConn()
+    const session = createSession({ conn, role: 'portal-sender' })
+    openAndAuth(session)
+    const file = mockFile(300 * 1024)
+    const adapter = mockAdapter()
+
+    await sendFile(session, file, adapter, { fileId: 'file-0' })
+
+    expect(adapter.buildFileEnd).toHaveBeenCalledTimes(1)
+    const call = (adapter.buildFileEnd as ReturnType<typeof vi.fn>).mock.calls[0]
+    // (session, fileId, integrity)
+    const integrity = call[2]
+    expect(typeof integrity).toBe('string')
+    expect(integrity).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('omits integrity on resumed transfers (startChunk > 0)', async () => {
+    const conn = mockConn()
+    const session = createSession({ conn, role: 'portal-sender' })
+    openAndAuth(session)
+    const file = mockFile(3 * 256 * 1024)
+    const adapter = mockAdapter()
+
+    await sendFile(session, file, adapter, { fileId: 'file-0', startChunk: 1 })
+
+    expect(adapter.buildFileEnd).toHaveBeenCalledTimes(1)
+    const call = (adapter.buildFileEnd as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(call[2]).toBeUndefined()
+  })
+
+  it('integrity hex is deterministic for identical plaintext', async () => {
+    const file = mockFile(64 * 1024)
+
+    const collect = async (): Promise<string | undefined> => {
+      const conn = mockConn()
+      const session = createSession({ conn, role: 'portal-sender' })
+      openAndAuth(session)
+      const adapter = mockAdapter()
+      await sendFile(session, file, adapter, { fileId: 'file-0' })
+      const call = (adapter.buildFileEnd as ReturnType<typeof vi.fn>).mock.calls[0]
+      return call[2]
+    }
+
+    const a = await collect()
+    const b = await collect()
+    expect(a).toBeDefined()
+    expect(a).toBe(b)
+  })
 })
