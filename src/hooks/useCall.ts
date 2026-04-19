@@ -1637,6 +1637,28 @@ export function useCall(options: UseCallOptions) {
     else sendToHost?.(payload)
   }, [localMedia.micMuted, localMedia.mode, isHost, broadcast, sendToHost, myPeerId])
 
+  // M-t — periodic track-state heartbeat. The mute-toggle effect above is
+  // edge-triggered: a single DataConnection drop (reconnect window, flap)
+  // can swallow the message, stranding remote UI at the previous state
+  // until the next toggle. Re-broadcast every 10 s while joined so any
+  // drift reconciles within one cycle. No-op before join / after leave.
+  useEffect(() => {
+    if (!joinedRef.current) return
+    const timer = setInterval(() => {
+      if (!joinedRef.current) return
+      const payload = {
+        type: 'call-track-state',
+        micMuted: localMedia.micMuted,
+        cameraOff: localMedia.mode !== 'video',
+        mode: (localMedia.mode === 'video' ? 'video' : 'audio') as CallMode,
+        from: myPeerId!,
+      } satisfies CallMsg
+      if (isHost) broadcast?.(payload)
+      else sendToHost?.(payload)
+    }, 10_000)
+    return () => clearInterval(timer)
+  }, [localMedia.micMuted, localMedia.mode, isHost, broadcast, sendToHost, myPeerId])
+
   // ── Cleanup on unmount or peer change ──────────────────────────────────
   // Receiver reconnects swap the Peer instance. When that happens the
   // existing media connections are on a dead peer — close them, wipe the
