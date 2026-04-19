@@ -62,7 +62,11 @@ export async function sendFile(
       })) as Record<string, unknown>,
     )
   } catch {
+    // L-e: surface the failure to the progress callback so the UI can flip
+    // to an error state immediately instead of sitting at 0% until the
+    // caller observes `endTransfer` emit `'error'`.
     result = 'error'
+    opts.onProgress?.(0, file.size, -1)
   }
 
   const startAt = opts.startChunk ?? 0

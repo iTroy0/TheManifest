@@ -104,17 +104,25 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     dispatchPanel({ type: 'SET', payload: { isNearBottom: nearBottom, showScrollBtn: !nearBottom && messages.length > 5 } })
   }, [messages.length])
 
+  // H16: mirror `isNearBottom` into a ref so the ResizeObserver effect can
+  // read the latest value without re-subscribing on every flip. Continually
+  // tearing down + recreating the observer while scrolling raced with
+  // React 19's concurrent commit phase on iOS Safari, producing scroll
+  // oscillation against the visualViewport effect.
+  const isNearBottomRef = useRef(isNearBottom)
+  useEffect(() => { isNearBottomRef.current = isNearBottom }, [isNearBottom])
+
   useEffect(() => {
     const el = scrollRef.current
     if (!el || !open) return
     const observer = new ResizeObserver(() => {
-      if (isNearBottom) {
+      if (isNearBottomRef.current) {
         el.scrollTop = el.scrollHeight
       }
     })
     observer.observe(el)
     return () => observer.disconnect()
-  }, [open, isNearBottom])
+  }, [open])
 
   // Sync the messages mirror every render. Must be declared before the
   // alert effect so its slice() reads the latest items.

@@ -52,7 +52,16 @@ export default function CollabHostView() {
 
   const handlePasswordSet = useCallback(() => {
     const pwd = passwordInput.trim()
-    if (!pwd) return
+    if (!pwd) {
+      setPasswordLockNotice('Password can\'t be empty.')
+      setTimeout(() => setPasswordLockNotice(null), 4000)
+      return
+    }
+    if (pwd.length < 6) {
+      setPasswordLockNotice('Password must be at least 6 characters.')
+      setTimeout(() => setPasswordLockNotice(null), 4000)
+      return
+    }
     const ok = host.setPassword(pwd)
     if (!ok) {
       setPasswordLockNotice('Password can\'t be changed while guests are connected.')
