@@ -9,8 +9,28 @@ export const TIMEOUT_MS = 10_000
 export const RECONNECT_DELAY = 2_000
 export const MAX_RECONNECTS = 3
 
-// Future work: drive from navigator.deviceMemory + heap headroom instead of a literal.
-export const MAX_CONNECTIONS = 20
+// P3.1: derive from navigator.deviceMemory (approximate device RAM in GB,
+// reported in 0.25/0.5/1/2/4/8 buckets). Each live DataConnection retains
+// a Session, AdaptiveChunker, per-peer image queue, heartbeat timer, and
+// transfer bookkeeping — ~1-2 MB resident under load. The cap exists to
+// keep low-RAM devices (1 GB Android) from OOM-crashing under a full
+// 1:N portal or 20-peer collab room while letting workstations carry more
+// peers without an arbitrary low ceiling. `navigator.deviceMemory` is
+// unsupported on Safari/Firefox today; absent → fall back to the legacy
+// 20 (the value shipped before this fix, known-safe for everyday hardware).
+export function getMaxConnections(deviceMemoryGb?: number): number {
+  const mem = deviceMemoryGb ?? (typeof navigator !== 'undefined' ? (navigator as { deviceMemory?: number }).deviceMemory : undefined)
+  if (mem === undefined) return 20
+  if (mem >= 8) return 30
+  if (mem >= 4) return 20
+  if (mem >= 2) return 12
+  if (mem >= 1) return 6
+  return 4
+}
+
+// Computed once at module load. Tests that need a different cap call
+// getMaxConnections(<gb>) directly with an explicit memory hint.
+export const MAX_CONNECTIONS = getMaxConnections()
 
 // When StreamSaver isn't available (e.g., Safari/iOS) we buffer the whole file into RAM.
 // Cap prevents the tab from OOMing.
