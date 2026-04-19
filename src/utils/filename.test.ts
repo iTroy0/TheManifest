@@ -22,4 +22,18 @@ describe('sanitizeFileName', () => {
     const long = 'a'.repeat(300) + '.txt'
     expect(sanitizeFileName(long).length).toBeLessThanOrEqual(255)
   })
+
+  it('prefixes Windows reserved names so writes do not IO-error', () => {
+    expect(sanitizeFileName('CON')).toBe('_CON')
+    expect(sanitizeFileName('PRN.txt')).toBe('_PRN.txt')
+    expect(sanitizeFileName('aux.log')).toBe('_aux.log')
+    expect(sanitizeFileName('nul')).toBe('_nul')
+    expect(sanitizeFileName('COM1.bin')).toBe('_COM1.bin')
+    expect(sanitizeFileName('LPT9')).toBe('_LPT9')
+  })
+
+  it('leaves names containing a reserved base safely alone when base differs', () => {
+    expect(sanitizeFileName('CONference.pdf')).toBe('CONference.pdf')
+    expect(sanitizeFileName('nullable.json')).toBe('nullable.json')
+  })
 })

@@ -237,7 +237,13 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     const files = Array.from(e.dataTransfer?.files || [])
     const file = files.find(f => f.type.startsWith('image/'))
     if (file) {
-      prepareImage(file).then(img => { if (img) dispatchInteract({ type: 'SET', payload: { imagePreview: img } }) }).catch(() => {})
+      prepareImage(file)
+        .then(img => { if (img) dispatchInteract({ type: 'SET', payload: { imagePreview: img } }) })
+        .catch(err => {
+          console.warn('Image drop/paste failed:', err)
+          setMicError('Could not process image.')
+          setTimeout(() => setMicError(null), 4000)
+        })
     } else if (files.length > 0) {
       dispatchInteract({ type: 'SET', payload: { dropError: 'Only images are supported in chat' } })
       setTimeout(() => dispatchInteract({ type: 'SET', payload: { dropError: null } }), 3000)
@@ -385,7 +391,13 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       e.preventDefault()
       const file = item.getAsFile()
       if (!file) return
-      prepareImage(file).then(img => { if (img) dispatchInteract({ type: 'SET', payload: { imagePreview: img } }) }).catch(() => {})
+      prepareImage(file)
+        .then(img => { if (img) dispatchInteract({ type: 'SET', payload: { imagePreview: img } }) })
+        .catch(err => {
+          console.warn('Image drop/paste failed:', err)
+          setMicError('Could not process image.')
+          setTimeout(() => setMicError(null), 4000)
+        })
     }
     window.addEventListener('paste', handlePaste)
     return () => window.removeEventListener('paste', handlePaste)
@@ -660,6 +672,13 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
                   <button
                     onClick={async () => {
                       if (!notifyEnabled && !canNotify()) {
+                        // Permanent denial — the browser prompt cannot be
+                        // reopened from JS. Tell the user where to re-enable.
+                        if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
+                          setMicError('Notifications blocked — enable in your browser site settings.')
+                          setTimeout(() => setMicError(null), 4000)
+                          return
+                        }
                         const granted = await requestNotificationPermission()
                         if (granted) setNotifyEnabled(true)
                       } else {
@@ -702,7 +721,12 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
           role="button"
           tabIndex={0}
           onClick={() => dispatchPanel({ type: 'TOGGLE_OPEN' })}
-          onKeyDown={(e: React.KeyboardEvent<HTMLDivElement>) => (e.key === 'Enter' || e.key === ' ') && dispatchPanel({ type: 'TOGGLE_OPEN' })}
+          onKeyDown={(e: React.KeyboardEvent<HTMLDivElement>) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              dispatchPanel({ type: 'TOGGLE_OPEN' })
+            }
+          }}
           className="w-full flex items-center justify-between p-4 text-left group hover:bg-surface-2/30 transition-colors cursor-pointer"
         >
           <div className="flex items-center gap-3">
