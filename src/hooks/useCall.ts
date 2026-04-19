@@ -466,10 +466,21 @@ export function useCall(options: UseCallOptions) {
       mc.on('close', () => {
         mediaConnsRef.current.delete(peerId)
         upsertRoster(peerId, { stream: null })
+        // H13 — peerjs does not always close the underlying PC when the
+        // remote closes first (glare). Close it explicitly so camera /
+        // ICE candidates release promptly instead of lingering.
+        try {
+          const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+          pc?.close()
+        } catch { /* noop */ }
       })
       mc.on('error', (err: unknown) => {
         mediaConnsRef.current.delete(peerId)
         upsertRoster(peerId, { stream: null })
+        try {
+          const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+          pc?.close()
+        } catch { /* noop */ }
 
         // One-shot retry: transient media errors (ICE glitch, TURN reroute)
         // often recover within a few seconds. A second failure escalates.
@@ -555,13 +566,22 @@ export function useCall(options: UseCallOptions) {
         try { mc.close() } catch {}
         return
       }
-      // Close any existing connection to this peer before accepting a new
-      // one — handles simultaneous dial / camera-toggle reconnect races
-      // without leaking RTCPeerConnections.
+      // M-s — glare resolution: when both sides dialled simultaneously we
+      // have an outbound mc in `mediaConnsRef` AND we're handling an
+      // inbound one. Use lexicographic peerId comparison so both sides
+      // converge on the same surviving connection (outbound from the peer
+      // with the larger id, inbound for the smaller).
       const existing = mediaConnsRef.current.get(mc.peer)
       if (existing && existing !== mc) {
-        try { existing.close() } catch {}
-        mediaConnsRef.current.delete(mc.peer)
+        const myId = myPeerId || ''
+        const keepIncoming = myId < mc.peer
+        if (keepIncoming) {
+          try { existing.close() } catch {}
+          mediaConnsRef.current.delete(mc.peer)
+        } else {
+          try { mc.close() } catch {}
+          return
+        }
       }
       // If screen-sharing, answer with a stream carrying screen video +
       // local audio so the caller sees our share immediately.
@@ -603,6 +623,10 @@ export function useCall(options: UseCallOptions) {
       mc.on('close', () => {
         mediaConnsRef.current.delete(mc.peer)
         upsertRoster(mc.peer, { stream: null })
+        try {
+          const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+          pc?.close()
+        } catch { /* noop */ }
       })
       mc.on('error', (err: unknown) => {
         console.warn('incoming mc error for', mc.peer, err)
@@ -610,6 +634,10 @@ export function useCall(options: UseCallOptions) {
         // Match the outbound handler — clear the stream so the tile shows
         // the peer as not-streaming instead of a stale "connected" state.
         upsertRoster(mc.peer, { stream: null })
+        try {
+          const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+          pc?.close()
+        } catch { /* noop */ }
       })
     }
     peer.on('call', handler)

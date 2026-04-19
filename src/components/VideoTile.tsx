@@ -166,6 +166,21 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     return () => {
       el.removeEventListener('enterpictureinpicture', onEnter)
       el.removeEventListener('leavepictureinpicture', onLeave)
+      // M-u: ensure PiP window does not outlive the tile. Without this, tab
+      // close / call leave leaves a frozen PiP window lingering until the
+      // user manually dismisses it.
+      try {
+        if (document.pictureInPictureElement === el) {
+          void document.exitPictureInPicture().catch(() => {})
+        }
+      } catch { /* noop */ }
+      try {
+        const webkit = el as unknown as WebkitVideoExtras
+        if (typeof webkit.webkitSetPresentationMode === 'function' &&
+            webkit.webkitSupportsPresentationMode?.('inline')) {
+          webkit.webkitSetPresentationMode('inline')
+        }
+      } catch { /* noop */ }
     }
   }, [])
 
