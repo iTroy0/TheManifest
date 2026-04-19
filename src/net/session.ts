@@ -122,6 +122,11 @@ export interface Session {
   passwordRequired: boolean
   passwordVerified: boolean
   passwordAttempts: number
+  // Consecutive AES-GCM auth failures on encrypted wire payloads. Collab
+  // hosts/guests increment on `decryptJSON` rejection and reset on any
+  // successful decrypt; a peer that pumps garbage at line rate is closed
+  // by the caller once the count exceeds the threshold.
+  decryptFailures: number
 
   // Handshake scratch — cleared on terminal.
   pendingRemoteKey: Uint8Array | null
@@ -140,6 +145,10 @@ export interface Session {
   activeTransfers: Map<string, TransferHandle>
   requestedFileIds: Set<string>
   recentFileShares: number[]
+  // Sliding-window timestamps for inbound control messages
+  // (request/pause/resume/cancel/file-removed/signal). Same shape as
+  // recentFileShares; checked by the host before honouring a forward.
+  recentControlOps: number[]
   inProgressImage: InProgressImageSlot | null
 
   on<T extends SessionEvent['type']>(
@@ -333,6 +342,7 @@ export function createSession(opts: CreateSessionOpts): Session {
     passwordRequired: opts.passwordRequired ?? false,
     passwordVerified: false,
     passwordAttempts: 0,
+    decryptFailures: 0,
 
     pendingRemoteKey: null,
     keyExchangeTimeout: null,
@@ -348,6 +358,7 @@ export function createSession(opts: CreateSessionOpts): Session {
     activeTransfers: new Map(),
     requestedFileIds: new Set(),
     recentFileShares: [],
+    recentControlOps: [],
     inProgressImage: null,
 
     on(type, fn) {

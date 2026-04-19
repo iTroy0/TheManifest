@@ -541,7 +541,16 @@ export function useCollabGuest(roomId: string) {
         if (!session.encryptKey || !msg.data) return
         let payload: CollabInnerMsg
         try { payload = await decryptJSON<CollabInnerMsg>(session.encryptKey, msg.data as string) }
-        catch (e) { log.warn('useCollabGuest.mesh.decrypt', e); return }
+        catch (e) {
+          session.decryptFailures++
+          log.warn('useCollabGuest.mesh.decrypt', e)
+          if (session.decryptFailures >= 10) {
+            log.warn('useCollabGuest.mesh.tooManyFailures', session.peerId)
+            session.close('error')
+          }
+          return
+        }
+        session.decryptFailures = 0
 
         // collab-file-start (inbound download from mesh peer)
         if (payload.type === 'collab-file-start') {
@@ -991,7 +1000,16 @@ export function useCollabGuest(roomId: string) {
             if (!hostSess.encryptKey || !msg.data) return
             let payload: CollabInnerMsg
             try { payload = await decryptJSON<CollabInnerMsg>(hostSess.encryptKey, msg.data as string) }
-            catch (e) { log.warn('useCollabGuest.collabMsgEnc.decrypt', e); return }
+            catch (e) {
+              hostSess.decryptFailures++
+              log.warn('useCollabGuest.collabMsgEnc.decrypt', e)
+              if (hostSess.decryptFailures >= 10) {
+                log.warn('useCollabGuest.collabMsgEnc.tooManyFailures', hostSess.peerId)
+                hostSess.close('error')
+              }
+              return
+            }
+            hostSess.decryptFailures = 0
 
             // File list from host — C2 validation.
             if (payload.type === 'collab-file-list') {

@@ -54,6 +54,23 @@ interface GuestEntry {
   meta: GuestMeta
 }
 
+// M-n — per-guest sliding-window rate limit on inbound control messages
+// (request/pause/resume/cancel/file-removed/signal). Separate from M19's
+// collab-file-shared broadcast limiter which already caps its own op.
+const CONTROL_WINDOW_MS = 1000
+const CONTROL_MAX = 20
+// M-n — cap per-session requestedFileIds so a looping request→cancel sequence
+// can't balloon the set and amplify forwards against the owner.
+const REQUESTED_FILE_IDS_CAP = 64
+
+function checkControlRate(session: Session): boolean {
+  const now = Date.now()
+  session.recentControlOps = session.recentControlOps.filter(t => now - t < CONTROL_WINDOW_MS)
+  if (session.recentControlOps.length >= CONTROL_MAX) return false
+  session.recentControlOps.push(now)
+  return true
+}
+
 // ── Hook ─────────────────────────────────────────────────────────────────
 
 export function useCollabHost() {
@@ -837,10 +854,23 @@ export function useCollabHost() {
           // branch narrows to the matching variant.
           let payload: CollabInnerMsg
           try { payload = await decryptJSON<CollabInnerMsg>(session.encryptKey, msg.data as string) }
-          catch (e) { log.warn('useCollabHost.collabMsgEnc.decrypt', e); return }
+          catch (e) {
+            // M-p: count consecutive GCM auth failures. A peer pumping
+            // garbage at line rate would otherwise burn CPU forever on
+            // silent log.warn calls.
+            session.decryptFailures++
+            log.warn('useCollabHost.collabMsgEnc.decrypt', e)
+            if (session.decryptFailures >= 10) {
+              log.warn('useCollabHost.collabMsgEnc.tooManyFailures', session.peerId)
+              session.close('error')
+            }
+            return
+          }
+          session.decryptFailures = 0
 
           // Handle collab-specific messages
           if (payload.type === 'collab-request-file') {
+            if (!checkControlRate(session)) return
             const fileId = payload.fileId as string
             const ownerId = payload.owner as string | undefined
 
@@ -848,6 +878,13 @@ export function useCollabHost() {
             // so later pause/resume/cancel forwards can be checked against
             // the request set. Populated before the forwarding branch so
             // both host-served and guest-served downloads are covered.
+            // M-n — cap set size so a loop of request→cancel can't grow it
+            // unboundedly and amplify forwards.
+            if (session.requestedFileIds.size >= REQUESTED_FILE_IDS_CAP &&
+                !session.requestedFileIds.has(fileId)) {
+              log.warn('useCollabHost.requestFile.capExceeded', session.peerId)
+              return
+            }
             session.requestedFileIds.add(fileId)
 
             // Check if host owns this file
@@ -924,6 +961,7 @@ export function useCollabHost() {
 
           // Guest removed their file (C3 — owner must match sender).
           if (payload.type === 'collab-file-removed') {
+            if (!checkControlRate(session)) return
             const fileId = payload.fileId as string
             const file = filesRef.current.sharedFiles.find(f => f.id === fileId)
             if (file && file.owner === session.peerId) {
@@ -944,6 +982,7 @@ export function useCollabHost() {
 
           // Pause file transfer from guest
           if (payload.type === 'collab-pause-file') {
+            if (!checkControlRate(session)) return
             const fileId = payload.fileId as string
             // If the host is the file owner, toggle the local outbound
             // transfer's paused flag. The session routes pauseTransfer to
@@ -978,6 +1017,7 @@ export function useCollabHost() {
 
           // Resume file transfer from guest
           if (payload.type === 'collab-resume-file') {
+            if (!checkControlRate(session)) return
             const fileId = payload.fileId as string
             session.resumeTransfer(fileId)
             // H5 — filesRef.current
@@ -1004,6 +1044,7 @@ export function useCollabHost() {
 
           // Cancel file transfer from guest
           if (payload.type === 'collab-cancel-file') {
+            if (!checkControlRate(session)) return
             const fileId = payload.fileId as string
             session.cancelTransfer(fileId)
             // M12 — clear the request tracker here (whether or not we
@@ -1153,6 +1194,7 @@ export function useCollabHost() {
             log.warn('useCollabHost.collabSignal.unverified', session.peerId)
             return
           }
+          if (!checkControlRate(session)) return
           const target = typeof msg.target === 'string' ? msg.target : ''
           if (!target || !connectionsRef.current.has(target)) {
             log.warn('useCollabHost.collabSignal.unknownTarget', target)

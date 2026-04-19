@@ -287,11 +287,27 @@ export const initialFilesState: CollabFilesState = {
   mySharedFiles: new Set(),
 }
 
+// M-o: aggregate caps on the shared-file list. Per-share caps already exist
+// (thumbnail 200 KB, textPreview 2 KB, etc.), but the room-wide total was
+// unbounded. A loop of tiny shares from one or more guests could push the
+// reducer state into hundreds of MB across a long-lived room.
+const MAX_SHARED_FILES = 1000
+const MAX_FILES_PER_OWNER = 100
+
 export function filesReducer(state: CollabFilesState, action: FilesAction): CollabFilesState {
   switch (action.type) {
     case 'ADD_SHARED_FILE': {
       if (state.sharedFiles.find(f => f.id === action.payload.id)) {
         return state // Already exists
+      }
+      if (state.sharedFiles.length >= MAX_SHARED_FILES) return state
+      const owner = action.payload.owner
+      if (owner) {
+        let ownerCount = 0
+        for (const f of state.sharedFiles) {
+          if (f.owner === owner) ownerCount++
+          if (ownerCount >= MAX_FILES_PER_OWNER) return state
+        }
       }
       return { ...state, sharedFiles: [...state.sharedFiles, action.payload] }
     }
