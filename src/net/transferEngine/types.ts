@@ -7,6 +7,10 @@ export interface SendFileOpts {
   fileId: string
   totalChunks?: number
   startChunk?: number
+  // Byte counter seed for resume. Adaptive chunkers may have used a
+  // different size for the skipped region, so the caller (hook) passes
+  // the true pre-resume bytes rather than letting the engine guess.
+  resumedBytes?: number
   chunker?: AdaptiveChunker
   signal?: AbortSignal
   onProgress?: (bytesSent: number, totalBytes: number, chunkIndex: number) => void
@@ -23,6 +27,11 @@ export interface RecvOpts {
   // getResumeCursor report accurate values from the first inbound chunk.
   resumedBytes?: number
   resumedChunks?: number
+  // Memory guardrail for the in-memory fallback sink path (Safari private,
+  // iOS, old Edge — no StreamSaver service worker available). The engine
+  // aborts the writer and drops the entry once `bytesWritten` exceeds this
+  // cap. Omit for disk-backed sinks; 512 MiB is a reasonable default.
+  maxInMemoryBytes?: number
   onProgress?: (bytesWritten: number, totalBytes: number) => void
 }
 

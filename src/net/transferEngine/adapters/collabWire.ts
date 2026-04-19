@@ -68,6 +68,23 @@ export function createCollabWire(): CollabWire {
     packetIndexFor(fileId) { return allocate(fileId) },
     fileIdForPacketIndex(i) { return fromIdx.get(i) ?? null },
     seedFromInbound(fileId, packetIndex) {
+      // Idempotent reseed with the same mapping is fine. A real collision
+      // (packetIndex already claimed by a different fileId) silently
+      // overwrote before and left sender/receiver routing in a state where
+      // chunks for one file got written into another. Surface it loudly so
+      // the caller can rebuild the session instead of corrupting bytes.
+      const existingFile = fromIdx.get(packetIndex)
+      if (existingFile !== undefined && existingFile !== fileId) {
+        throw new Error(
+          `collabWire.seedFromInbound: packet index ${packetIndex} already bound to '${existingFile}', cannot rebind to '${fileId}'`,
+        )
+      }
+      const existingIndex = toIdx.get(fileId)
+      if (existingIndex !== undefined && existingIndex !== packetIndex) {
+        throw new Error(
+          `collabWire.seedFromInbound: file '${fileId}' already bound to index ${existingIndex}, cannot rebind to ${packetIndex}`,
+        )
+      }
       toIdx.set(fileId, packetIndex)
       fromIdx.set(packetIndex, fileId)
     },

@@ -200,6 +200,24 @@ describe('createFileReceiver', () => {
     expect(recv.getResumeCursor('file-0')).toBe(0)
   })
 
+  it('aborts and drops entry when in-memory cap is exceeded', async () => {
+    const session = mockSession()
+    const adapter = mockAdapter()
+    const recv = createFileReceiver(session, adapter)
+    const sink = accumulatingSink()
+
+    // Cap at 4 bytes. First chunk (3 bytes) fits; second (3 bytes) would push
+    // bytesWritten to 6 which exceeds the cap, so the entry should abort.
+    await recv.onFileStart({
+      fileId: 'file-0', totalBytes: 10, totalChunks: 4,
+      sink: sink.stream, maxInMemoryBytes: 4,
+    })
+    await recv.onChunk(pkt(0, new Uint8Array([1, 2, 3])))
+    expect(recv.has('file-0')).toBe(true)
+    await recv.onChunk(pkt(1, new Uint8Array([4, 5, 6])))
+    expect(recv.has('file-0')).toBe(false)
+  })
+
   it('drops entry when writer.write rejects (avoids orphan + unhandled rejection)', async () => {
     const session = mockSession()
     const adapter = mockAdapter()

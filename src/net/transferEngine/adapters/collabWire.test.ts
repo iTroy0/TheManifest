@@ -109,4 +109,23 @@ describe('collabWire', () => {
     const s = { encryptKey: null } as unknown as Session
     await expect(w.encryptChunk(s, new ArrayBuffer(4))).rejects.toThrow(/no key/)
   })
+
+  it('seedFromInbound is idempotent for the same mapping', () => {
+    const w = createCollabWire()
+    w.seedFromInbound('a', 5)
+    expect(() => w.seedFromInbound('a', 5)).not.toThrow()
+    expect(w.packetIndexFor('a')).toBe(5)
+  })
+
+  it('seedFromInbound throws when the packet index is already bound to a different fileId', () => {
+    const w = createCollabWire()
+    w.seedFromInbound('a', 5)
+    expect(() => w.seedFromInbound('b', 5)).toThrow(/already bound to 'a'/)
+  })
+
+  it('seedFromInbound throws when the fileId is already bound to a different index', () => {
+    const w = createCollabWire()
+    w.seedFromInbound('a', 5)
+    expect(() => w.seedFromInbound('a', 6)).toThrow(/already bound to index 5/)
+  })
 })

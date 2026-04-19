@@ -67,9 +67,13 @@ export async function sendFile(
 
   const startAt = opts.startChunk ?? 0
   let chunkIndex = 0
-  // Estimate skipped bytes for accurate resume progress. Adaptive chunkers may
-  // have used a different size for earlier chunks, but close enough for a UI bar.
-  let bytesSent = Math.min(file.size, startAt * chunkSize)
+  // Prefer the caller's exact seed (true pre-resume bytes). Fallback to
+  // an estimate when the caller didn't provide one — the guess assumes
+  // `chunkSize` for every skipped chunk, which drifts when the adaptive
+  // chunker changed size mid-session. Clamp both into `[0, file.size]`.
+  let bytesSent = Number.isFinite(opts.resumedBytes)
+    ? Math.max(0, Math.min(file.size, Math.floor(opts.resumedBytes as number)))
+    : Math.min(file.size, startAt * chunkSize)
 
   if (result === 'complete' && file.size > 0) {
     for await (const { buffer } of chunkFileAdaptive(file, opts.chunker ?? null)) {
