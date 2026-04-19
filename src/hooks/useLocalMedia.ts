@@ -132,7 +132,18 @@ export function useLocalMedia() {
     const micId = selectedMicIdRef.current
     const camId = selectedCameraIdRef.current
     const facing = cameraFacingRef.current
-    const baseAudio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    // `voiceIsolation` is the W3C-track Apple/Chromium neural noise-suppression
+    // hint (Safari 17+, Chrome 124+ behind a flag). Unsupported browsers ignore
+    // unknown constraint keys silently, so this is opt-in for capable devices
+    // and a no-op everywhere else — no `OverconstrainedError` fallback needed.
+    // Cast around the lib.dom MediaTrackConstraints type because the W3C key
+    // isn't in the TS DOM types yet.
+    const baseAudio = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      voiceIsolation: true,
+    } as MediaTrackConstraints & { voiceIsolation?: boolean }
     const audioExact: MediaTrackConstraints = micId
       ? { deviceId: { exact: micId }, ...baseAudio }
       : baseAudio
