@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { Copy, Share2, QrCode } from 'lucide-react'
-import { QRCodeSVG } from 'qrcode.react'
+import LazyQRCode from './LazyQRCode'
 import Toast from './Toast'
 
 interface PortalLinkProps {
@@ -82,18 +82,16 @@ export default function PortalLink({ peerId }: PortalLinkProps) {
             )}
           </div>
         </div>
-        <div className={`grid transition-all duration-300 ease-in-out ${showQr ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-          <div className="overflow-hidden">
-            <div className="flex flex-col items-center gap-2 pt-4 pb-2">
-              <div className="bg-white p-3 rounded-xl shadow-xl shadow-black/40 ring-1 ring-white/20">
-                <div role="img" aria-label={`QR code linking to ${url}`}>
-                  <QRCodeSVG value={url} size={120} level="M" bgColor="#ffffff" fgColor="#050505" />
-                </div>
+        {showQr && (
+          <div className="flex flex-col items-center gap-2 pt-4 pb-2 animate-fade-in-up">
+            <div className="bg-white p-3 rounded-xl shadow-xl shadow-black/40 ring-1 ring-white/20">
+              <div role="img" aria-label={`QR code linking to ${url}`}>
+                <LazyQRCode value={url} size={120} />
               </div>
-              <p className="font-mono text-[10px] text-muted">Scan to receive on mobile</p>
             </div>
+            <p className="font-mono text-[10px] text-muted">Scan to receive on mobile</p>
           </div>
-        </div>
+        )}
       </div>
       <Toast message="Link copied to clipboard" visible={toast} onHide={hideToast} />
     </>
