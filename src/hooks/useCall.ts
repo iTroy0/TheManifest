@@ -252,6 +252,14 @@ export function useCall(options: UseCallOptions) {
   const [screenSharing, setScreenSharing] = useState<boolean>(false)
   const [screenShareStarting, setScreenShareStarting] = useState<boolean>(false)
   const [screenShareError, setScreenShareError] = useState<CallError | null>(null)
+  // H10: true while we're publishing tab/system audio alongside the screen
+  // video. Surfaces a UI hint about the content-echo limitation — when the
+  // shared tab itself plays a remote voice (e.g., another video call running
+  // inside it), that voice is captured by getDisplayMedia and re-broadcast
+  // to every peer in this call. AEC can't fix it: AEC needs a reference
+  // signal for *acoustic* echo from speakers → mic, but here both inputs
+  // arrive as separate clean digital streams that the mixer concatenates.
+  const [screenAudioShared, setScreenAudioShared] = useState<boolean>(false)
 
   const mediaConnsRef = useRef<Map<string, MediaConnection>>(new Map())
   const joinedRef = useRef<boolean>(false)
@@ -1306,6 +1314,7 @@ export function useCall(options: UseCallOptions) {
       screenAudioCtxRef.current = null
     }
     mixedAudioTrackRef.current = null
+    setScreenAudioShared(false)
     const localStream = localStreamRef.current
     const micTrack = localStream?.getAudioTracks()[0] || null
     swapAudioTrack(micTrack)
@@ -1400,6 +1409,7 @@ export function useCall(options: UseCallOptions) {
           if (mixed) {
             screenAudioCtxRef.current = ctx
             mixedAudioTrackRef.current = mixed
+            setScreenAudioShared(true)
             // If the user revokes tab audio (closes tab being shared), the
             // audio track ends. Swap back to raw mic so peers still hear us.
             screenAudioTrack.addEventListener('ended', () => {
@@ -1409,6 +1419,7 @@ export function useCall(options: UseCallOptions) {
                 try { void ctx.close() } catch {}
                 screenAudioCtxRef.current = null
               }
+              setScreenAudioShared(false)
               const fallback = localStreamRef.current?.getAudioTracks()[0] || null
               swapAudioTrack(fallback)
             })
@@ -1739,6 +1750,10 @@ export function useCall(options: UseCallOptions) {
     screenSharing,
     screenShareStarting,
     screenShareError,
+    // H10: true while we're publishing tab/system audio. CallPanel renders
+    // a one-line content-echo warning so users know to mute the shared tab
+    // (or stop sharing audio) if peers report hearing themselves back.
+    screenAudioShared,
     startScreenShare,
     stopScreenShare,
     dismissScreenShareError,

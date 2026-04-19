@@ -507,6 +507,16 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         </div>
       )}
 
+      {call.screenAudioShared && (
+        <div className="px-3 pb-2">
+          <div className="flex items-start gap-2 rounded-lg bg-surface-2 border border-border px-3 py-2">
+            <p className="flex-1 font-mono text-[10px] text-muted-light">
+              Sharing tab audio. If the shared tab is playing another call, peers may hear themselves echoed back. Mute the shared tab or stop sharing audio to fix.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="border-t border-border bg-surface-2/40 px-3 py-2">
         <div className="flex items-center justify-center gap-1.5 flex-wrap">
           <ControlButton
