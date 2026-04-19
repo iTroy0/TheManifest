@@ -234,44 +234,62 @@ export function useLocalMedia() {
       //   - Audio track dies (or the last live track dies) → stop the
       //     whole stream and flip to 'none'. useCall's mode-watcher will
       //     fire a leave('error').
-      stream.getTracks().forEach(track => {
-        track.addEventListener('ended', () => {
-          // Ignore endings that happen because *we* swapped streams.
-          if (streamRef.current !== stream) return
-          if (!mountedRef.current) return
+      const onTrackEnded = (track: MediaStreamTrack) => () => {
+        // Ignore endings that happen because *we* swapped streams.
+        if (streamRef.current !== stream) return
+        if (!mountedRef.current) return
 
-          if (track.kind === 'video') {
-            const audioAlive = stream.getAudioTracks().some(t => t.readyState !== 'ended')
-            if (audioAlive) {
-              try { stream.removeTrack(track) } catch {}
-              modeRef.current = 'audio'
-              setState(s => ({
-                ...s,
-                mode: 'audio',
-                cameraOff: true,
-                error: { code: 'device-not-found', message: 'Camera disconnected. You can keep talking; the camera is off.' },
-              }))
-              return
-            }
+        if (track.kind === 'video') {
+          const audioAlive = stream.getAudioTracks().some(t => t.readyState !== 'ended')
+          if (audioAlive) {
+            try { stream.removeTrack(track) } catch {}
+            modeRef.current = 'audio'
+            setState(s => ({
+              ...s,
+              mode: 'audio',
+              cameraOff: true,
+              error: { code: 'device-not-found', message: 'Camera disconnected. You can keep talking; the camera is off.' },
+            }))
+            return
           }
-          // Audio track died, or video died with no audio backup.
-          try { stream.getTracks().forEach(t => { try { t.stop() } catch {} }) } catch {}
-          streamRef.current = null
-          modeRef.current = 'none'
-          const isAudio = track.kind === 'audio'
-          setState({
-            stream: null,
-            mode: 'none',
-            micMuted: micMutedPrefRef.current,
-            cameraOff: true,
-            starting: false,
-            error: {
-              code: isAudio ? 'in-use' : 'device-not-found',
-              message: isAudio
-                ? 'Microphone disconnected. The call ended.'
-                : 'Camera disconnected.',
-            },
-          })
+        }
+        // Audio track died, or video died with no audio backup.
+        try { stream.getTracks().forEach(t => { try { t.stop() } catch {} }) } catch {}
+        streamRef.current = null
+        modeRef.current = 'none'
+        const isAudio = track.kind === 'audio'
+        setState({
+          stream: null,
+          mode: 'none',
+          micMuted: micMutedPrefRef.current,
+          cameraOff: true,
+          starting: false,
+          error: {
+            code: isAudio ? 'in-use' : 'device-not-found',
+            message: isAudio
+              ? 'Microphone disconnected. The call ended.'
+              : 'Camera disconnected.',
+          },
+        })
+      }
+
+      stream.getTracks().forEach(track => {
+        track.addEventListener('ended', onTrackEnded(track))
+        // M-q — Firefox (and some Chromium versions) raise `mute` instead of
+        // `ended` when the user revokes permission mid-call. The track stays
+        // `live` but produces silence. Treat a persistent mute (>2 s without
+        // unmute) as equivalent to ended.
+        let muteTimer: ReturnType<typeof setTimeout> | null = null
+        track.addEventListener('mute', () => {
+          if (muteTimer) clearTimeout(muteTimer)
+          muteTimer = setTimeout(() => {
+            if (track.readyState === 'ended') return // ended fired instead
+            if (!track.muted) return // recovered before we fired
+            onTrackEnded(track)()
+          }, 2000)
+        })
+        track.addEventListener('unmute', () => {
+          if (muteTimer) { clearTimeout(muteTimer); muteTimer = null }
         })
       })
 

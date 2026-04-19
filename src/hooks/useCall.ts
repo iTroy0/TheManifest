@@ -450,16 +450,15 @@ export function useCall(options: UseCallOptions) {
           stream: remoteStream,
           mode: streamHasLiveVideo(remoteStream) ? 'video' : 'audio',
         })
-        // If we're screen-sharing, apply encoder tuning to the freshly-
-        // established video sender so late joiners benefit too.
-        if (screenSharingRef.current) {
-          const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
-          if (pc) {
+        const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+        if (pc) {
+          if (screenSharingRef.current) {
             tuneScreenSendersRef.current?.(pc)
-            // Kick a fresh keyframe out on this PC so the late joiner's
-            // decoder has an anchor frame right away instead of waiting
-            // for the next regular interval.
             forceKeyframeRef.current?.(pc)
+          } else {
+            // M-v — cap camera sender bitrate on every fresh PC so mesh
+            // video doesn't starve the uplink at >4 participants.
+            tuneCameraSendersRef.current?.(pc)
           }
         }
       })
@@ -609,14 +608,13 @@ export function useCall(options: UseCallOptions) {
           stream: remoteStream,
           mode: streamHasLiveVideo(remoteStream) ? 'video' : 'audio',
         })
-        if (screenSharingRef.current) {
-          const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
-          if (pc) {
+        const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+        if (pc) {
+          if (screenSharingRef.current) {
             tuneScreenSendersRef.current?.(pc)
-            // Kick a fresh keyframe out on this PC so the late joiner's
-            // decoder has an anchor frame right away instead of waiting
-            // for the next regular interval.
             forceKeyframeRef.current?.(pc)
+          } else {
+            tuneCameraSendersRef.current?.(pc)
           }
         }
       })
@@ -1196,6 +1194,31 @@ export function useCall(options: UseCallOptions) {
       } catch {}
     })
   }, [])
+
+  // M-v — camera senders cap. A 20-peer mesh means each local camera is
+  // encoded 19 times (one stream per PC, no SFU). With the default encoder
+  // budget ~2.5 Mbps per stream, a modest home uplink saturates around 4-5
+  // active video peers. 600 kbps is a realistic ceiling for P2P mesh video
+  // without simulcast. 24 fps is a smoother perceptual floor than 15 on
+  // talking-head content. Apply to every fresh video PC.
+  const tuneCameraSenders = useCallback((pc: RTCPeerConnection): void => {
+    pc.getSenders().forEach(sender => {
+      if (sender.track?.kind !== 'video') return
+      try {
+        const params = sender.getParameters()
+        const enc = params.encodings?.[0] ?? {}
+        enc.maxBitrate = 600_000
+        enc.maxFramerate = 24
+        params.encodings = [enc]
+        type ParamsWithDegradation = RTCRtpSendParameters & { degradationPreference?: string }
+        ;(params as ParamsWithDegradation).degradationPreference = 'maintain-framerate'
+        void sender.setParameters(params)
+      } catch { /* noop */ }
+    })
+  }, [])
+
+  const tuneCameraSendersRef = useRef<((pc: RTCPeerConnection) => void) | null>(null)
+  useEffect(() => { tuneCameraSendersRef.current = tuneCameraSenders }, [tuneCameraSenders])
 
   const tuneAllScreenSenders = useCallback((): void => {
     mediaConnsRef.current.forEach(mc => {
