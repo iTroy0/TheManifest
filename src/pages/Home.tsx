@@ -378,7 +378,7 @@ export default function Home() {
                 </div>
               )}
 
-              {!isTransferring && recipientCount === 0 && !chatMode && (
+              {!isTransferring && recipientCount === 0 && (
                 <InlinePasswordRow
                   password={passwordInput}
                   onChange={(v: string) => { setPasswordInput(v); setPassword(v) }}
