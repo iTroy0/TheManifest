@@ -569,13 +569,14 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
               call.aiNoiseStarting
                 ? 'Loading noise suppression…'
                 : call.aiNoiseSuppression
-                  ? 'AI noise suppression on (click to turn off)'
-                  : 'Turn on AI noise suppression'
+                  ? 'Noise suppression: ON (click to turn off)'
+                  : 'Noise suppression: OFF (click to turn on)'
             }
             icon={call.aiNoiseStarting ? Loader2 : Sparkles}
             disabled={call.aiNoiseStarting}
             spinning={call.aiNoiseStarting}
-            active={call.aiNoiseSuppression}
+            info={call.aiNoiseSuppression}
+            danger={!call.aiNoiseSuppression && !call.aiNoiseStarting}
           />
           <ControlButton
             onClick={call.toggleCamera}
@@ -814,12 +815,18 @@ interface ControlButtonProps {
   danger?: boolean
   disabled?: boolean
   spinning?: boolean
-  // Visually emphasizes the button when its underlying toggle is on (e.g.,
-  // AI noise suppression). Renders a brighter accent ring without using the
-  // danger style. Falls back to default styling when omitted.
-  active?: boolean
+  // Renders the blue/info variant — used by toggles whose ON state is
+  // informational rather than destructive (e.g., noise suppression).
+  // Mutually exclusive with `danger`; if both are set, danger wins.
+  info?: boolean
 }
-function ControlButton({ icon: Icon, onClick, title, danger = false, disabled = false, spinning = false, active = false }: ControlButtonProps) {
+function ControlButton({ icon: Icon, onClick, title, danger = false, disabled = false, spinning = false, info = false }: ControlButtonProps) {
+  const tone =
+    danger
+      ? 'bg-danger/15 hover:bg-danger/25 text-danger ring-1 ring-danger/30'
+      : info
+        ? 'bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 ring-1 ring-blue-500/50'
+        : 'bg-accent/10 hover:bg-accent/20 text-accent ring-1 ring-accent/20'
   return (
     <button
       type="button"
@@ -827,14 +834,8 @@ function ControlButton({ icon: Icon, onClick, title, danger = false, disabled = 
       disabled={disabled}
       title={title}
       aria-label={title}
-      aria-pressed={active}
-      className={`flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 rounded-lg transition-all active:scale-[0.95] disabled:opacity-50 disabled:cursor-not-allowed ${
-        danger
-          ? 'bg-danger/15 hover:bg-danger/25 text-danger ring-1 ring-danger/30'
-          : active
-            ? 'bg-accent/30 hover:bg-accent/40 text-accent ring-1 ring-accent/60'
-            : 'bg-accent/10 hover:bg-accent/20 text-accent ring-1 ring-accent/20'
-      }`}
+      aria-pressed={info}
+      className={`flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 rounded-lg transition-all active:scale-[0.95] disabled:opacity-50 disabled:cursor-not-allowed ${tone}`}
     >
       <Icon className={`w-5 h-5 sm:w-4 sm:h-4 ${spinning ? 'animate-spin' : ''}`} />
     </button>
