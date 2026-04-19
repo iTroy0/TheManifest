@@ -147,7 +147,11 @@ export function useLocalMedia() {
     const audioExact: MediaTrackConstraints = micId
       ? { deviceId: { exact: micId }, ...baseAudio }
       : baseAudio
-    const videoDims: MediaTrackConstraints = { width: { ideal: 1280 }, height: { ideal: 720 } }
+    // Target 1080p where the camera can deliver it. `ideal` doesn't fail —
+    // browsers pick the closest supported resolution, so a 720p / 480p
+    // webcam still works without OverconstrainedError. Encoder caps in
+    // useCall (`tuneCameraSenders`) bound the actual bitrate per call size.
+    const videoDims: MediaTrackConstraints = { width: { ideal: 1920 }, height: { ideal: 1080 } }
     const videoExact: MediaTrackConstraints | false = mode === 'video'
       ? (camId
           ? { deviceId: { exact: camId }, ...videoDims }

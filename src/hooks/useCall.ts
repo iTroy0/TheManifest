@@ -1297,17 +1297,44 @@ export function useCall(options: UseCallOptions) {
   // M-v — camera senders cap. A 20-peer mesh means each local camera is
   // encoded 19 times (one stream per PC, no SFU). With the default encoder
   // budget ~2.5 Mbps per stream, a modest home uplink saturates around 4-5
-  // active video peers. 600 kbps is a realistic ceiling for P2P mesh video
-  // without simulcast. 24 fps is a smoother perceptual floor than 15 on
-  // talking-head content. Apply to every fresh video PC.
+  // active video peers. Adaptive: pure mesh has no simulcast or SFU, so a
+  // sender at N peers encodes the same stream N times for N upload
+  // streams. We pick a per-encoding bitrate that keeps total upload within
+  // realistic home/cellular uplinks while maximizing 1:1 quality where the
+  // user has the bandwidth headroom to spend.
+  //
+  //   ≤1 remote = 1:1 → 4.0 Mbps (VP9 1080p30 ceiling for talking-head /
+  //                                light motion; beyond is diminishing
+  //                                returns)
+  //   2-3 remote = small group → 1.8 Mbps × N senders, N≤4 = ≤7.2 Mbps up
+  //   4-8 remote = mid group → 1.2 Mbps × N, N≤9 = ≤10.8 Mbps up
+  //   9+ remote = large mesh → 800 kbps + 1.5x downscale (1080p→720p) so
+  //                            the encoder spends fewer cycles per peer
+  //
+  // 30 fps target across the board (smoother than 24 on talking-head).
+  // degradationPreference='maintain-framerate' tells the encoder to drop
+  // resolution before fps when bitrate gets squeezed mid-call.
+  function pickVideoEncoding(remoteCount: number): {
+    maxBitrate: number
+    maxFramerate: number
+    scaleResolutionDownBy: number
+  } {
+    if (remoteCount <= 1) return { maxBitrate: 4_000_000, maxFramerate: 30, scaleResolutionDownBy: 1 }
+    if (remoteCount <= 3) return { maxBitrate: 1_800_000, maxFramerate: 30, scaleResolutionDownBy: 1 }
+    if (remoteCount <= 8) return { maxBitrate: 1_200_000, maxFramerate: 30, scaleResolutionDownBy: 1 }
+    return { maxBitrate: 800_000, maxFramerate: 30, scaleResolutionDownBy: 1.5 }
+  }
+
   const tuneCameraSenders = useCallback((pc: RTCPeerConnection): void => {
+    const target = pickVideoEncoding(rosterRef.current.size)
     pc.getSenders().forEach(sender => {
       if (sender.track?.kind !== 'video') return
       try {
         const params = sender.getParameters()
         const enc = params.encodings?.[0] ?? {}
-        enc.maxBitrate = 600_000
-        enc.maxFramerate = 24
+        enc.maxBitrate = target.maxBitrate
+        enc.maxFramerate = target.maxFramerate
+        enc.scaleResolutionDownBy = target.scaleResolutionDownBy
         params.encodings = [enc]
         type ParamsWithDegradation = RTCRtpSendParameters & { degradationPreference?: string }
         ;(params as ParamsWithDegradation).degradationPreference = 'maintain-framerate'
@@ -1316,8 +1343,26 @@ export function useCall(options: UseCallOptions) {
     })
   }, [])
 
+  // Re-tune every existing camera sender. Used after the roster changes so
+  // joiners/leavers shift the encoding into the right bandwidth tier.
+  const tuneAllCameraSenders = useCallback((): void => {
+    mediaConnsRef.current.forEach(mc => {
+      const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+      if (pc) tuneCameraSenders(pc)
+    })
+  }, [tuneCameraSenders])
+
   const tuneCameraSendersRef = useRef<((pc: RTCPeerConnection) => void) | null>(null)
   useEffect(() => { tuneCameraSendersRef.current = tuneCameraSenders }, [tuneCameraSenders])
+
+  // Roster size changes → re-pick the encoding tier for every existing PC.
+  // Roster identity changes on add/remove via `setRoster(new Map(...))`,
+  // so depending on `roster` (state) here picks up join/leave correctly
+  // without us needing a separate event hook.
+  useEffect(() => {
+    tuneAllCameraSenders()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roster.size, tuneAllCameraSenders])
 
   const tuneAllScreenSenders = useCallback((): void => {
     mediaConnsRef.current.forEach(mc => {
