@@ -1,12 +1,31 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, type ComponentProps } from 'react'
 import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera, AlertTriangle, Loader2, RefreshCw, X, WifiOff, MonitorUp, MonitorOff } from 'lucide-react'
 import { UseCallReturn } from '../hooks/useCall'
 import { useViewport } from '../hooks/useViewport'
 import { usePopout } from '../hooks/usePopout'
-import { useSpeakingLevels, StreamEntry } from '../hooks/useSpeakingLevels'
+import { useSpeakingLevels, useSpeakingLevel, StreamEntry, SpeakingLevels } from '../hooks/useSpeakingLevels'
 import { ensureAudioContextRunning } from '../utils/audioContext'
 import VideoTile from './VideoTile'
 import AudioTile from './AudioTile'
+
+// H12: subscriber wrappers so a per-tile speaking-level update only re-renders
+// that one tile. Before this, `useSpeakingLevels` set React state on
+// CallPanel ~8×/sec which cascaded to every VideoTile + AudioTile child
+// (~160 tile renders/sec at 20 peers in audio mode). Each wrapper subscribes
+// to its own id via `useSpeakingLevel`; a level change on peer A leaves
+// peers B-T's tiles untouched.
+type VideoTileBaseProps = Omit<ComponentProps<typeof VideoTile>, 'level'>
+type AudioTileBaseProps = Omit<ComponentProps<typeof AudioTile>, 'level'>
+
+function LeveledVideoTile({ controller, levelId, ...rest }: VideoTileBaseProps & { controller: SpeakingLevels; levelId: string }) {
+  const level = useSpeakingLevel(controller, levelId)
+  return <VideoTile {...rest} level={level} />
+}
+
+function LeveledAudioTile({ controller, levelId, ...rest }: AudioTileBaseProps & { controller: SpeakingLevels; levelId: string }) {
+  const level = useSpeakingLevel(controller, levelId)
+  return <AudioTile {...rest} level={level} />
+}
 
 // Loose union — three different parent hooks (sender / receiver / collab)
 // supply their own status unions, so we accept `string` as an escape hatch
@@ -170,7 +189,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
     return entries
   }, [call.localStream, call.joined, call.micMuted, remotePeers])
 
-  const levels = useSpeakingLevels(speakingEntries)
+  const speakingLevels = useSpeakingLevels(speakingEntries)
 
 
   // ── Pre-join screen ────────────────────────────────────────────────────
@@ -419,7 +438,9 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
                 : undefined
               return (
                 <div key={v.id} style={wrapperStyle}>
-                  <VideoTile
+                  <LeveledVideoTile
+                    controller={speakingLevels}
+                    levelId={v.id}
                     stream={v.stream}
                     name={v.name}
                     self={v.isSelf}
@@ -427,7 +448,6 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
                     cameraOff={v.cameraOff}
                     connecting={v.connecting}
                     volume={v.isSelf ? 1 : volume}
-                    level={levels[v.id] || 0}
                     mutedForMe={!v.isSelf && mutedForMe.has(v.id)}
                     onToggleMutedForMe={v.isSelf ? undefined : () => togglePeerMute(v.id)}
                     focused={isFocused}
@@ -445,22 +465,24 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
       <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-2">
         <div className="grid grid-cols-2 sm:grid-cols-2 gap-1.5">
           {call.mode === 'audio' && (
-            <AudioTile
+            <LeveledAudioTile
+              controller={speakingLevels}
+              levelId="self"
               stream={call.localStream}
               name={myName}
               self
               micMuted={call.micMuted}
-              level={levels['self'] || 0}
             />
           )}
           {audioRemotes.map(p => (
-            <AudioTile
+            <LeveledAudioTile
               key={p.peerId}
+              controller={speakingLevels}
+              levelId={p.peerId}
               stream={p.stream}
               name={p.name}
               micMuted={p.micMuted}
               volume={volume}
-              level={levels[p.peerId] || 0}
               mutedForMe={mutedForMe.has(p.peerId)}
               onToggleMutedForMe={() => togglePeerMute(p.peerId)}
             />
