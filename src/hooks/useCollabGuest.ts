@@ -737,8 +737,23 @@ export function useCollabGuest(roomId: string) {
         conn.on('open', () => {
           if (destroyedRef.current) return
           clearTimeout(timeoutRef.current!)
+          // M-m — on a reconnect (not first connect) ask the host to
+          // resend participant + file lists. Our locally-accumulated state
+          // may have drifted if peer-joined/left broadcasts landed between
+          // the old conn closing and the new one opening.
+          const isReconnect = reconnectCountRef.current > 0
           reconnectCountRef.current = 0
           hostSess.dispatch({ type: 'conn-open' })
+          if (isReconnect) {
+            // Fire-and-forget; host may not be ready for encrypted inners
+            // yet. `collab-resync-request` is unencrypted so it works even
+            // before keys re-derive.
+            setTimeout(() => {
+              if (hostSessionRef.current !== hostSess) return
+              try { hostSess.send({ type: 'collab-resync-request' } satisfies CollabUnencryptedMsg) }
+              catch (e) { log.warn('useCollabGuest.resyncOnReconnect', e) }
+            }, 500)
+          }
 
           hostSess.rttPoller = setupRTTPolling(conn.peerConnection, setRtt)
 

@@ -769,6 +769,19 @@ export function useCollabHost() {
           return
         }
 
+        // M-m — guest requesting fresh participant + file lists. Gated on
+        // the session being fully authenticated so an unverified peer
+        // can't fish roster state. Rate-limited by the generic control
+        // bucket to prevent abuse.
+        if (msg.type === 'collab-resync-request') {
+          if (!checkControlRate(session)) return
+          if (session.passwordRequired && !session.passwordVerified) return
+          if (!session.encryptKey) return
+          sendParticipantListToGuest(entry)
+          sendFileListToGuest(entry)
+          return
+        }
+
         // Typing indicator
         if (msg.type === 'typing') {
           handleTypingMessage(msg.nickname as string, setTypingUsers, typingTimeouts.current)

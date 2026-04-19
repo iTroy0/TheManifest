@@ -174,6 +174,10 @@ export type CollabUnencryptedMsg =
   | { type: 'password-wrong' }
   | { type: 'password-locked' }
   | { type: 'password-rate-limited' }
+  // M-m — guest requests fresh participant + file lists. Used when the
+  // guest suspects drift (reconnect, missed broadcast). Host replies by
+  // re-running sendParticipantListToGuest + sendFileListToGuest.
+  | { type: 'collab-resync-request' }
 
 // ── Call lane ────────────────────────────────────────────────────────────
 // Every call message carries `from` so the receiver can route without
