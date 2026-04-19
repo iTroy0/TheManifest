@@ -147,11 +147,21 @@ function preferVp9OnPc(pc: RTCPeerConnection | null | undefined): void {
   if (!pc) return
   if (typeof RTCRtpReceiver === 'undefined') return
   if (typeof RTCRtpReceiver.getCapabilities !== 'function') return
-  const caps = RTCRtpReceiver.getCapabilities('video')
-  if (!caps || !caps.codecs) return
+  const recvCaps = RTCRtpReceiver.getCapabilities('video')
+  if (!recvCaps || !recvCaps.codecs) return
+  // H9 — gate on BOTH encode and decode capability. On iOS Safari < 16.4
+  // the receiver may advertise VP9 decode only if the builtin decoder
+  // variant matches; preferring VP9 when we cannot also encode it leaves
+  // the remote peer with a codec we negotiated but can't drive.
+  let senderHasVp9 = true
+  if (typeof RTCRtpSender !== 'undefined' && typeof RTCRtpSender.getCapabilities === 'function') {
+    const sendCaps = RTCRtpSender.getCapabilities('video')
+    senderHasVp9 = !!sendCaps?.codecs?.some(c => c.mimeType.toLowerCase() === 'video/vp9')
+  }
+  if (!senderHasVp9) return
   const preferred: RTCRtpCodec[] = []
   const fallback: RTCRtpCodec[] = []
-  for (const c of caps.codecs) {
+  for (const c of recvCaps.codecs) {
     const mime = c.mimeType.toLowerCase()
     if (mime === 'video/vp9') preferred.push(c)
     else fallback.push(c)
