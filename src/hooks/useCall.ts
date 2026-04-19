@@ -739,7 +739,16 @@ export function useCall(options: UseCallOptions) {
   useEffect(() => {
     const stream = localMedia.stream
     if (!stream || !joinedRef.current) return
-    const audioTrack = stream.getAudioTracks()[0] || null
+    // M-r — while actively screen-sharing we want peers to keep receiving
+    // the mixed (mic + tab-audio) track, not the raw new mic track. If
+    // the mixer destination is still live, prefer it; otherwise fall
+    // back to the raw mic. Graph rebuild with the new mic source is a
+    // separate follow-up (requires disconnect + createMediaStreamSource +
+    // reconnect on the shared AudioContext).
+    const rawMicTrack = stream.getAudioTracks()[0] || null
+    const mixed = mixedAudioTrackRef.current
+    const preferMixed = screenSharingRef.current && mixed && mixed.readyState !== 'ended'
+    const audioTrack = preferMixed ? mixed : rawMicTrack
     // While actively screen-sharing, a mode-change reconnect may have
     // republished the camera track — but `screenStreamRef` still holds the
     // share we care about, so prefer the screen track for the video sender.
