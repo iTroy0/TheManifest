@@ -409,14 +409,18 @@ export function useCollabGuest(roomId: string) {
   // then expects 'collab-msg-enc' / chunk packets over the same conn.
   const setupMeshConnection = useCallback((conn: DataConnection, peerId: string, _isInitiator: boolean): void => {
     if (destroyedRef.current) { try { conn.close() } catch (e) { log.warn('useCollabGuest.mesh.setup.closeDestroyed', e) }; return }
-    // Double-connection prevention: if a live entry already exists, drop the new one.
+    // M-l — peerId rejoin. If we already have an entry for this peerId we
+    // always tear it down before seeding a fresh one, regardless of
+    // `conn.open`. The old behaviour dropped the new conn when the old
+    // socket still showed `open === true`, and overwrote the entry when
+    // `open === false` without first cleaning up heartbeat/session refs —
+    // both produced orphaned Session objects that outlived the mesh peer.
     const existing = peerConnectionsRef.current.get(peerId)
-    if (existing && existing.session.conn && existing.session.conn.open) {
-      try { conn.close() } catch (e) { log.warn('useCollabGuest.mesh.setup.closeDup', e) }
-      return
+    if (existing) {
+      teardownMesh(peerId, 'rejoined')
     }
 
-    // Seed a fresh entry (wipes any stale non-open placeholder).
+    // Seed a fresh entry.
     const session = createSession({ conn, role: 'collab-guest-mesh' })
     session.dispatch({ type: 'connect-start' })
     const meshWire = createCollabWire()
