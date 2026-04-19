@@ -23,11 +23,13 @@ test.describe('Portal password gate', () => {
     await sender.goto('/')
     await uploadFile(sender, fixture.path)
 
-    // PasswordSection on Home has a single password input. Enter before
-    // any receiver connects (host refuses to change password once guests
-    // are admitted).
+    // PasswordSection on Home has a staged input + commit button. Fill
+    // alone updates local state only — `setPassword` runs from the
+    // commit() callback. Press Enter to commit before any receiver
+    // connects (host refuses to change password once guests are admitted).
     const pwInput = sender.getByPlaceholder(/password/i).first()
     await pwInput.fill(PASSWORD)
+    await pwInput.press('Enter')
 
     const portalUrl = await getPortalUrl(sender)
     const receiver = await openSecondPage(ctx, portalUrl)
