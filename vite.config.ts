@@ -11,7 +11,7 @@ export default defineConfig({
         manualChunks: {
           // Heavy vendor libs isolated so the landing page doesn't block on them
           peerjs: ['peerjs'],
-          streamsaver: ['streamsaver', 'fflate'],
+          streamsaver: ['streamsaver', 'client-zip'],
           dnd: ['@dnd-kit/core', '@dnd-kit/sortable', '@dnd-kit/utilities'],
           qrcode: ['qrcode.react'],
         },

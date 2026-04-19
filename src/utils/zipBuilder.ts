@@ -1,4 +1,4 @@
-import { Zip, ZipPassThrough } from 'fflate'
+import { makeZip } from 'client-zip'
 import { isStreamSupported } from './streamWriter'
 import streamSaver from 'streamsaver'
 
@@ -18,50 +18,129 @@ export function sanitizeName(name: string): string {
   return name || 'file'
 }
 
-// Streaming zip writer — pipes chunks directly to disk via StreamSaver without accumulating in RAM.
+// Async-iterable queue. Drives client-zip's `makeZip` from external pushes:
+// `startFile` enqueues a new entry, `writeChunk` enqueues into the current
+// entry's per-file ReadableStream, `finish` closes the queue → makeZip
+// emits the central directory + EOCD and the outer pipeTo resolves.
+function createQueue<T>() {
+  const buf: T[] = []
+  let pending: ((v: IteratorResult<T>) => void) | null = null
+  let closed = false
+
+  const iter: AsyncIterableIterator<T> = {
+    [Symbol.asyncIterator]() { return this },
+    next(): Promise<IteratorResult<T>> {
+      if (buf.length > 0) {
+        return Promise.resolve({ value: buf.shift() as T, done: false })
+      }
+      if (closed) {
+        return Promise.resolve({ value: undefined as never, done: true })
+      }
+      return new Promise(resolve => { pending = resolve })
+    },
+  }
+
+  return {
+    iter,
+    push(v: T): void {
+      if (pending) {
+        pending({ value: v, done: false })
+        pending = null
+      } else {
+        buf.push(v)
+      }
+    },
+    close(): void {
+      closed = true
+      if (pending) {
+        pending({ value: undefined as never, done: true })
+        pending = null
+      }
+    },
+  }
+}
+
+// Streaming zip writer — pipes chunks directly to disk via StreamSaver
+// without accumulating in RAM. Backed by `client-zip`, which writes Zip64
+// extra fields (0x0001) for entries > 4 GB and emits the language-encoding
+// flag (bit 11) for non-ASCII filenames automatically — closing the M-j
+// gaps where fflate truncated the 4-byte size field and required manual
+// flag setup.
 export function createStreamingZip(zipName = 'manifest-files.zip'): StreamingZipHandle | null {
   if (!isStreamSupported()) return null
 
   try {
     const writeStream = streamSaver.createWriteStream(zipName)
-    const writer = writeStream.getWriter()
-    const zip = new Zip()
 
-    zip.ondata = (err: Error | null, chunk: Uint8Array, final: boolean) => {
-      if (err) {
-        writer.abort()
-        return
-      }
-      writer.write(chunk)
-      if (final) writer.close()
-    }
+    type Entry = { input: ReadableStream<Uint8Array>; name: string; size: number; lastModified: Date }
+    const fileQueue = createQueue<Entry>()
 
-    let currentEntry: ZipPassThrough | null = null
+    let currentController: ReadableStreamDefaultController<Uint8Array> | null = null
+    let aborted = false
+
+    // Build the outer zip stream and pipe it to disk. `pipeTo` returns a
+    // promise that we deliberately swallow — the writer's own abort path
+    // surfaces user-visible errors elsewhere; an unhandled rejection from a
+    // mid-pipe StreamSaver service-worker death would otherwise crash the
+    // tab. `buffersAreUTF8: true` is moot here (filenames are passed as
+    // strings, which client-zip already flags as UTF-8), but kept as a
+    // belt-and-braces guard for any future caller that switches to
+    // ArrayBuffer filenames.
+    const zipStream = makeZip(fileQueue.iter, { buffersAreUTF8: true })
+    void zipStream.pipeTo(writeStream).catch(() => { /* surfaced via abort path */ })
 
     return {
-      startFile(name: string, _size: number): void {
-        currentEntry = new ZipPassThrough(sanitizeName(name))
-        zip.add(currentEntry)
+      startFile(name: string, size: number): void {
+        if (aborted) return
+        // Each entry gets its own ReadableStream that client-zip drains
+        // serially. `writeChunk` enqueues into this entry; `endFile` closes
+        // it so client-zip moves on to the next queued entry.
+        const entryStream = new ReadableStream<Uint8Array>({
+          start(controller) { currentController = controller },
+        })
+        fileQueue.push({
+          input: entryStream,
+          name: sanitizeName(name),
+          size,
+          lastModified: new Date(),
+        })
       },
 
       writeChunk(data: ArrayBuffer | Uint8Array): void {
-        if (!currentEntry) return
+        if (!currentController) return
         const chunk = data instanceof Uint8Array ? data : new Uint8Array(data)
-        currentEntry.push(chunk)
+        try {
+          currentController.enqueue(chunk)
+        } catch {
+          // Controller already closed (entry ended early or aborted) —
+          // drop the chunk silently rather than crash the chunk loop.
+        }
       },
 
       endFile(): void {
-        if (!currentEntry) return
-        currentEntry.push(new Uint8Array(0), true)
-        currentEntry = null
+        if (!currentController) return
+        try { currentController.close() } catch { /* already closed */ }
+        currentController = null
       },
 
       finish(): void {
-        zip.end()
+        // Close any dangling entry then the outer queue so makeZip emits
+        // the central directory + EOCD and pipeTo resolves.
+        if (currentController) {
+          try { currentController.close() } catch { /* noop */ }
+          currentController = null
+        }
+        fileQueue.close()
       },
 
       abort(): void {
-        try { writer.abort() } catch {}
+        aborted = true
+        if (currentController) {
+          try { currentController.error(new Error('zip aborted')) } catch { /* noop */ }
+          currentController = null
+        }
+        fileQueue.close()
+        try { writeStream.abort() } catch { /* writer may already be done */ }
       },
     }
   } catch {

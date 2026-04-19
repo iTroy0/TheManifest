@@ -20,7 +20,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
-    "fflate": "^0.8.2",
+    "client-zip": "^2.5.0",
     "lucide-react": "^1.7.0",
     "peerjs": "^1.5.5",
     "qrcode.react": "^4.2.0",
