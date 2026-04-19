@@ -180,14 +180,14 @@ describe('engine-loop integration', () => {
       })
     })
 
-    // Pause after sendFile begins. The iteration that was mid-await when
-    // pauseTransfer flipped the handle may still emit one chunk, and the
-    // receiver queue runs asynchronously — drain both before capturing the
-    // pausedAt snapshot.
+    // L-f — pause synchronously before the chunk loop yields. sendFile
+    // calls `session.beginTransfer` synchronously, so the handle exists
+    // by the time pauseTransfer runs. Any `setTimeout`-based delay before
+    // the pause raced against a fast CI that completed the whole
+    // transfer before the pause landed.
     const p = sendFile(senderSession, file, portalWire, { fileId: 'file-0' })
-    await new Promise(r => setTimeout(r, 1))
     senderSession.pauseTransfer('file-0')
-    // 100 ms: in-flight chunk settles on the wire + receiver queue drains.
+    // 100 ms: let any in-flight chunk settle + receiver queue drain.
     await new Promise(r => setTimeout(r, 100))
     await recvQueue
     const pausedAt = chunks.length
