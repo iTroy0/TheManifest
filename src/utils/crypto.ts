@@ -39,10 +39,14 @@ const KEY_LENGTH = 256
 const IV_LENGTH = 12 // 96 bits for AES-GCM
 
 export async function generateKeyPair(): Promise<CryptoKeyPair> {
+  // L-c: include `deriveKey` so `deriveSharedKey` can chain ECDH → HKDF
+  // → AES-GCM via `deriveKey` end-to-end and never materialize the raw
+  // ECDH shared secret as a JS-visible ArrayBuffer. `deriveBits` retained
+  // for any future code paths that legitimately need raw bytes (none today).
   const keyPair = await crypto.subtle.generateKey(
     { name: 'ECDH', namedCurve: 'P-256' },
     false,
-    ['deriveBits']
+    ['deriveBits', 'deriveKey']
   )
   return keyPair
 }
@@ -104,21 +108,30 @@ async function sortedKeyDigest(a: Uint8Array, b: Uint8Array): Promise<Uint8Array
 // If both pub key byte arrays are provided, the HKDF salt is derived from
 // their sorted SHA-256 digest — session-unique, identical on both sides.
 // Omitting them falls back to a zero salt (test ergonomics only).
+//
+// L-c: chained `deriveKey` end-to-end — ECDH → HKDF input key → AES-GCM
+// session key — so the raw ECDH shared secret never materializes as a
+// JavaScript-visible ArrayBuffer. Previously `deriveBits` produced an
+// `ArrayBuffer` of the secret that lived in the JS heap until GC and
+// could leak via heap dumps, debugger inspection, or speculative-
+// execution side channels. Using `deriveKey` keeps the intermediate
+// material inside the WebCrypto agent the whole way through.
 export async function deriveSharedKey(
   privateKey: CryptoKey,
   remotePublicKey: CryptoKey,
   localPubBytes?: Uint8Array,
   remotePubBytes?: Uint8Array,
 ): Promise<CryptoKey> {
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'ECDH', public: remotePublicKey },
-    privateKey,
-    KEY_LENGTH
-  )
   const salt = (localPubBytes && remotePubBytes)
     ? await sortedKeyDigest(localPubBytes, remotePubBytes)
     : new Uint8Array(32)
-  const hkdfKey = await crypto.subtle.importKey('raw', bits, 'HKDF', false, ['deriveKey'])
+  const hkdfKey = await crypto.subtle.deriveKey(
+    { name: 'ECDH', public: remotePublicKey },
+    privateKey,
+    { name: 'HKDF' },
+    false,
+    ['deriveKey']
+  )
   return crypto.subtle.deriveKey(
     { name: 'HKDF', hash: 'SHA-256', salt: salt as BufferSource, info: new TextEncoder().encode('manifest-aes-gcm-v1') },
     hkdfKey,

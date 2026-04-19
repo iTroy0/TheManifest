@@ -45,8 +45,8 @@ function pair() {
 }
 
 async function deriveKeyPair() {
-  const keyA = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
-  const keyB = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const keyA = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits', 'deriveKey'])
+  const keyB = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits', 'deriveKey'])
   const aPub = new Uint8Array(await crypto.subtle.exportKey('raw', keyA.publicKey))
   const bPub = new Uint8Array(await crypto.subtle.exportKey('raw', keyB.publicKey))
   const a = (await finalizeKeyExchange({

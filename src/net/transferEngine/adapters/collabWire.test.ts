@@ -13,8 +13,8 @@ describe('collabWire', () => {
   let key: CryptoKey
 
   beforeAll(async () => {
-    const a = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
-    const b = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+    const a = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits', 'deriveKey'])
+    const b = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits', 'deriveKey'])
     const aPub = new Uint8Array(await crypto.subtle.exportKey('raw', a.publicKey))
     const bPub = new Uint8Array(await crypto.subtle.exportKey('raw', b.publicKey))
     key = (await finalizeKeyExchange({
