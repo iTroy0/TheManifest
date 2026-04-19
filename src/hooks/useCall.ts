@@ -2,6 +2,10 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Peer, { MediaConnection } from 'peerjs'
 import { UseLocalMediaReturn, LocalMediaMode } from './useLocalMedia'
 import type { CallMsg } from '../net/protocol'
+import {
+  tryClaim, refreshClaim, releaseClaim, getStableTabId,
+  CLAIM_HEARTBEAT_MS,
+} from '../utils/callTabClaim'
 
 export type CallMode = 'audio' | 'video'
 
@@ -41,19 +45,12 @@ export interface CallError {
   peerId?: string
 }
 
-// Stable id for THIS browsing context — used by the duplicate-tab guard
-// to distinguish between BroadcastChannel messages we sent ourselves vs.
-// ones from a sibling tab. Generated once per module load (so within a
-// hot-reload cycle it can change; that's fine).
-// M-f — crypto.randomUUID gives ~122 bits of entropy vs the ~60 bits of
-// Math.random + Date.now, which made TAB_ID collisions + prediction
-// (same browser, predictable Math.random seed) a non-trivial attack
-// surface for the BroadcastChannel probe. Fall back to the old pattern
-// only if the Web Crypto primitive is unavailable.
-const TAB_ID =
-  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : Math.random().toString(36).slice(2) + Date.now().toString(36)
+// Stable id for THIS browsing context — used by the duplicate-tab claim
+// in `utils/callTabClaim.ts`. sessionStorage-backed so a page refresh /
+// hot-reload reuses the same id and recognizes its own active claim
+// (otherwise refresh-during-call would refuse to rejoin until the prior
+// claim expired). Falls back to a fresh UUID when sessionStorage is blocked.
+const TAB_ID = getStableTabId()
 
 // Why a call ended — surfaced after `leave()` so the UI can post-mortem
 // honestly instead of silently snapping back to the pre-join screen.
@@ -274,7 +271,13 @@ export function useCall(options: UseCallOptions) {
   // in another tab", which would create an audio feedback loop. We only
   // claim a channel when joining as a non-host (the host's peerId is
   // stable per-tab, so two host tabs can't be in the same room anyway).
-  const tabChannelRef = useRef<BroadcastChannel | null>(null)
+  // Heartbeat timer for the cross-tab call claim (see `utils/callTabClaim.ts`).
+  // While joined, refreshes the localStorage record every CLAIM_HEARTBEAT_MS
+  // so sibling tabs see an active claim and don't reclaim past CLAIM_STALE_MS.
+  const claimHeartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Host id we currently hold a claim against — captured at join time so
+  // leave/unmount can release the right key even if `hostPeerId` later changes.
+  const claimedHostRef = useRef<string | null>(null)
   // Per-peer retry state for outbound MediaConnection errors. Keyed by
   // peerId so retries are independent. We clear the entry on success
   // and on roster removal; any pending timer is cancelled if the hook
@@ -1025,35 +1028,19 @@ export function useCall(options: UseCallOptions) {
     setCallError(null)
     setEndReason(null)
 
-    // Duplicate-tab guard: ask any sibling tabs whether they're already in
-    // this room. If anyone responds within 300 ms, refuse the join. The
-    // "room" is the host's peerId for non-hosts, which is shared across
-    // tabs of the same browser. Hosts have a unique peerId per tab, so
-    // they can't accidentally double-join the same room.
-    // 150 ms was too tight — a sibling tab on a busy main thread or
-    // under load could reply at 160-200 ms and slip through, letting
-    // the user join twice. 300 ms still reads as instantaneous to the
-    // user and covers realistic BroadcastChannel latencies.
-    if (!isHost && hostPeerId && typeof BroadcastChannel !== 'undefined') {
-      let conflict = false
-      let probe: BroadcastChannel | null = null
-      try {
-        probe = new BroadcastChannel('manifest-call-' + hostPeerId)
-        const probeHandler = (e: MessageEvent): void => {
-          const data = e.data as { type?: string; tabId?: string }
-          if (data?.type === 'i-am-here' && data.tabId !== TAB_ID) {
-            conflict = true
-          }
-        }
-        probe.addEventListener('message', probeHandler)
-        probe.postMessage({ type: 'who', tabId: TAB_ID })
-        await new Promise<void>(resolve => setTimeout(resolve, 300))
-        probe.removeEventListener('message', probeHandler)
-      } catch {
-        // BroadcastChannel unavailable / blocked — skip the guard.
-      }
-      if (conflict) {
-        try { probe?.close() } catch {}
+    // H11: duplicate-tab guard via atomic localStorage claim. The prior
+    // BroadcastChannel probe was a notify-only protocol with a 300 ms wait
+    // window — two tabs opening in the same window both saw silence and
+    // both admitted, causing audio feedback. tryClaim writes our tabId to
+    // `manifest-call-claim-${hostPeerId}`, waits CLAIM_RACE_DELAY_MS for
+    // any concurrent writer to land, then re-reads. Whoever's tabId
+    // survives the re-read wins; the loser refuses with `duplicate-tab`.
+    // The "room" is the host's peerId — shared across tabs of the same
+    // browser for non-hosts; hosts get unique peerIds per tab so they
+    // can't accidentally double-join.
+    if (!isHost && hostPeerId) {
+      const won = await tryClaim(hostPeerId, TAB_ID)
+      if (!won) {
         setCallError({
           code: 'duplicate-tab',
           message: "You're already in this call in another tab. Close the other tab to join here.",
@@ -1062,17 +1049,13 @@ export function useCall(options: UseCallOptions) {
         setJoining(false)
         return
       }
-      // No conflict — keep the channel open and listen for future probes
-      // so a sibling tab that opens later sees us.
-      if (probe) {
-        probe.addEventListener('message', (e: MessageEvent) => {
-          const data = e.data as { type?: string; tabId?: string }
-          if (data?.type === 'who' && data.tabId !== TAB_ID) {
-            try { probe?.postMessage({ type: 'i-am-here', tabId: TAB_ID }) } catch {}
-          }
-        })
-        tabChannelRef.current = probe
-      }
+      // Hold the claim with a heartbeat so siblings see it as active.
+      claimedHostRef.current = hostPeerId
+      if (claimHeartbeatRef.current) clearInterval(claimHeartbeatRef.current)
+      claimHeartbeatRef.current = setInterval(
+        () => refreshClaim(hostPeerId, TAB_ID),
+        CLAIM_HEARTBEAT_MS,
+      )
     }
 
     try {
@@ -1104,11 +1087,15 @@ export function useCall(options: UseCallOptions) {
       joinedRef.current = true
     } catch (e) {
       // Release the duplicate-tab claim that we optimistically took before
-      // the media prompt. Without this, a failed join leaves the tab
-      // channel dangling and every retry sees itself as a sibling conflict.
-      if (tabChannelRef.current) {
-        try { tabChannelRef.current.close() } catch {}
-        tabChannelRef.current = null
+      // the media prompt. Without this, a failed join leaves the localStorage
+      // claim active and every retry sees itself as a sibling conflict.
+      if (claimHeartbeatRef.current) {
+        clearInterval(claimHeartbeatRef.current)
+        claimHeartbeatRef.current = null
+      }
+      if (claimedHostRef.current) {
+        releaseClaim(claimedHostRef.current, TAB_ID)
+        claimedHostRef.current = null
       }
       // AbortError comes from useLocalMedia when the attempt was
       // superseded (e.g., the user hit Leave during the permission prompt,
@@ -1539,9 +1526,13 @@ export function useCall(options: UseCallOptions) {
     setJoined(false)
     joinedRef.current = false
     // Release the duplicate-tab claim so a sibling tab can take over.
-    if (tabChannelRef.current) {
-      try { tabChannelRef.current.close() } catch {}
-      tabChannelRef.current = null
+    if (claimHeartbeatRef.current) {
+      clearInterval(claimHeartbeatRef.current)
+      claimHeartbeatRef.current = null
+    }
+    if (claimedHostRef.current) {
+      releaseClaim(claimedHostRef.current, TAB_ID)
+      claimedHostRef.current = null
     }
     localMediaStop()
     setMode('none')
@@ -1693,9 +1684,13 @@ export function useCall(options: UseCallOptions) {
       pruneTimersRef.current.forEach(timer => { try { clearTimeout(timer) } catch {} })
       pruneTimersRef.current.clear()
       lastTrackStateAtRef.current.clear()
-      if (tabChannelRef.current) {
-        try { tabChannelRef.current.close() } catch {}
-        tabChannelRef.current = null
+      if (claimHeartbeatRef.current) {
+        clearInterval(claimHeartbeatRef.current)
+        claimHeartbeatRef.current = null
+      }
+      if (claimedHostRef.current) {
+        releaseClaim(claimedHostRef.current, TAB_ID)
+        claimedHostRef.current = null
       }
       if (joinedRef.current) {
         try { localMediaStop() } catch {}
