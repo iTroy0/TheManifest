@@ -687,7 +687,19 @@ export function useCollabGuest(roomId: string) {
       attemptRef.current++
       dispatchRoom({ type: 'SET_STATUS', payload: isReconnect ? 'reconnecting' : 'joining' })
 
-      const config = useTurnRef.current ? await getWithTurn() : STUN_ONLY
+      const turn = useTurnRef.current ? await getWithTurn() : null
+      const config = turn ?? STUN_ONLY
+      // L-a: warn the user when their relay-only request silently fell back
+      // to STUN — peers (and any STUN provider in the path) can now see the
+      // user's public IP, which is the leak the relay-only mode existed to
+      // prevent. Surfaced as a chat system message rather than a banner so
+      // it doesn't dismiss itself out of view during a reconnect spike.
+      if (turn?.relayFallback) {
+        setMessages(prev => [...prev, {
+          text: 'Relay (TURN) unavailable — using STUN only. Your public IP may be visible to peers.',
+          from: 'system', time: Date.now(), self: false,
+        }].slice(-500))
+      }
       const peer = new Peer(config)
       peerRef.current = peer
 

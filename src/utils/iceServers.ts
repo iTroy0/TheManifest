@@ -61,8 +61,20 @@ async function fetchTurnCredentials(signal: AbortSignal): Promise<{ username: st
   }
 }
 
-export async function getWithTurn(): Promise<PeerConfig> {
-  if (!TURN_URL) return STUN_ONLY
+// L-a: extends `PeerConfig` with a `relayFallback` flag the UI can read to
+// warn the user that the requested relay-only path failed and the session
+// is now using STUN (which exposes the user's public IP to peers + STUN
+// servers, contradicting the privacy claim that motivated requesting TURN
+// in the first place). `relayFallback` is true only when TURN was requested
+// AND every credential fetch attempt failed — when no TURN_URL is configured
+// at all, the STUN-only path is intentional and `relayFallback` stays false.
+// peerjs ignores unknown top-level keys, so `new Peer(result)` works as before.
+export interface TurnResult extends PeerConfig {
+  relayFallback: boolean
+}
+
+export async function getWithTurn(): Promise<TurnResult> {
+  if (!TURN_URL) return { ...STUN_ONLY, relayFallback: false }
 
   // Try twice with a 3-second timeout each attempt (max 6s total vs 10s).
   // Between attempts, wait ~500 ms + jitter so a transient TURN API blip
@@ -95,6 +107,7 @@ export async function getWithTurn(): Promise<PeerConfig> {
               ...((creds.urls as string[]) || []).map((url: string) => ({ urls: url, username: creds.username, credential: creds.credential })),
             ],
           },
+          relayFallback: false,
         }
       }
     } catch {
@@ -103,5 +116,5 @@ export async function getWithTurn(): Promise<PeerConfig> {
   }
 
   console.warn('TURN credential fetch failed after 2 attempts — falling back to STUN-only')
-  return STUN_ONLY
+  return { ...STUN_ONLY, relayFallback: true }
 }

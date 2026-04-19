@@ -32,10 +32,11 @@ describe('iceServers – default config (no env vars set)', () => {
     expect(hasTurn).toBe(false)
   })
 
-  it('getWithTurn returns STUN_ONLY when VITE_TURN_URL is not set', async () => {
+  it('getWithTurn returns STUN_ONLY (relayFallback=false) when VITE_TURN_URL is not set', async () => {
     const { STUN_ONLY, getWithTurn } = await loadModule()
     const result = await getWithTurn()
-    expect(result).toEqual(STUN_ONLY)
+    expect(result).toEqual({ ...STUN_ONLY, relayFallback: false })
+    expect(result.relayFallback).toBe(false)
   })
 
   it('STUN_ONLY does not include signalConfig keys when VITE_SIGNAL_HOST is not set', async () => {
@@ -180,18 +181,33 @@ describe('iceServers – getWithTurn with API response', () => {
     expect(urls).toContain('stun:turn.example.com:3478')
   })
 
-  it('getWithTurn falls back to STUN_ONLY when API fails', async () => {
+  it('getWithTurn falls back to STUN_ONLY when API fails (relayFallback=true)', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'))
     const { STUN_ONLY, getWithTurn } = await loadModule()
     const result = await getWithTurn()
-    expect(result).toEqual(STUN_ONLY)
+    expect(result).toEqual({ ...STUN_ONLY, relayFallback: true })
+    expect(result.relayFallback).toBe(true)
   })
 
-  it('getWithTurn falls back to STUN_ONLY when API returns non-ok', async () => {
+  it('getWithTurn falls back to STUN_ONLY when API returns non-ok (relayFallback=true)', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 503 })
     const { STUN_ONLY, getWithTurn } = await loadModule()
     const result = await getWithTurn()
-    expect(result).toEqual(STUN_ONLY)
+    expect(result).toEqual({ ...STUN_ONLY, relayFallback: true })
+    expect(result.relayFallback).toBe(true)
+  })
+
+  it('getWithTurn returns relayFallback=false on successful TURN credential fetch', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        username: 'u', credential: 'c',
+        urls: ['turn:turn.example.com:3478'],
+      }),
+    })
+    const { getWithTurn } = await loadModule()
+    const result = await getWithTurn()
+    expect(result.relayFallback).toBe(false)
   })
 })
 

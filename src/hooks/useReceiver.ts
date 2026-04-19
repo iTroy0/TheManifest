@@ -126,7 +126,18 @@ export function useReceiver(peerId: string) {
       attemptRef.current++
       dispatchConn({ type: 'SET', payload: { retryCount: attemptRef.current - 1, status: isReconnect ? 'reconnecting' : attemptRef.current > 1 ? 'retrying' : 'connecting' } })
 
-      const config = useTurnRef.current ? await getWithTurn() : STUN_ONLY
+      const turn = useTurnRef.current ? await getWithTurn() : null
+      const config = turn ?? STUN_ONLY
+      // L-a: surface relay fallback in chat so the user knows their IP is
+      // visible to peers even though they enabled the relay-only path.
+      // Only fires once per (re)connect attempt; the message stream cap
+      // handles dedupe in the worst case.
+      if (turn?.relayFallback) {
+        setMessages(prev => [...prev, {
+          text: 'Relay (TURN) unavailable — using STUN only. Your public IP may be visible to peers.',
+          from: 'system', time: Date.now(), self: false,
+        }].slice(-500))
+      }
       const peer = new Peer(config)
       peerRef.current = peer
 
