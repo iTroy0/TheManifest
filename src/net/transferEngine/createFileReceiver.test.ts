@@ -164,4 +164,60 @@ describe('createFileReceiver', () => {
     expect(recv.getResumeCursor('file-0')).toBe(6)
     expect(progress).toHaveBeenCalledWith(103, 200)
   })
+
+  it('clamps malicious resumedChunks / resumedBytes to valid bounds', async () => {
+    const session = mockSession()
+    const adapter = mockAdapter()
+    const recv = createFileReceiver(session, adapter)
+    const sink = accumulatingSink()
+
+    await recv.onFileStart({
+      fileId: 'file-0', totalBytes: 100, totalChunks: 10,
+      sink: sink.stream,
+      resumedBytes: Number.MAX_SAFE_INTEGER,
+      resumedChunks: Number.MAX_SAFE_INTEGER,
+    })
+    expect(recv.getResumeCursor('file-0')).toBe(10)
+
+    await recv.abort('file-0', 'cancelled')
+    const sink2 = accumulatingSink()
+    await recv.onFileStart({
+      fileId: 'file-0', totalBytes: 100, totalChunks: 10,
+      sink: sink2.stream,
+      resumedBytes: -5,
+      resumedChunks: -3,
+    })
+    expect(recv.getResumeCursor('file-0')).toBe(0)
+
+    await recv.abort('file-0', 'cancelled')
+    const sink3 = accumulatingSink()
+    await recv.onFileStart({
+      fileId: 'file-0', totalBytes: 100, totalChunks: 10,
+      sink: sink3.stream,
+      resumedBytes: Number.NaN,
+      resumedChunks: Number.NaN,
+    })
+    expect(recv.getResumeCursor('file-0')).toBe(0)
+  })
+
+  it('drops entry when writer.write rejects (avoids orphan + unhandled rejection)', async () => {
+    const session = mockSession()
+    const adapter = mockAdapter()
+    const recv = createFileReceiver(session, adapter)
+    // Streams spec: once a sink's write() rejects, the stream enters the
+    // errored state and the sink's abort() is not invoked. We only assert
+    // the outcomes that actually matter: the entry is removed and further
+    // chunks no-op silently (no unhandled promise rejection).
+    const stream = new WritableStream<Uint8Array>({
+      write() { return Promise.reject(new Error('sink dead')) },
+    })
+
+    await recv.onFileStart({ fileId: 'file-0', totalBytes: 6, totalChunks: 2, sink: stream })
+    await recv.onChunk(pkt(0, new Uint8Array([1, 2, 3])))
+    expect(recv.has('file-0')).toBe(false)
+
+    // Subsequent chunk is a no-op: entry is gone, cursor returns default 0.
+    await recv.onChunk(pkt(1, new Uint8Array([4, 5, 6])))
+    expect(recv.getResumeCursor('file-0')).toBe(0)
+  })
 })

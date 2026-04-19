@@ -157,9 +157,13 @@ interface DataChannelLike {
   dataChannel?: RTCDataChannel
 }
 
-export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
+export async function waitForBufferDrain(
+  conn: DataChannelLike,
+  signal?: AbortSignal,
+): Promise<void> {
   const dc = conn._dc || conn.dataChannel
   if (!dc || dc.readyState === 'closed' || dc.readyState === 'closing') return
+  if (signal?.aborted) throw new DOMException('drain aborted', 'AbortError')
   if (dc.bufferedAmount <= BUFFER_THRESHOLD) return
 
   return new Promise<void>((resolve, reject) => {
@@ -198,6 +202,18 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
     dc.addEventListener('close', onClose)
     dc.addEventListener('error', onClose)
 
+    // Caller-controlled cancellation (session.close, transfer-cancel, explicit
+    // opts.signal). Rejects so sendFile's try/catch exits the loop on the
+    // next tick rather than waiting up to 60 s for the drain timer.
+    const onAbort = (): void => {
+      if (!settled) {
+        settled = true
+        cleanup()
+        reject(new DOMException('drain aborted', 'AbortError'))
+      }
+    }
+    if (signal) signal.addEventListener('abort', onAbort, { once: true })
+
     // Timeout rejects (not resolves) so callers can detect a stalled channel
     // and abort rather than piling chunks into a dead buffer.
     // Scale to actual bufferedAmount at 128 KB/s floor — a flat 15 s cap
@@ -221,6 +237,7 @@ export async function waitForBufferDrain(conn: DataChannelLike): Promise<void> {
       if (drainTimeout) clearTimeout(drainTimeout)
       dc.removeEventListener('close', onClose)
       dc.removeEventListener('error', onClose)
+      if (signal) signal.removeEventListener('abort', onAbort)
     }
   })
 }

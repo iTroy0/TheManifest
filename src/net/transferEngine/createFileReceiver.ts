@@ -25,13 +25,20 @@ export function createFileReceiver(
   return {
     async onFileStart(opts) {
       const writer = opts.sink.getWriter()
+      // Clamp resume hints into valid bounds. A malicious or buggy peer could
+      // send Number.MAX_SAFE_INTEGER / NaN / negative for resumedChunks and
+      // poison the cursor, permanently dropping every subsequent chunk.
+      const rc = Number.isFinite(opts.resumedChunks) ? (opts.resumedChunks ?? 0) : 0
+      const rb = Number.isFinite(opts.resumedBytes) ? (opts.resumedBytes ?? 0) : 0
+      const lastIdx = Math.max(0, Math.min(opts.totalChunks, Math.floor(rc)))
+      const bytesWritten = Math.max(0, Math.min(opts.totalBytes, Math.floor(rb)))
       perFile.set(opts.fileId, {
         sink: opts.sink,
         writer,
         totalChunks: opts.totalChunks,
         totalBytes: opts.totalBytes,
-        bytesWritten: opts.resumedBytes ?? 0,
-        lastIdx: opts.resumedChunks ?? 0,
+        bytesWritten,
+        lastIdx,
         onProgress: opts.onProgress,
       })
     },
@@ -49,7 +56,19 @@ export function createFileReceiver(
         return
       }
 
-      await entry.writer.write(new Uint8Array(plaintext))
+      // Sink write can reject long after the chunk was accepted — StreamSaver
+      // service worker death, user-cancelled download, disk full, in-memory
+      // fallback OOM. Before this guard, a write rejection left the entry in
+      // perFile and every subsequent chunk threw unhandled to the hook's
+      // inbound handler. Treat any write failure as terminal for this fileId:
+      // abort the writer and drop the entry so the transfer can be retried.
+      try {
+        await entry.writer.write(new Uint8Array(plaintext))
+      } catch (err) {
+        try { void entry.writer.abort(err).catch(() => {}) } catch { /* noop */ }
+        perFile.delete(fileId)
+        return
+      }
       entry.bytesWritten += plaintext.byteLength
       // M11: cursor is monotonic max — never retreat on out-of-order delivery
       entry.lastIdx = Math.max(entry.lastIdx, packet.chunkIndex + 1)

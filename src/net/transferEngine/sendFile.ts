@@ -28,6 +28,23 @@ export async function sendFile(
   }
   session.beginTransfer(handle)
 
+  // Unified cancellation: session close, transfer-cancel for this fileId, or
+  // caller-supplied opts.signal all trip one AbortController. Threaded into
+  // waitForBufferDrain so cancel during a multi-megabyte queued buffer exits
+  // in <1 ms instead of waiting up to 60 s for the drain timer.
+  const abortCtrl = new AbortController()
+  const unsubs: Array<() => void> = []
+  unsubs.push(session.on('closed', () => abortCtrl.abort()))
+  unsubs.push(
+    session.on('transfer-cancel', ev => {
+      if (ev.transferId === opts.fileId) abortCtrl.abort()
+    }),
+  )
+  if (opts.signal) {
+    if (opts.signal.aborted) abortCtrl.abort()
+    else opts.signal.addEventListener('abort', () => abortCtrl.abort(), { once: true })
+  }
+
   const chunkSize = opts.chunker?.getChunkSize() ?? 256 * 1024
   const totalChunks =
     opts.totalChunks ?? Math.max(1, Math.ceil(file.size / chunkSize))
@@ -84,9 +101,17 @@ export async function sendFile(
         session.sendBinary(packet)
         await waitForBufferDrain(
           session.conn as unknown as { _dc?: RTCDataChannel },
+          abortCtrl.signal,
         )
-      } catch {
-        result = 'error'
+      } catch (err) {
+        // AbortError from drain means the cancellation channel fired; route
+        // to 'cancelled'. Any other error (drain timeout, send throw) stays
+        // as 'error' so the UI surfaces a failure rather than a silent stop.
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          result = 'cancelled'
+        } else {
+          result = 'error'
+        }
         break
       }
 
@@ -112,6 +137,7 @@ export async function sendFile(
     /* peer gone; best-effort */
   }
 
+  for (const u of unsubs) u()
   session.endTransfer(opts.fileId, result)
   return result
 }

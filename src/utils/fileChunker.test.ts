@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { buildChunkPacket, parseChunkPacket, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from './fileChunker'
+import { describe, it, expect, vi } from 'vitest'
+import { buildChunkPacket, parseChunkPacket, CHUNK_SIZE, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler, waitForBufferDrain } from './fileChunker'
 
 describe('Chunk Packet Build/Parse', () => {
   it('round-trips fileIndex and chunkIndex', () => {
@@ -211,5 +211,51 @@ describe('AdaptiveChunker additional edge cases', () => {
     const c: AdaptiveChunker = new AdaptiveChunker()
     for (let i = 0; i < 10; i++) c.recordTransfer(1024 * 1024, 5)
     expect(c.getChunkSize()).toBe(1024 * 1024)
+  })
+})
+
+describe('waitForBufferDrain abort signal', () => {
+  function mockDc(bufferedAmount: number) {
+    const listeners = new Map<string, Set<(ev?: unknown) => void>>()
+    const dc = {
+      bufferedAmount,
+      bufferedAmountLowThreshold: 0,
+      readyState: 'open' as RTCDataChannelState,
+      onbufferedamountlow: null,
+      addEventListener: vi.fn((type: string, fn: (ev?: unknown) => void) => {
+        let s = listeners.get(type)
+        if (!s) { s = new Set(); listeners.set(type, s) }
+        s.add(fn)
+      }),
+      removeEventListener: vi.fn((type: string, fn: (ev?: unknown) => void) => {
+        listeners.get(type)?.delete(fn)
+      }),
+    } as unknown as RTCDataChannel
+    return { dc, listeners }
+  }
+
+  it('returns immediately when bufferedAmount is below threshold', async () => {
+    const { dc } = mockDc(1024)
+    await expect(waitForBufferDrain({ _dc: dc })).resolves.toBeUndefined()
+  })
+
+  it('rejects with AbortError when signal aborts during drain wait', async () => {
+    const { dc } = mockDc(5 * 1024 * 1024) // above 2MB threshold
+    const ac = new AbortController()
+    const p = waitForBufferDrain({ _dc: dc }, ac.signal)
+    queueMicrotask(() => ac.abort())
+    await expect(p).rejects.toThrow(/abort/i)
+  })
+
+  it('throws synchronously when signal is already aborted', async () => {
+    const { dc } = mockDc(5 * 1024 * 1024)
+    const ac = new AbortController()
+    ac.abort()
+    await expect(waitForBufferDrain({ _dc: dc }, ac.signal)).rejects.toThrow(/abort/i)
+  })
+
+  it('skips signal listener when no signal is passed', async () => {
+    const { dc } = mockDc(1024)
+    await expect(waitForBufferDrain({ _dc: dc })).resolves.toBeUndefined()
   })
 })

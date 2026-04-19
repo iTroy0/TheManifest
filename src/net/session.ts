@@ -99,6 +99,7 @@ export type SessionEvent =
   | { type: 'fingerprint'; value: string }
   | { type: 'nickname'; value: string }
   | { type: 'transfer-begin'; transferId: string }
+  | { type: 'transfer-cancel'; transferId: string }
   | {
       type: 'transfer-end'
       transferId: string
@@ -451,19 +452,23 @@ export function createSession(opts: CreateSessionOpts): Session {
         handle.pauseResolver = undefined
         r()
       }
+      emit({ type: 'transfer-cancel', transferId })
     },
 
     cancelAllTransfers() {
-      for (const h of session.activeTransfers.values()) {
+      const ids: string[] = []
+      for (const [id, h] of session.activeTransfers) {
         h.aborted = true
         const r = h.pauseResolver
         if (r) {
           h.pauseResolver = undefined
           r()
         }
+        ids.push(id)
       }
       session.activeTransfers.clear()
       session.dispatch({ type: 'cancel-all' })
+      for (const id of ids) emit({ type: 'transfer-cancel', transferId: id })
     },
 
     setKeyPair(pair) {
