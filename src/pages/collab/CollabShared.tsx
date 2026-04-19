@@ -16,10 +16,13 @@ export function formatFingerprint(fp: string | null | undefined): string {
   return `${clean.slice(0, 4)} ${clean.slice(4, 8)} ${clean.slice(8, 12)} ${clean.slice(12, 16)}`
 }
 
-// Collapsible panel listing each peer's fingerprint so participants can
-// compare out-of-band (voice/SMS) and detect a man-in-the-middle (C1).
+// Fingerprint panel — participants compare out-of-band (voice/SMS) and
+// detect a man-in-the-middle (C1). H3 — open by default so the
+// verification surface is visible without a click; users can still
+// collapse it. A buried panel is the biggest realistic gap against the
+// E2E marketing claim.
 export function VerifyConnectionsPanel({ entries }: { entries: FingerprintEntry[] }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(true)
   if (entries.length === 0) return null
   return (
     <div className="border-t border-border">
