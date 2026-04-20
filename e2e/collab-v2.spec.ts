@@ -59,7 +59,10 @@ test.describe('Collab close room', () => {
     const guest = await openSecondPage(ctx, roomUrl)
 
     // Wait for guest to finish handshake so closeRoom actually reaches it.
-    await expect(guest.locator('body')).toContainText(/connected|Room/i, { timeout: 25_000 })
+    // The composer (contenteditable / textarea) only renders post-admission,
+    // so it's a more reliable signal than substring-matching the body — the
+    // "Joining room..." pre-handshake screen falsely matches /Room/i.
+    await expect(guest.locator('[contenteditable="true"], textarea').first()).toBeVisible({ timeout: 25_000 })
 
     await host.getByTestId('collab-close-room').click()
 
