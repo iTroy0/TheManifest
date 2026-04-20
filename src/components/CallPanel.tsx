@@ -150,37 +150,41 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
   // doesn't silently restore focus.
   useEffect(() => {
     if (!manualFocusId) return
-    const selfFocused = manualFocusId === 'self' && call.joined && (call.mode === 'video' || call.screenSharing)
-    const remoteFocused = call.remotePeers.some(p => p.peerId === manualFocusId && (p.mode === 'video' || p.screenSharing))
-    if (!selfFocused && !remoteFocused) setManualFocusId(null)
+    const selfFocused = (manualFocusId === 'self' && call.joined && call.mode === 'video')
+      || (manualFocusId === 'self:screen' && call.joined && call.screenSharing)
+    const remotePresent = call.remotePeers.some(p => {
+      if (manualFocusId === `${p.peerId}:screen`) return !!p.screenStream
+      return p.peerId === manualFocusId && p.mode === 'video'
+    })
+    if (!selfFocused && !remotePresent) setManualFocusId(null)
   }, [manualFocusId, call.remotePeers, call.joined, call.mode, call.screenSharing])
 
-  // Auto-focus the first remote peer who starts sharing. Keeps the UX
-  // "screen shares take center stage" without clobbering a manual focus
-  // the user already picked. We track the last peer set we auto-focused
-  // for so repeated renders don't re-focus endlessly.
+  // Auto-focus the first remote peer's screen tile when they start sharing.
+  // Keeps the UX "screen shares take center stage" without clobbering a
+  // manual focus the user already picked.
   const lastAutoFocusedSharerRef = useRef<string | null>(null)
   useEffect(() => {
-    const sharer = call.remotePeers.find(p => p.screenSharing)
+    const sharer = call.remotePeers.find(p => p.screenStream)
     if (!sharer) {
       lastAutoFocusedSharerRef.current = null
       return
     }
-    if (sharer.peerId === lastAutoFocusedSharerRef.current) return
-    lastAutoFocusedSharerRef.current = sharer.peerId
-    // Only override when nothing is currently focused — respect the user.
-    if (manualFocusId === null) setManualFocusId(sharer.peerId)
+    const focusId = `${sharer.peerId}:screen`
+    if (focusId === lastAutoFocusedSharerRef.current) return
+    lastAutoFocusedSharerRef.current = focusId
+    if (manualFocusId === null) setManualFocusId(focusId)
   }, [call.remotePeers, manualFocusId])
 
   const remotePeers = call.remotePeers
-  // A peer with screenSharing but stale mode='audio' still deserves a video
-  // tile — otherwise a dropped call-track-state packet hides their share.
-  const videoRemotes = remotePeers.filter(p => p.mode === 'video' || p.screenSharing)
-  const audioRemotes = remotePeers.filter(p => p.mode !== 'video' && !p.screenSharing)
-  // Include screen-share so the self preview tile renders while sharing
-  // even when the local camera is off (call.mode stays 'audio' because
-  // useLocalMedia never switched — the screen track lives in screenStream).
-  const showLocalVideo: boolean = call.mode === 'video' || call.screenSharing
+  // Camera/audio tiles track the main mc; screen tiles track the dedicated
+  // screen mc. A peer can show up in both (camera on + sharing) as two
+  // separate tiles — receivers no longer get their screen track hot-swapped
+  // into the camera tile, which was stalling the decoder mid-session.
+  const videoRemotes = remotePeers.filter(p => p.mode === 'video')
+  const screenSharingRemotes = remotePeers.filter(p => !!p.screenStream)
+  const audioRemotes = remotePeers.filter(p => p.mode !== 'video' && !p.screenStream)
+  const showLocalCamera: boolean = call.mode === 'video'
+  const showLocalScreen: boolean = call.screenSharing
 
   // Speaking levels: one shared analyser graph drives every tile's pulse.
   const speakingEntries: StreamEntry[] = useMemo(() => {
@@ -292,20 +296,28 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
       screenShare: boolean
     }
     const videoTiles: VideoTileInfo[] = []
-    if (showLocalVideo) {
-      // When screen-sharing, the outgoing video sender carries the screen
-      // track but the LOCAL preview keeps rendering the camera feed (so the
-      // sharer still sees themselves as a small self-check). Preview stream
-      // prefers the screen capture so the user sees what peers see.
+    if (showLocalCamera) {
       videoTiles.push({
         id: 'self',
         isSelf: true,
         name: myName,
-        stream: call.screenSharing ? (call.screenStream ?? call.localStream) : call.localStream,
+        stream: call.localStream,
         micMuted: call.micMuted,
-        cameraOff: call.cameraOff && !call.screenSharing,
+        cameraOff: call.cameraOff,
         connecting: false,
-        screenShare: call.screenSharing,
+        screenShare: false,
+      })
+    }
+    if (showLocalScreen) {
+      videoTiles.push({
+        id: 'self:screen',
+        isSelf: true,
+        name: `${myName} (screen)`,
+        stream: call.screenStream,
+        micMuted: call.micMuted,
+        cameraOff: false,
+        connecting: false,
+        screenShare: true,
       })
     }
     videoRemotes.forEach(p => {
@@ -317,11 +329,21 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         micMuted: p.micMuted,
         cameraOff: p.cameraOff,
         connecting: !p.stream,
-        screenShare: p.screenSharing,
+        screenShare: false,
       })
     })
-    // Focus is fully manual. Auto active-speaker focus was removed because
-    // the switching jitter hurt the UX more than the convenience helped.
+    screenSharingRemotes.forEach(p => {
+      videoTiles.push({
+        id: `${p.peerId}:screen`,
+        isSelf: false,
+        name: `${p.name} (screen)`,
+        stream: p.screenStream,
+        micMuted: p.micMuted,
+        cameraOff: false,
+        connecting: !p.screenStream,
+        screenShare: true,
+      })
+    })
     const focusedTile: VideoTileInfo | null = manualFocusId
       ? videoTiles.find(v => v.id === manualFocusId) ?? null
       : null

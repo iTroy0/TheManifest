@@ -102,6 +102,42 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
     return () => { document.removeEventListener('visibilitychange', onVisible) }
   }, [stream])
 
+  // Mid-session stall recovery: the <video> element can stop advancing its
+  // display clock even while RTP keeps flowing (Chrome backgrounds the
+  // decoder, frame callback loop breaks after a PC renegotiation, etc.).
+  // The track's `mute` event misses this because the track is technically
+  // live. Poll `currentTime`; if it hasn't moved for ~3 s while the stream
+  // still carries a video track, detach+reattach srcObject to kick the
+  // display pipeline. Users reported the "PIP button un-sticks it" trick —
+  // entering/exiting PIP forces the same reattach. This automates it.
+  useEffect(() => {
+    const el = videoRef.current
+    if (!el || !stream) return
+    if (stream.getVideoTracks().length === 0) return
+    let lastTime = el.currentTime
+    let lastChangeAt = performance.now()
+    const STALL_MS = 3000
+    const check = setInterval(() => {
+      const now = el.currentTime
+      if (now !== lastTime) {
+        lastTime = now
+        lastChangeAt = performance.now()
+        return
+      }
+      if (el.paused || el.ended) return
+      if (performance.now() - lastChangeAt < STALL_MS) return
+      // Display clock frozen. Detach + reattach to rebuild the decoder path.
+      try {
+        el.srcObject = null
+        el.srcObject = stream
+        el.play().catch(() => {})
+      } catch { /* noop */ }
+      lastTime = el.currentTime
+      lastChangeAt = performance.now()
+    }, 1000)
+    return () => clearInterval(check)
+  }, [stream])
+
   useEffect(() => {
     const el = videoRef.current
     if (!el) return
