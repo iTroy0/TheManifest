@@ -95,6 +95,18 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
     lastTileCountRef.current = call.videoTileCount
   }, [call.overSoftVideoCap, call.videoTileCount])
 
+  // Echo-warning dismiss — sticky for the life of a single share. Reset on
+  // the rising edge of `screenAudioShared` so the next share re-surfaces the
+  // warning even if the user dismissed it last time.
+  const [echoWarningDismissed, setEchoWarningDismissed] = useState<boolean>(false)
+  const prevScreenAudioSharedRef = useRef<boolean>(false)
+  useEffect(() => {
+    if (call.screenAudioShared && !prevScreenAudioSharedRef.current) {
+      setEchoWarningDismissed(false)
+    }
+    prevScreenAudioSharedRef.current = call.screenAudioShared
+  }, [call.screenAudioShared])
+
   const handleVolumeChange = useCallback((v: number): void => {
     const clamped = Math.max(0, Math.min(1, v))
     if (clamped > 0) lastNonZeroVolumeRef.current = clamped
@@ -438,7 +450,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
           <div
             className={focusedTile ? 'relative' : 'grid gap-2 items-center'}
             style={focusedTile ? undefined : {
-              gridTemplateColumns: videoTiles.length === 1 ? '1fr' : 'repeat(2, 1fr)',
+              gridTemplateColumns: videoTiles.length === 1 ? '1fr' : 'repeat(auto-fit, minmax(240px, 1fr))',
             }}
           >
             {videoTiles.map(v => {
@@ -556,12 +568,21 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
         </div>
       )}
 
-      {call.screenAudioShared && (
+      {call.screenAudioShared && !echoWarningDismissed && (
         <div className="px-3 pb-2">
           <div className="flex items-start gap-2 rounded-lg bg-surface-2 border border-border px-3 py-2">
             <p className="flex-1 font-mono text-[10px] text-muted-light">
               Sharing tab audio. If the shared tab is playing another call, peers may hear themselves echoed back. Mute the shared tab or stop sharing audio to fix.
             </p>
+            <button
+              type="button"
+              onClick={() => setEchoWarningDismissed(true)}
+              className="shrink-0 text-muted/60 hover:text-muted transition-colors"
+              aria-label="Dismiss echo warning"
+              title="Dismiss"
+            >
+              <X className="w-3 h-3" />
+            </button>
           </div>
         </div>
       )}
@@ -610,14 +631,12 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
           <ControlButton
             onClick={call.toggleCamera}
             title={
-              call.screenSharing
-                ? 'Camera is unavailable while sharing'
-                : call.cameraStarting ? 'Camera starting…'
+              call.cameraStarting ? 'Camera starting…'
                 : call.cameraOff ? 'Turn camera on' : 'Turn camera off'
             }
             icon={call.cameraStarting ? Loader2 : call.cameraOff ? VideoOff : Video}
             danger={call.cameraOff}
-            disabled={call.cameraStarting || call.screenSharing}
+            disabled={call.cameraStarting}
             spinning={call.cameraStarting}
           />
           {call.mode === 'video' && call.cameraDevices.length > 1 && (

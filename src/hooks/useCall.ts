@@ -361,6 +361,21 @@ export function useCall(options: UseCallOptions) {
     return out
   }, [getDummyVideoTrack])
 
+  // Camera mc publish stream — always carries camera (or dummy), never
+  // screen. Screen share lives on a dedicated mc (`screenMediaConnsRef`);
+  // camera mcs must not get the screen track, even while sharing is active.
+  const getCameraPublishStream = useCallback((): MediaStream | null => {
+    const local = localStreamRef.current
+    if (!local) return null
+    if (local.getVideoTracks().length > 0) return local
+    const dummy = getDummyVideoTrack()
+    if (!dummy) return local
+    const out = new MediaStream()
+    local.getAudioTracks().forEach(t => out.addTrack(t))
+    out.addTrack(dummy)
+    return out
+  }, [getDummyVideoTrack])
+
   useEffect(() => { joinedRef.current = joined }, [joined])
   useEffect(() => { modeRef.current = mode }, [mode])
   useEffect(() => { rosterRef.current = roster }, [roster])
@@ -490,15 +505,14 @@ export function useCall(options: UseCallOptions) {
             if (!joinedRef.current) return
             if (!rosterRef.current.has(peerId)) return
             if (mediaConnsRef.current.has(peerId)) return
-            // Screen-aware retry: if we're sharing, the retry must carry
-            // the screen video track too, not a stale camera-only stream.
-            const currentStream = getPublishStream() ?? localStreamRef.current
+            // Camera mc retry: camera mc always carries camera (or dummy)
+            // video. Screen share rides its own dedicated mc, so the retry
+            // must not swap in the screen track.
+            const currentStream = getCameraPublishStream() ?? localStreamRef.current
             if (!currentStream) return
             const baseMode = modeRef.current
             if (baseMode === 'none') return
-            // When screen-sharing, publish as 'video' regardless of local
-            // camera mode — the stream carries a screen video track.
-            const currentMode: CallMode = screenSharingRef.current ? 'video' : (baseMode as CallMode)
+            const currentMode: CallMode = baseMode as CallMode
             const fn = callPeerWithStreamRef.current
             fn?.(peerId, currentStream, currentMode)
           }, MEDIA_CONN_RETRY_DELAY_MS)
@@ -605,9 +619,10 @@ export function useCall(options: UseCallOptions) {
           return
         }
       }
-      // If screen-sharing, answer with a stream carrying screen video +
-      // local audio so the caller sees our share immediately.
-      const answerStream = getPublishStream() ?? localStreamRef.current
+      // Camera mc answer — always camera (or dummy) video. If we're
+      // screen-sharing, the caller gets our share through the dedicated
+      // screen mc we opened on our side; don't double-publish it here.
+      const answerStream = getCameraPublishStream() ?? localStreamRef.current
       try { mc.answer(answerStream) } catch { return }
       mediaConnsRef.current.set(mc.peer, mc)
       // Prefer VP9 before peerjs's createAnswer runs on the microtask queue.
@@ -743,13 +758,11 @@ export function useCall(options: UseCallOptions) {
     const mixed = mixedAudioTrackRef.current
     const preferMixed = screenSharingRef.current && mixed && mixed.readyState !== 'ended'
     const audioTrack = preferMixed ? mixed : rawMicTrack
-    // While actively screen-sharing, a mode-change reconnect may have
-    // republished the camera track — but `screenStreamRef` still holds the
-    // share we care about, so prefer the screen track for the video sender.
-    const screenVideoTrack = screenSharingRef.current
-      ? (screenStreamRef.current?.getVideoTracks()[0] ?? null)
-      : null
-    const videoTrack = screenVideoTrack ?? (stream.getVideoTracks()[0] || null)
+    // Camera mc always carries camera video. Screen share rides its own
+    // dedicated mc (`screenMediaConnsRef`); we must not overwrite the
+    // camera sender with the screen track — doing so stranded the viewer
+    // on the screen frame with no camera.
+    const videoTrack = stream.getVideoTracks()[0] || null
     mediaConnsRef.current.forEach(mc => {
       const pc = getPeerConnection(mc)
       if (!pc) return
@@ -797,10 +810,11 @@ export function useCall(options: UseCallOptions) {
       // A reconnect invalidates any retry state for this peer — start fresh.
       clearRetryState(pid)
     })
-    // Re-call every roster member with the publish stream so the offer
-    // still carries a video m-line even in audio mode (dummy track) and
-    // carries screen video if a share is active.
-    const publishStream = getPublishStream() ?? stream
+    // Re-call every roster member with the camera publish stream — always
+    // camera (or dummy) video. Screen share lives on a dedicated mc and is
+    // unaffected by this reconnect; feeding camera mcs the screen track
+    // stranded the camera stream on the viewer side.
+    const publishStream = getCameraPublishStream() ?? stream
     rosterRef.current.forEach((_, pid) => {
       callPeerWithStream(pid, publishStream, newMode as CallMode)
     })
@@ -814,7 +828,7 @@ export function useCall(options: UseCallOptions) {
     } satisfies CallMsg
     if (isHost) broadcast?.(payload)
     else sendToHost?.(payload)
-  }, [localMedia.mode, isHost, broadcast, sendToHost, myPeerId, callPeerWithStream, clearRetryState, getPublishStream])
+  }, [localMedia.mode, isHost, broadcast, sendToHost, myPeerId, callPeerWithStream, clearRetryState, getCameraPublishStream])
 
   // ── Signaling message handler ──────────────────────────────────────────
 
@@ -926,9 +940,11 @@ export function useCall(options: UseCallOptions) {
         // Seed roster with screenSharing flag so a tile rendered BEFORE the
         // MediaConnection resolves already knows to expect a screen share.
         peers.forEach(p => { upsertRoster(p.peerId, { name: p.name, mode: p.mode, cameraOff: p.mode !== 'video', screenSharing: p.screenSharing }) })
-        const stream = getPublishStream() ?? localStreamRef.current
+        // Camera mcs only. If we were somehow already sharing at join time,
+        // the screen share rides its own dedicated mc (dialled elsewhere).
+        const stream = getCameraPublishStream() ?? localStreamRef.current
         if (stream && modeRef.current !== 'none') {
-          const publishMode: CallMode = screenSharingRef.current ? 'video' : (modeRef.current as CallMode)
+          const publishMode: CallMode = modeRef.current as CallMode
           peers.forEach(p => callPeerWithStream(p.peerId, stream, publishMode))
         }
         return
