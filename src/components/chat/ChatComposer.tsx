@@ -67,31 +67,37 @@ export default function ChatComposer({
         </div>
       )}
 
-      {replyTo && (
-        <div className={`flex items-center gap-2 bg-accent/5 animate-fade-in-up ${isFloating ? 'px-4 py-2 border-b border-accent/20' : 'px-3 py-2 border border-accent/20 rounded-xl'}`}>
-          <div className="w-1 h-8 bg-accent/60 rounded-full shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="font-mono text-[10px] text-accent font-medium">Replying to {replyTo.from}</p>
-            <p className="text-xs text-muted truncate mt-0.5">{replyTo.text || 'Image'}</p>
-          </div>
-          <button
-            onClick={clearReplyTo}
-            className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
+      {(replyTo || imagePreview) && (
+        // Cap the above-fold strip on mobile so reply + image previews can't
+        // push the textarea below the keyboard. Tablet+ has room to spare.
+        <div className="max-h-[40vh] overflow-y-auto sm:max-h-none sm:overflow-visible">
+          {replyTo && (
+            <div className={`flex items-center gap-2 bg-accent/5 animate-fade-in-up ${isFloating ? 'px-4 py-2 border-b border-accent/20' : 'px-3 py-2 border border-accent/20 rounded-xl'}`}>
+              <div className="w-1 h-8 bg-accent/60 rounded-full shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="font-mono text-[10px] text-accent font-medium">Replying to {replyTo.from}</p>
+                <p className="text-xs text-muted truncate mt-0.5">{replyTo.text || 'Image'}</p>
+              </div>
+              <button
+                onClick={clearReplyTo}
+                className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
 
-      {imagePreview && (
-        <div className={`relative inline-block animate-fade-in-up ${isFloating ? 'mx-4 my-2' : ''}`}>
-          <img src={imagePreview.url} alt="Upload preview" className="h-20 rounded-xl border border-border shadow-sm object-cover" />
-          <button
-            onClick={clearImagePreview}
-            className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-danger text-white flex items-center justify-center shadow-md hover:bg-danger/90 transition-colors"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
+          {imagePreview && (
+            <div className={`relative inline-block animate-fade-in-up ${isFloating ? 'mx-4 my-2' : ''}`}>
+              <img src={imagePreview.url} alt="Upload preview" className="h-20 rounded-xl border border-border shadow-sm object-cover" />
+              <button
+                onClick={clearImagePreview}
+                className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-danger text-white flex items-center justify-center shadow-md hover:bg-danger/90 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
         </div>
       )}
 

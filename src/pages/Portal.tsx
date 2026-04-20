@@ -279,7 +279,7 @@ export default function Portal() {
                 )}
                 <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5 cursor-default" title={fingerprint ? `Verify fingerprint: ${fingerprint}` : 'E2E encrypted'}>
                   <Shield className="w-3 h-3 text-accent" />
-                  <span className="font-mono text-[10px] text-accent">E2E</span>
+                  <span className="font-mono text-xs text-accent">E2E</span>
                   {fingerprint && <code className="font-mono text-[9px] text-accent/50 hidden sm:inline">{fingerprint}</code>}
                 </div>
               </StatusIndicator>

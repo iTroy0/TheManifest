@@ -32,6 +32,8 @@ import {
   DOWNLOAD_REQUEST_TIMEOUT_MS,
   MAX_CONNECTIONS,
   TIMEOUT_MS,
+  CONTROL_WINDOW_MS,
+  FILE_SHARE_WINDOW_MS,
 } from '../net/config'
 import type { CollabInnerMsg, CollabUnencryptedMsg } from '../net/protocol'
 import { log } from '../utils/logger'
@@ -58,7 +60,6 @@ interface GuestEntry {
 // M-n — per-guest sliding-window rate limit on inbound control messages
 // (request/pause/resume/cancel/file-removed/signal). Separate from M19's
 // collab-file-shared broadcast limiter which already caps its own op.
-const CONTROL_WINDOW_MS = 1000
 const CONTROL_MAX = 20
 // M-n — cap per-session requestedFileIds so a looping request→cancel sequence
 // can't balloon the set and amplify forwards against the owner.
@@ -942,7 +943,6 @@ export function useCollabHost() {
             // of which costs a dispatch + N-1 encrypted relays. Drop shares
             // beyond 10/s sliding window with a log line instead of turning
             // one peer's loop into a room-wide DoS.
-            const FILE_SHARE_WINDOW_MS = 1000
             const FILE_SHARE_MAX = 10
             const now = Date.now()
             session.recentFileShares = session.recentFileShares.filter(t => now - t < FILE_SHARE_WINDOW_MS)

@@ -267,7 +267,7 @@ export default function Home() {
                       {fingerprint && (
                         <div className="flex items-center gap-1 bg-accent/5 border border-accent/20 rounded-full px-2 py-0.5 cursor-default" title={`Verify fingerprint: ${fingerprint}`}>
                           <Shield className="w-3 h-3 text-accent" />
-                          <span className="font-mono text-[10px] text-accent">E2E</span>
+                          <span className="font-mono text-xs text-accent">E2E</span>
                           <code className="font-mono text-[10px] text-accent/50 hidden sm:inline">{fingerprint}</code>
                         </div>
                       )}

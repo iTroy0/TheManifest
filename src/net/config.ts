@@ -54,3 +54,17 @@ export const MAX_CHAT_IMAGE_SIZE = 10 * 1024 * 1024
 // Keeps the spinner from being a dead end if the sender's manifest never
 // arrives (slow link, sender bug, etc.).
 export const MANIFEST_TIMEOUT_MS = 15_000
+
+// Per-guest sliding window for control-plane ops (pause/resume/cancel/etc).
+// Used by useCollabHost.checkControlRate to throttle a flooding peer.
+export const CONTROL_WINDOW_MS = 1_000
+
+// Per-guest sliding window for `collab-file-shared` announcements. Different
+// constant from CONTROL_WINDOW_MS so the two limits can be tuned independently
+// even if today they happen to share the same value.
+export const FILE_SHARE_WINDOW_MS = 1_000
+
+// Mesh teardown grace: how long the guest waits for a directly-failed mesh
+// link to recover before dispatching `direct-failed` and surfacing the
+// relay-fallback prompt.
+export const DIRECT_FAIL_WINDOW_MS = 10_000

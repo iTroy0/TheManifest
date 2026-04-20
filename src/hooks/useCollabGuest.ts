@@ -29,6 +29,7 @@ import {
 import {
   MAX_RETRIES,
   TIMEOUT_MS,
+  DIRECT_FAIL_WINDOW_MS,
   RECONNECT_DELAY,
   MAX_RECONNECTS,
   DOWNLOAD_REQUEST_TIMEOUT_MS,
@@ -40,7 +41,6 @@ import { log } from '../utils/logger'
 
 // P1 — if direct P2P hasn't reached 'connected' within this window, surface
 // a direct-failed status so the user can opt into relay.
-const DIRECT_FAIL_WINDOW_MS = 10_000
 
 // ── Types ────────────────────────────────────────────────────────────────
 
