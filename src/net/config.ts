@@ -48,3 +48,9 @@ export const MAX_PASSWORD_ATTEMPTS = 5
 
 // One constant shared by sender + receiver so the abort threshold can't drift.
 export const MAX_CHAT_IMAGE_SIZE = 10 * 1024 * 1024
+
+// Receiver waits this long for the sender's manifest after `connected`
+// before surfacing a "taking longer than expected" escape with a Reload CTA.
+// Keeps the spinner from being a dead end if the sender's manifest never
+// arrives (slow link, sender bug, etc.).
+export const MANIFEST_TIMEOUT_MS = 15_000

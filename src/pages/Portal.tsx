@@ -1,5 +1,6 @@
 import { useParams, Link } from 'react-router-dom'
 import { useReceiver } from '../hooks/useReceiver'
+import { MANIFEST_TIMEOUT_MS } from '../net/config'
 import { formatBytes, formatSpeed, formatTime } from '../utils/formatBytes'
 import { usePageTitle } from '../hooks/usePageTitle'
 import { useElapsedTime, formatElapsed } from '../hooks/useElapsedTime'
@@ -30,11 +31,11 @@ export default function Portal() {
   const [showPassword, setShowPassword] = useState<boolean>(false)
   const [manifestSlow, setManifestSlow] = useState(false)
 
-  // Surface an escape hatch if the sender's manifest hasn't arrived after 15s.
+  // Surface an escape hatch if the sender's manifest hasn't arrived in time.
   useEffect(() => {
     setManifestSlow(false)
     if (status !== 'connected' || manifest) return
-    const t = setTimeout(() => setManifestSlow(true), 15_000)
+    const t = setTimeout(() => setManifestSlow(true), MANIFEST_TIMEOUT_MS)
     return () => clearTimeout(t)
   }, [status, manifest])
   const [filesOpen, setFilesOpen] = useState<boolean>(true)

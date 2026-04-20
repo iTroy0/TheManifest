@@ -556,7 +556,9 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
       )}
 
       <div className="border-t border-border bg-surface-2/40 px-3 py-2">
-        <div className="flex items-center justify-center gap-1.5 flex-wrap">
+        {/* Mobile: nowrap + horizontal scroll so Leave never orphans onto a
+            second row. Tablet+: wrap centered as before. */}
+        <div className="flex items-center gap-1.5 flex-nowrap overflow-x-auto scrollbar-none sm:flex-wrap sm:overflow-visible sm:justify-center">
           <ControlButton
             onClick={call.toggleMic}
             title={call.micMuted ? 'Unmute' : 'Mute'}
