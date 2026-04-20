@@ -669,6 +669,29 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
     ? `${participantCount} in call${call.mode === 'video' ? ' · video' : ''}`
     : 'Call'
 
+  // Header layout: a wrapper div carries drag (popout) + the row container,
+  // a real `<button>` carries the toggle/expand semantics for the title area.
+  // Side actions (pop-out / dock / etc.) sit as siblings of the title button,
+  // not nested inside it — so screen readers no longer hear a button-in-button.
+  const titleContent = (
+    <>
+      <div
+        className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${
+          call.joined ? 'bg-accent/20 ring-1 ring-accent/40' : 'bg-accent/10'
+        }`}
+      >
+        <Phone className="w-3 h-3 text-accent" />
+      </div>
+      <span className="font-mono text-[11px] text-text font-medium truncate">{headerLabel}</span>
+      {call.joined && !isReconnecting && (
+        <span className="w-1.5 h-1.5 rounded-full bg-accent shadow-[0_0_8px_rgba(34,211,238,0.9)] animate-pulse shrink-0" />
+      )}
+      {isReconnecting && (
+        <span className="w-1.5 h-1.5 rounded-full bg-warning shadow-[0_0_6px_rgba(250,204,21,0.8)] animate-pulse shrink-0" />
+      )}
+    </>
+  )
+
   const renderHeader = (): React.ReactElement => (
     <div
       className={`flex items-center justify-between px-3 py-2 border-b border-border bg-surface-2/40 relative ${
@@ -676,17 +699,10 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
       }`}
       onMouseDown={isPopout && !isMobile ? popout.onDragStart : undefined}
       onTouchStart={isPopout && !isMobile ? popout.onDragStart : undefined}
+      // Click-anywhere-to-toggle is a UX power-user shortcut. Screen-reader
+      // users get the same affordance through the explicit title button
+      // below (which carries the aria-expanded / aria-label semantics).
       onClick={!isPopout ? () => setOpen(o => !o) : undefined}
-      role={!isPopout ? 'button' : undefined}
-      tabIndex={!isPopout ? 0 : undefined}
-      aria-expanded={!isPopout ? open : undefined}
-      onKeyDown={!isPopout ? e => {
-        if (e.target !== e.currentTarget) return
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          setOpen(o => !o)
-        }
-      } : undefined}
     >
       {isPopout && !isMobile && (
         <div
@@ -704,22 +720,24 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
           </svg>
         </div>
       )}
-      <div className="flex items-center gap-2 min-w-0 flex-1">
-        <div
-          className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${
-            call.joined ? 'bg-accent/20 ring-1 ring-accent/40' : 'bg-accent/10'
-          }`}
+      {!isPopout ? (
+        // Title is the screen-reader / keyboard handle for the toggle. The
+        // outer div's onClick provides the same toggle for pointer users.
+        // Stop propagation here so we don't run setOpen twice on a click.
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); setOpen(o => !o) }}
+          aria-expanded={open}
+          aria-label={open ? 'Collapse call panel' : 'Expand call panel'}
+          className="flex items-center gap-2 min-w-0 flex-1 text-left cursor-pointer"
         >
-          <Phone className="w-3 h-3 text-accent" />
+          {titleContent}
+        </button>
+      ) : (
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          {titleContent}
         </div>
-        <span className="font-mono text-[11px] text-text font-medium truncate">{headerLabel}</span>
-        {call.joined && !isReconnecting && (
-          <span className="w-1.5 h-1.5 rounded-full bg-accent shadow-[0_0_8px_rgba(34,211,238,0.9)] animate-pulse shrink-0" />
-        )}
-        {isReconnecting && (
-          <span className="w-1.5 h-1.5 rounded-full bg-warning shadow-[0_0_6px_rgba(250,204,21,0.8)] animate-pulse shrink-0" />
-        )}
-      </div>
+      )}
       <div className="flex items-center gap-1 shrink-0">
         {!isPopout && !isMobile && (
           <button

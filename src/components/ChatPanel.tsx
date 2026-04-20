@@ -8,11 +8,11 @@ import ChatMessages from './chat/ChatMessages'
 import ChatComposer from './chat/ChatComposer'
 import ChatClearConfirm from './chat/ChatClearConfirm'
 import { groupMessages } from './chat/groupMessages'
-import { prepareImage, ImageTooLargeError } from '../utils/chatImage'
 import { useChatPanelState } from '../hooks/useChatPanelState'
 import { useChatInteraction, type ImagePreview, type ReplyTo } from '../hooks/useChatInteraction'
 import { usePopout } from '../hooks/usePopout'
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder'
+import { useChatDropAndPaste } from '../hooks/useChatDropAndPaste'
 import { ChatMessage } from '../types'
 
 const POPOUT_DEFAULT = { w: 384, h: 600 }
@@ -51,7 +51,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const [micError, setMicError] = useState<string | null>(null)
   const [nameSaved, setNameSaved] = useState(false)
 
-  const chatBlobUrlsRef = useRef<string[]>([])
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const prevLen = useRef(messages.length)
   // Messages mirror so the alert effect can read latest items without
@@ -65,17 +64,12 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const menuRef = useRef<HTMLDivElement | null>(null)
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null)
 
-  const createTrackedBlobUrl = useCallback((blob: Blob): string => {
-    const url = URL.createObjectURL(blob)
-    chatBlobUrlsRef.current.push(url)
-    return url
-  }, [])
-
-  useEffect(() => {
-    return () => {
-      chatBlobUrlsRef.current.forEach(url => URL.revokeObjectURL(url))
-    }
-  }, [])
+  const { createTrackedBlobUrl, handleDrop, handleImagePick } = useChatDropAndPaste({
+    enabled: open && !disabled,
+    onImage: (img) => dispatchInteract({ type: 'SET', payload: { imagePreview: img } }),
+    onError: (msg) => showTransientMicError(msg),
+    onDropError: (msg) => showTransientDropError(msg),
+  })
 
   useEffect(() => {
     if (nickname) setEditName(nickname)
@@ -238,30 +232,11 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     setTimeout(() => dispatchInteract({ type: 'SET', payload: { dropError: null } }), DROP_ERROR_HIDE_MS)
   }
 
-  const handleImageFile = useCallback(async (file: File) => {
-    try {
-      const img = await prepareImage(file, createTrackedBlobUrl)
-      dispatchInteract({ type: 'SET', payload: { imagePreview: img } })
-    } catch (err) {
-      if (err instanceof ImageTooLargeError) {
-        showTransientDropError(err.message)
-        return
-      }
-      console.warn('Image drop/paste failed:', err)
-      showTransientMicError('Could not process image.')
-    }
-  }, [createTrackedBlobUrl])
-
-  function handleDrop(e: React.DragEvent<HTMLFormElement>) {
-    e.preventDefault()
+  // Drop handler clears the drag-over flag in addition to delegating to the
+  // shared image pipeline.
+  function onComposerDrop(e: React.DragEvent<HTMLFormElement>): void {
     dispatchInteract({ type: 'SET', payload: { isDragOver: false } })
-    const files = Array.from(e.dataTransfer?.files || [])
-    const file = files.find(f => f.type.startsWith('image/'))
-    if (file) {
-      void handleImageFile(file)
-    } else if (files.length > 0) {
-      showTransientDropError('Only images are supported in chat')
-    }
+    handleDrop(e)
   }
 
   // Voice recorder hook owns the MediaRecorder lifecycle. We pass clips
@@ -284,37 +259,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     dispatchInteract({ type: 'CLEAR_SEND' })
     textInputRef.current?.focus()
   }
-
-  async function handleImagePick(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file || !file.type.startsWith('image/')) return
-    e.target.value = ''
-    try {
-      const img = await prepareImage(file, createTrackedBlobUrl)
-      dispatchInteract({ type: 'SET', payload: { imagePreview: img } })
-    } catch (err) {
-      if (err instanceof ImageTooLargeError) {
-        showTransientDropError(err.message)
-        return
-      }
-      console.warn('Image processing failed:', err)
-      showTransientMicError('Could not process image. Try a different file.')
-    }
-  }
-
-  useEffect(() => {
-    if (!open || disabled) return
-    function handlePaste(e: ClipboardEvent) {
-      const item = Array.from(e.clipboardData?.items || []).find(i => i.type.startsWith('image/'))
-      if (!item) return
-      e.preventDefault()
-      const file = item.getAsFile()
-      if (!file) return
-      void handleImageFile(file)
-    }
-    window.addEventListener('paste', handlePaste)
-    return () => window.removeEventListener('paste', handlePaste)
-  }, [open, disabled, handleImageFile])
 
   const nameChanged = !!(editName.trim() && editName.trim() !== nickname)
 
@@ -519,7 +463,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
               onSubmit={handleSend}
               isDragOver={isDragOver}
               setIsDragOver={(v) => dispatchInteract({ type: 'SET', payload: { isDragOver: v } })}
-              onDrop={handleDrop}
+              onDrop={onComposerDrop}
               imagePreview={imagePreview}
               clearImagePreview={clearImagePreview}
               replyTo={replyTo}
