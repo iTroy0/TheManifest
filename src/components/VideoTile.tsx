@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { MicOff, User, VideoOff, Maximize2, Minimize2, Maximize, PictureInPicture2, Volume2, VolumeX, MonitorUp } from 'lucide-react'
+import { MicOff, User, VideoOff, Maximize2, Minimize2, Maximize, PictureInPicture2, Volume2, VolumeX, MonitorUp, RefreshCw, WifiOff } from 'lucide-react'
 
 interface VideoTileProps {
   stream: MediaStream | null
@@ -25,6 +25,13 @@ interface VideoTileProps {
   // caption row renders a MonitorUp badge so viewers can tell the tile
   // apart from a camera tile at a glance.
   screenShare?: boolean
+  // True once the peer has been in "Connecting…" past the configured
+  // timeout with no stream. Swaps the neutral spinner overlay for a
+  // warning state with a Retry affordance. Mutually exclusive with the
+  // normal connecting state: when `unreachable` is true, the tile renders
+  // the unreachable overlay whether `connecting` is true or not.
+  unreachable?: boolean
+  onRetry?: () => void
 }
 
 // Clamp the container's aspect ratio so an unusual source can't produce a
@@ -44,7 +51,7 @@ type WebkitVideoExtras = {
   webkitDisplayingFullscreen?: boolean
 }
 
-export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus, volume = 1, level = 0, mutedForMe = false, onToggleMutedForMe, screenShare = false }: VideoTileProps) {
+export default function VideoTile({ stream, name, self = false, micMuted = false, cameraOff = false, connecting = false, focused = false, mini = false, onToggleFocus, volume = 1, level = 0, mutedForMe = false, onToggleMutedForMe, screenShare = false, unreachable = false, onRetry }: VideoTileProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [srcAspect, setSrcAspect] = useState<number>(16 / 9)
@@ -417,7 +424,24 @@ export default function VideoTile({ stream, name, self = false, micMuted = false
         </div>
       )}
 
-      {connecting && (
+      {unreachable ? (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/70 backdrop-blur-sm px-2 text-center">
+          <WifiOff className="w-4 h-4 text-warning" aria-hidden="true" />
+          <div className="font-mono text-[10px] text-warning">Peer unreachable</div>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRetry() }}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-accent/15 hover:bg-accent/25 border border-accent/30 text-accent font-mono text-[10px] transition-colors"
+              aria-label="Retry connection"
+              title="Retry connection"
+            >
+              <RefreshCw className="w-3 h-3" />
+              Retry
+            </button>
+          )}
+        </div>
+      ) : connecting && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="font-mono text-[10px] text-muted">Connecting…</div>
         </div>

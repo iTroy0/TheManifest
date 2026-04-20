@@ -21,6 +21,11 @@ type VideoTileInfo = {
   cameraOff: boolean
   connecting: boolean
   screenShare: boolean
+  // Camera tiles only: true once the peer has sat past the connect timeout
+  // without a stream. Screen tiles ride a separate mc with its own
+  // lifecycle, so the unreachable flag would be misleading there.
+  unreachable: boolean
+  onRetry?: () => void
 }
 
 interface VideoTileGridProps {
@@ -67,6 +72,7 @@ export default function VideoTileGrid({
       cameraOff: call.cameraOff,
       connecting: false,
       screenShare: false,
+      unreachable: false,
     })
   }
   if (showLocalScreen) {
@@ -79,9 +85,11 @@ export default function VideoTileGrid({
       cameraOff: false,
       connecting: false,
       screenShare: true,
+      unreachable: false,
     })
   }
   videoRemotes.forEach(p => {
+    const isUnreachable = call.unreachablePeers.has(p.peerId)
     videoTiles.push({
       id: p.peerId,
       isSelf: false,
@@ -91,6 +99,8 @@ export default function VideoTileGrid({
       cameraOff: p.cameraOff,
       connecting: !p.stream,
       screenShare: false,
+      unreachable: isUnreachable,
+      onRetry: isUnreachable ? () => call.retryPeer(p.peerId) : undefined,
     })
   })
   screenSharingRemotes.forEach(p => {
@@ -103,6 +113,7 @@ export default function VideoTileGrid({
       cameraOff: false,
       connecting: !p.screenStream,
       screenShare: true,
+      unreachable: false,
     })
   })
 
@@ -177,6 +188,8 @@ export default function VideoTileGrid({
                 mini={isMini}
                 onToggleFocus={isFocused ? onUnfocus : () => onFocusToggle(v.id)}
                 screenShare={v.screenShare}
+                unreachable={v.unreachable}
+                onRetry={v.onRetry}
               />
             </div>
           )

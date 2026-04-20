@@ -9,6 +9,7 @@ import {
 } from '../utils/callTabClaim'
 import { getPeerConnection, getEmitterOff } from '../net/peerjsInternal'
 import { preferVp9OnPc, tuneScreenSendersOnPc, tuneCameraSendersOnPc, forceKeyframeOnPc } from '../net/callTuning'
+import { PEER_CONNECT_TIMEOUT_MS } from '../net/config'
 
 export type CallMode = 'audio' | 'video'
 
@@ -240,6 +241,16 @@ export function useCall(options: UseCallOptions) {
   const joinedRef = useRef<boolean>(false)
   const modeRef = useRef<LocalMediaMode>('none')
   const rosterRef = useRef<Map<string, RemotePeer>>(new Map())
+  // First-seen timestamp per peer, consulted by the unreachable-timeout
+  // effect. We don't clear this when the peer's stream eventually arrives
+  // — the value is only read for peers with a null stream. Cleared when
+  // the peer leaves the roster entirely, or reset by an explicit retry.
+  const rosterAddedAtRef = useRef<Map<string, number>>(new Map())
+  // Monotonic counter incremented on a timer while any peer is still
+  // connecting. Drives re-derivation of `unreachable` so the tile can flip
+  // from "Connecting…" to "Peer unreachable" without us having to mutate
+  // state directly. Stopped when every peer has a stream.
+  const [connectingTick, setConnectingTick] = useState<number>(0)
   const myNameRef = useRef<string>(myName)
   const localStreamRef = useRef<MediaStream | null>(localMedia.stream)
   // Mirrors localMedia.micMuted so effects can read the current value
@@ -385,6 +396,12 @@ export function useCall(options: UseCallOptions) {
   useEffect(() => { hostPeerIdRef.current = hostPeerId }, [hostPeerId])
 
   const upsertRoster = useCallback((peerId: string, patch: Partial<RemotePeer>): void => {
+    // Mark first-seen timestamp so the unreachable-timeout effect can fire.
+    // StrictMode invokes this twice; the `has` guard keeps the original
+    // timestamp, so the second render doesn't reset the clock.
+    if (!rosterAddedAtRef.current.has(peerId)) {
+      rosterAddedAtRef.current.set(peerId, Date.now())
+    }
     setRoster(prev => {
       const next = new Map(prev)
       const existing = next.get(peerId)
@@ -411,6 +428,7 @@ export function useCall(options: UseCallOptions) {
       return next
     })
     lastTrackStateAtRef.current.delete(peerId)
+    rosterAddedAtRef.current.delete(peerId)
   }, [])
 
   const clearRetryState = useCallback((peerId: string): void => {
@@ -438,6 +456,34 @@ export function useCall(options: UseCallOptions) {
   }, [roster, mode])
 
   const overSoftVideoCap = videoTileCount > SOFT_VIDEO_CAP
+
+  // Unreachable timeout: if a peer sits in the roster with no stream for
+  // longer than PEER_CONNECT_TIMEOUT_MS, surface a "Peer unreachable"
+  // affordance on their tile so the UI stops lying about the connection
+  // being in-flight. Uses a 1 Hz tick gated on "is anyone still waiting"
+  // so we don't spin a timer during a fully-connected call.
+  useEffect(() => {
+    const anyWaiting = Array.from(roster.values()).some(p => !p.stream)
+    if (!anyWaiting) return
+    const id = setInterval(() => {
+      setConnectingTick(t => t + 1)
+    }, 1_000)
+    return () => clearInterval(id)
+  }, [roster])
+
+  const unreachablePeers = useMemo<Set<string>>(() => {
+    const out = new Set<string>()
+    const now = Date.now()
+    roster.forEach((p, pid) => {
+      if (p.stream) return
+      const addedAt = rosterAddedAtRef.current.get(pid) ?? now
+      if (now - addedAt >= PEER_CONNECT_TIMEOUT_MS) out.add(pid)
+    })
+    return out
+    // `connectingTick` is intentional: it's the re-derivation trigger even
+    // though `roster` alone wouldn't change after the initial add.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roster, connectingTick])
 
   // Ref to the latest `callPeerWithStream` so the retry timer scheduled
   // inside `mc.on('error')` can re-invoke it without capturing a stale
@@ -1591,6 +1637,27 @@ export function useCall(options: UseCallOptions) {
     }
   }, [peer, localMediaStop])
 
+  // Manual retry for a peer whose camera mc never opened (or opened but
+  // never fired `stream`). Closes any stale camera mc, resets the first-
+  // seen timestamp so the unreachable timeout starts from zero, bumps the
+  // tick so the tile flips back to "Connecting…" on the next derivation,
+  // then re-dials the peer with the current camera publish stream. The
+  // screen mc is untouched — it lives in `screenMediaConnsRef`.
+  const retryPeer = useCallback((peerId: string): void => {
+    const existing = mediaConnsRef.current.get(peerId)
+    if (existing) { try { existing.close() } catch {} }
+    mediaConnsRef.current.delete(peerId)
+    clearRetryState(peerId)
+    rosterAddedAtRef.current.set(peerId, Date.now())
+    setConnectingTick(t => t + 1)
+    const stream = getCameraPublishStream() ?? localStreamRef.current
+    if (!stream) return
+    const baseMode = modeRef.current
+    if (baseMode === 'none') return
+    const fn = callPeerWithStreamRef.current
+    fn?.(peerId, stream, baseMode as CallMode)
+  }, [clearRetryState, getCameraPublishStream])
+
   return {
     joined,
     joining,
@@ -1603,6 +1670,8 @@ export function useCall(options: UseCallOptions) {
     videoTileCount,
     overSoftVideoCap,
     softVideoCap: SOFT_VIDEO_CAP,
+    unreachablePeers,
+    retryPeer,
     join,
     leave,
     toggleMic,

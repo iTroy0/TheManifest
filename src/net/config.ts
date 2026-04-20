@@ -69,6 +69,15 @@ export const FILE_SHARE_WINDOW_MS = 1_000
 // relay-fallback prompt.
 export const DIRECT_FAIL_WINDOW_MS = 10_000
 
+// How long a remote call peer is allowed to stay in "Connecting…" before
+// we flip their tile to "Peer unreachable" with a Retry affordance. Covers
+// the window between the peer joining our roster and their MediaConnection
+// emitting its first 'stream' event. TURN negotiation on a cold start
+// typically completes inside a few seconds; 10 s is a conservative upper
+// bound that still feels "stuck" to a human waiting for the call to
+// actually begin.
+export const PEER_CONNECT_TIMEOUT_MS = 10_000
+
 // Max `call-*` messages buffered on a hook while CallPanel's useCall has
 // not yet registered its handler (React.lazy chunk still loading). Drops
 // oldest when exceeded so a compromised peer can't grow memory without
