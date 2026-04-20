@@ -1,31 +1,11 @@
-import { useState, useEffect, useRef, useCallback, useMemo, type ComponentProps } from 'react'
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera, AlertTriangle, Loader2, RefreshCw, X, WifiOff, MonitorUp, MonitorOff, AudioLines } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { Phone, Minimize2, ExternalLink, ChevronDown } from 'lucide-react'
 import { UseCallReturn } from '../hooks/useCall'
 import { useViewport } from '../hooks/useViewport'
 import { usePopout } from '../hooks/usePopout'
-import { useSpeakingLevels, useSpeakingLevel, StreamEntry, SpeakingLevels } from '../hooks/useSpeakingLevels'
-import { ensureAudioContextRunning } from '../utils/audioContext'
-import VideoTile from './VideoTile'
-import AudioTile from './AudioTile'
-
-// H12: subscriber wrappers so a per-tile speaking-level update only re-renders
-// that one tile. Before this, `useSpeakingLevels` set React state on
-// CallPanel ~8×/sec which cascaded to every VideoTile + AudioTile child
-// (~160 tile renders/sec at 20 peers in audio mode). Each wrapper subscribes
-// to its own id via `useSpeakingLevel`; a level change on peer A leaves
-// peers B-T's tiles untouched.
-type VideoTileBaseProps = Omit<ComponentProps<typeof VideoTile>, 'level'>
-type AudioTileBaseProps = Omit<ComponentProps<typeof AudioTile>, 'level'>
-
-function LeveledVideoTile({ controller, levelId, ...rest }: VideoTileBaseProps & { controller: SpeakingLevels; levelId: string }) {
-  const level = useSpeakingLevel(controller, levelId)
-  return <VideoTile {...rest} level={level} />
-}
-
-function LeveledAudioTile({ controller, levelId, ...rest }: AudioTileBaseProps & { controller: SpeakingLevels; levelId: string }) {
-  const level = useSpeakingLevel(controller, levelId)
-  return <AudioTile {...rest} level={level} />
-}
+import { useSpeakingLevels, StreamEntry } from '../hooks/useSpeakingLevels'
+import CallPreJoin from './call/CallPreJoin'
+import CallActive from './call/CallActive'
 
 // Loose union — three different parent hooks (sender / receiver / collab)
 // supply their own status unions, so we accept `string` as an escape hatch
@@ -188,15 +168,9 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
   }, [call.remotePeers, manualFocusId])
 
   const remotePeers = call.remotePeers
-  // Camera/audio tiles track the main mc; screen tiles track the dedicated
-  // screen mc. A peer can show up in both (camera on + sharing) as two
-  // separate tiles — receivers no longer get their screen track hot-swapped
-  // into the camera tile, which was stalling the decoder mid-session.
-  const videoRemotes = remotePeers.filter(p => p.mode === 'video')
-  const screenSharingRemotes = remotePeers.filter(p => !!p.screenStream)
+  // Audio tile strip: peers who aren't sending video and aren't sharing
+  // screen. Camera + screen derivations live inside VideoTileGrid.
   const audioRemotes = remotePeers.filter(p => p.mode !== 'video' && !p.screenStream)
-  const showLocalCamera: boolean = call.mode === 'video'
-  const showLocalScreen: boolean = call.screenSharing
 
   // Speaking levels: one shared analyser graph drives every tile's pulse.
   const speakingEntries: StreamEntry[] = useMemo(() => {
@@ -212,501 +186,21 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
 
   const speakingLevels = useSpeakingLevels(speakingEntries)
 
-
-  // ── Pre-join screen ────────────────────────────────────────────────────
-
-  const renderPreJoin = (): React.ReactElement => {
-    const lastReason = call.endReason
-    // U1: skip the banner for explicit user leaves — users who just tapped
-    // Leave know they left; surfacing it again is noise.
-    const showEndReason = lastReason !== null && lastReason !== 'user-left'
-    return (
-    <div className="flex flex-col items-center justify-center gap-5 py-6 px-4 text-center">
-      <div className="w-14 h-14 rounded-2xl glass-accent flex items-center justify-center">
-        <Phone className="w-6 h-6 text-accent" strokeWidth={1.75} />
-      </div>
-      <div>
-        <p className="font-mono text-sm text-text font-medium">Start a call</p>
-        <p className="font-mono text-[10px] text-muted mt-1">Mic on, camera off — toggle anytime.</p>
-      </div>
-
-      {showEndReason && lastReason && (
-        <div className="flex items-start gap-2 max-w-[300px] w-full bg-surface-2/60 border border-border rounded-lg px-3 py-2 text-left">
-          <div className="shrink-0 mt-0.5">
-            {lastReason === 'connection-lost' && <WifiOff className="w-3.5 h-3.5 text-warning" />}
-            {lastReason === 'rejected' && <AlertTriangle className="w-3.5 h-3.5 text-danger" />}
-            {lastReason === 'host-ended' && <PhoneOff className="w-3.5 h-3.5 text-muted" />}
-            {lastReason === 'error' && <AlertTriangle className="w-3.5 h-3.5 text-danger" />}
-          </div>
-          <p className="flex-1 font-mono text-[10px] text-muted leading-relaxed">
-            {endReasonLabel(lastReason)}
-          </p>
-          <button
-            type="button"
-            onClick={call.dismissEndReason}
-            className="shrink-0 text-muted/60 hover:text-muted transition-colors"
-            aria-label="Dismiss"
-          >
-            <X className="w-3 h-3" />
-          </button>
-        </div>
-      )}
-
-      {call.error && (
-        <div className="flex items-start gap-2 max-w-[300px] w-full bg-danger/10 border border-danger/30 rounded-lg px-3 py-2 text-left">
-          <AlertTriangle className="w-3.5 h-3.5 text-danger shrink-0 mt-0.5" />
-          <p className="flex-1 font-mono text-[10px] text-danger leading-relaxed">{call.error.message}</p>
-          <button
-            type="button"
-            onClick={call.dismissError}
-            className="shrink-0 text-danger/60 hover:text-danger transition-colors"
-            aria-label="Dismiss error"
-          >
-            <X className="w-3 h-3" />
-          </button>
-        </div>
-      )}
-
-      <button
-        type="button"
-        onClick={() => { ensureAudioContextRunning(); void call.join() }}
-        disabled={disabled || call.joining || isConnectionDead || isReconnecting}
-        // U7/U8: explain WHY the button is unavailable so the user isn't
-        // staring at a dead button wondering what went wrong.
-        title={joinDisabledTooltip(disabled, call.joining, isConnectionDead, isReconnecting)}
-        className="w-full max-w-[260px] flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-accent/15 hover:bg-accent/25 border border-accent/30 text-accent font-mono text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
-      >
-        {call.joining ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
-        {call.joining ? 'Joining…' : 'Join Call'}
-      </button>
-
-      {/* U6: pre-join status line reflects the true transport state. */}
-      <p className="font-mono text-[10px] text-muted/60">
-        {isReconnecting
-          ? 'Reconnecting…'
-          : isConnectionDead
-          ? 'Connection closed'
-          : remotePeers.length > 0
-          ? `${remotePeers.length} already in call`
-          : 'No one is in the call yet'}
-      </p>
-    </div>
-    )
-  }
-
-  // ── Active call content ────────────────────────────────────────────────
-
-  const renderActive = (): React.ReactElement => {
-    type VideoTileInfo = {
-      id: string
-      isSelf: boolean
-      name: string
-      stream: MediaStream | null
-      micMuted: boolean
-      cameraOff: boolean
-      connecting: boolean
-      screenShare: boolean
-    }
-    const videoTiles: VideoTileInfo[] = []
-    if (showLocalCamera) {
-      videoTiles.push({
-        id: 'self',
-        isSelf: true,
-        name: myName,
-        stream: call.localStream,
-        micMuted: call.micMuted,
-        cameraOff: call.cameraOff,
-        connecting: false,
-        screenShare: false,
-      })
-    }
-    if (showLocalScreen) {
-      videoTiles.push({
-        id: 'self:screen',
-        isSelf: true,
-        name: `${myName} (screen)`,
-        stream: call.screenStream,
-        micMuted: call.micMuted,
-        cameraOff: false,
-        connecting: false,
-        screenShare: true,
-      })
-    }
-    videoRemotes.forEach(p => {
-      videoTiles.push({
-        id: p.peerId,
-        isSelf: false,
-        name: p.name,
-        stream: p.stream,
-        micMuted: p.micMuted,
-        cameraOff: p.cameraOff,
-        connecting: !p.stream,
-        screenShare: false,
-      })
-    })
-    screenSharingRemotes.forEach(p => {
-      videoTiles.push({
-        id: `${p.peerId}:screen`,
-        isSelf: false,
-        name: `${p.name} (screen)`,
-        stream: p.screenStream,
-        micMuted: p.micMuted,
-        cameraOff: false,
-        connecting: !p.screenStream,
-        screenShare: true,
-      })
-    })
-    const focusedTile: VideoTileInfo | null = manualFocusId
-      ? videoTiles.find(v => v.id === manualFocusId) ?? null
-      : null
-
-    // P3: precompute the mini-tile index in a single O(n) pass instead of
-    // doing an O(n) filter+findIndex inside every map iteration below.
-    const miniIndexById = new Map<string, number>()
-    if (focusedTile) {
-      let i = 0
-      for (const t of videoTiles) {
-        if (t.id !== focusedTile.id) {
-          miniIndexById.set(t.id, i++)
-        }
-      }
-    }
-
-    const handleFocusToggle = (id: string): void => {
-      setManualFocusId(prev => prev === id ? null : id)
-    }
-    const handleUnfocus = (): void => {
-      setManualFocusId(null)
-    }
-
-    return (
-    <div className="flex flex-col flex-1 min-h-0">
-      {/* Screen-share banner — reassures the sharer that the capture is
-          live and gives a one-tap exit without hunting for the toolbar. */}
-      {call.screenSharing && (
-        <div className="px-3 pt-2">
-          <div className="flex items-center gap-2 rounded-lg bg-accent/10 border border-accent/30 px-3 py-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" aria-hidden="true" />
-            <MonitorUp className="w-3.5 h-3.5 text-accent shrink-0" />
-            <p className="font-mono text-[10px] text-accent flex-1">
-              You&apos;re sharing your screen
-            </p>
-            <button
-              type="button"
-              onClick={() => call.stopScreenShare()}
-              className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md bg-danger/90 hover:bg-danger text-white font-mono text-[10px] transition-colors"
-              aria-label="Stop screen share"
-              title="Stop sharing"
-            >
-              <MonitorOff className="w-3 h-3" />
-              Stop
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Reconnect banner — visible whenever the underlying transport is
-          flailing. Doesn't block the call UI; the audio that is still up
-          keeps playing. */}
-      {isReconnecting && (
-        <div className="px-3 pt-2">
-          <div className="flex items-center gap-2 rounded-lg bg-warning/10 border border-warning/30 px-3 py-2">
-            <RefreshCw className="w-3.5 h-3.5 text-warning animate-spin shrink-0" />
-            <p className="font-mono text-[10px] text-warning flex-1">
-              Reconnecting to {connectionStatus === 'retrying' ? 'host' : 'session'}…
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Soft cap warning — informational, dismissible per surge. */}
-      {call.overSoftVideoCap && !softCapDismissed && (
-        <div className="px-3 pt-2">
-          <div className="flex items-center gap-2 rounded-lg bg-info/10 border border-info/30 px-3 py-2">
-            <AlertTriangle className="w-3.5 h-3.5 text-info shrink-0" />
-            <p className="font-mono text-[10px] text-info/90 flex-1">
-              {call.videoTileCount} video tiles — bandwidth may suffer above {call.softVideoCap}.
-            </p>
-            <button
-              type="button"
-              onClick={() => setSoftCapDismissed(true)}
-              className="shrink-0 text-info/70 hover:text-info transition-colors"
-              aria-label="Dismiss bandwidth warning"
-              title="Dismiss"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {videoTiles.length > 0 && (
-        <div className="px-3 pt-3 pb-2">
-          {/* Unified, stable render tree: every VideoTile instance stays
-              mounted across focus changes, the wrapper's style is swapped
-              instead of swapping parent divs. Keeping the underlying
-              <video> element alive is what stops the local preview from
-              freezing on mobile when the user taps between tiles quickly. */}
-          <div
-            className={focusedTile ? 'relative' : 'grid gap-2 items-center'}
-            style={focusedTile ? undefined : {
-              gridTemplateColumns: videoTiles.length === 1 ? '1fr' : 'repeat(auto-fit, minmax(240px, 1fr))',
-            }}
-          >
-            {videoTiles.map(v => {
-              const isFocused = focusedTile?.id === v.id
-              const isMini = !!focusedTile && !isFocused
-              const miniIdx = isMini ? (miniIndexById.get(v.id) ?? -1) : -1
-              // Mini tile layout: width 96px, height ≈ 54 (16/9), vertical
-              // footprint 60px (tile + gap). Wrap to a new column every
-              // MINI_PER_COL tiles so a crowded focus view doesn't escape
-              // the parent's vertical bounds.
-              const MINI_PER_COL = 4
-              const miniCol = isMini ? Math.floor(miniIdx / MINI_PER_COL) : 0
-              const miniRow = isMini ? miniIdx % MINI_PER_COL : 0
-              const wrapperStyle: React.CSSProperties | undefined = focusedTile
-                ? (isFocused
-                    ? { position: 'relative', zIndex: 1, width: '100%' }
-                    : {
-                        position: 'absolute',
-                        top: `${8 + miniRow * 60}px`,
-                        left: `${8 + miniCol * 104}px`,
-                        width: '96px',
-                        zIndex: 10,
-                      })
-                : undefined
-              return (
-                <div key={v.id} style={wrapperStyle}>
-                  <LeveledVideoTile
-                    controller={speakingLevels}
-                    levelId={v.id}
-                    stream={v.stream}
-                    name={v.name}
-                    self={v.isSelf}
-                    micMuted={v.micMuted}
-                    cameraOff={v.cameraOff}
-                    connecting={v.connecting}
-                    volume={v.isSelf ? 1 : volume}
-                    mutedForMe={!v.isSelf && mutedForMe.has(v.id)}
-                    onToggleMutedForMe={v.isSelf ? undefined : () => togglePeerMute(v.id)}
-                    focused={isFocused}
-                    mini={isMini}
-                    onToggleFocus={isFocused ? handleUnfocus : () => handleFocusToggle(v.id)}
-                    screenShare={v.screenShare}
-                  />
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-2">
-        <div className="grid grid-cols-2 sm:grid-cols-2 gap-1.5">
-          {call.mode === 'audio' && (
-            <LeveledAudioTile
-              controller={speakingLevels}
-              levelId="self"
-              stream={call.localStream}
-              name={myName}
-              self
-              micMuted={call.micMuted}
-            />
-          )}
-          {audioRemotes.map(p => (
-            <LeveledAudioTile
-              key={p.peerId}
-              controller={speakingLevels}
-              levelId={p.peerId}
-              stream={p.stream}
-              name={p.name}
-              micMuted={p.micMuted}
-              volume={volume}
-              mutedForMe={mutedForMe.has(p.peerId)}
-              onToggleMutedForMe={() => togglePeerMute(p.peerId)}
-            />
-          ))}
-        </div>
-        {remotePeers.length === 0 && (
-          <p className="font-mono text-[10px] text-muted/60 text-center py-6">
-            Waiting for others to join…
-          </p>
-        )}
-      </div>
-
-      {call.error && (
-        <div className="px-3 pb-2">
-          <div className="flex items-start gap-2 rounded-lg bg-danger/10 border border-danger/30 px-3 py-2">
-            <AlertTriangle className="w-3.5 h-3.5 text-danger shrink-0 mt-0.5" />
-            <p className="flex-1 font-mono text-[10px] text-danger">{call.error.message}</p>
-            <button
-              type="button"
-              onClick={call.dismissError}
-              className="shrink-0 text-danger/60 hover:text-danger transition-colors"
-              aria-label="Dismiss"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {call.screenShareError && (
-        <div className="px-3 pb-2">
-          <div className="flex items-start gap-2 rounded-lg bg-warning/10 border border-warning/30 px-3 py-2">
-            <MonitorOff className="w-3.5 h-3.5 text-warning shrink-0 mt-0.5" />
-            <p className="flex-1 font-mono text-[10px] text-warning">{call.screenShareError.message}</p>
-            <button
-              type="button"
-              onClick={call.dismissScreenShareError}
-              className="shrink-0 text-warning/60 hover:text-warning transition-colors"
-              aria-label="Dismiss screen share error"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {call.screenAudioShared && !echoWarningDismissed && (
-        <div className="px-3 pb-2">
-          <div className="flex items-start gap-2 rounded-lg bg-surface-2 border border-border px-3 py-2">
-            <p className="flex-1 font-mono text-[10px] text-muted-light">
-              Sharing tab audio. If the shared tab is playing another call, peers may hear themselves echoed back. Mute the shared tab or stop sharing audio to fix.
-            </p>
-            <button
-              type="button"
-              onClick={() => setEchoWarningDismissed(true)}
-              className="shrink-0 text-muted/60 hover:text-muted transition-colors"
-              aria-label="Dismiss echo warning"
-              title="Dismiss"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {call.aiNoiseError && (
-        <div className="px-3 pb-2">
-          <div className="flex items-start gap-2 rounded-lg bg-warning/10 border border-warning/30 px-3 py-2">
-            <p className="flex-1 font-mono text-[10px] text-warning">{call.aiNoiseError}</p>
-            <button
-              type="button"
-              onClick={call.dismissAiNoiseError}
-              className="shrink-0 text-warning/60 hover:text-warning transition-colors"
-              aria-label="Dismiss noise suppression error"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="border-t border-border bg-surface-2/40 px-3 py-2">
-        {/* Mobile: nowrap + horizontal scroll so Leave never orphans onto a
-            second row. Tablet+: wrap centered as before. */}
-        <div className="flex items-center gap-1.5 flex-nowrap overflow-x-auto scrollbar-none sm:flex-wrap sm:overflow-visible sm:justify-center">
-          <ControlButton
-            onClick={call.toggleMic}
-            title={call.micMuted ? 'Unmute' : 'Mute'}
-            icon={call.micMuted ? MicOff : Mic}
-            danger={call.micMuted}
-          />
-          <ControlButton
-            onClick={() => { void call.toggleAiNoiseSuppression() }}
-            title={
-              call.aiNoiseStarting
-                ? 'Loading noise suppression…'
-                : call.aiNoiseSuppression
-                  ? 'Noise suppression: ON (click to turn off)'
-                  : 'Noise suppression: OFF (click to turn on)'
-            }
-            icon={call.aiNoiseStarting ? Loader2 : AudioLines}
-            disabled={call.aiNoiseStarting}
-            spinning={call.aiNoiseStarting}
-            info={call.aiNoiseSuppression}
-            danger={!call.aiNoiseSuppression && !call.aiNoiseStarting}
-          />
-          <ControlButton
-            onClick={call.toggleCamera}
-            title={
-              call.cameraStarting ? 'Camera starting…'
-                : call.cameraOff ? 'Turn camera on' : 'Turn camera off'
-            }
-            icon={call.cameraStarting ? Loader2 : call.cameraOff ? VideoOff : Video}
-            danger={call.cameraOff}
-            disabled={call.cameraStarting}
-            spinning={call.cameraStarting}
-          />
-          {call.mode === 'video' && call.cameraDevices.length > 1 && (
-            <ControlButton
-              onClick={() => { void call.flipCamera() }}
-              title="Switch camera"
-              icon={SwitchCamera}
-            />
-          )}
-          {screenShareSupported ? (
-            <ControlButton
-              onClick={() => {
-                if (call.screenSharing) call.stopScreenShare()
-                else void call.startScreenShare()
-              }}
-              title={
-                call.screenShareStarting
-                  ? 'Starting screen share…'
-                  : call.screenSharing
-                    ? 'Stop sharing'
-                    : 'Share screen'
-              }
-              icon={call.screenShareStarting ? Loader2 : call.screenSharing ? MonitorOff : MonitorUp}
-              danger={call.screenSharing}
-              disabled={call.screenShareStarting}
-              spinning={call.screenShareStarting}
-            />
-          ) : (
-            <ControlButton
-              onClick={() => { /* not supported */ }}
-              title="Screen share is not supported in this browser"
-              icon={MonitorOff}
-              disabled
-            />
-          )}
-          <ControlButton
-            onClick={toggleSpeakerMute}
-            title={volume === 0 ? 'Unmute speakers' : 'Mute speakers'}
-            icon={volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2}
-            danger={volume === 0}
-          />
-          <ControlButton
-            onClick={() => setShowSettings(s => !s)}
-            title="Settings"
-            icon={Settings2}
-          />
-          <div className="w-px h-6 bg-border mx-1" />
-          <button
-            type="button"
-            onClick={() => call.leave('user-left')}
-            className="flex items-center gap-2 px-4 h-11 sm:h-9 rounded-lg bg-danger hover:bg-danger/90 text-white font-mono text-[11px] font-medium transition-all active:scale-[0.97] shadow-[0_0_0_1px_rgba(239,68,68,0.25)]"
-            title="Leave call"
-          >
-            <PhoneOff className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
-            Leave
-          </button>
-        </div>
-        {showSettings && (
-          <div className="mt-2 pt-2 border-t border-border/50 flex flex-col gap-2">
-            <VolumeRow volume={volume} onChange={handleVolumeChange} onToggleMute={toggleSpeakerMute} />
-            <DeviceRow label="Microphone" devices={call.micDevices} selectedId={call.selectedMicId} onSelect={(id) => { void call.selectMic(id) }} />
-            {call.mode === 'video' && (
-              <DeviceRow label="Camera" devices={call.cameraDevices} selectedId={call.selectedCameraId} onSelect={(id) => { void call.selectCamera(id) }} />
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-    )
-  }
+  const handleFocusToggle = useCallback((id: string): void => {
+    setManualFocusId(prev => prev === id ? null : id)
+  }, [])
+  const handleUnfocus = useCallback((): void => {
+    setManualFocusId(null)
+  }, [])
+  const handleToggleSettings = useCallback((): void => {
+    setShowSettings(s => !s)
+  }, [])
+  const handleDismissSoftCap = useCallback((): void => {
+    setSoftCapDismissed(true)
+  }, [])
+  const handleDismissEchoWarning = useCallback((): void => {
+    setEchoWarningDismissed(true)
+  }, [])
 
   // ── Panel header ───────────────────────────────────────────────────────
 
@@ -824,6 +318,43 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
 
   const popoutActive: boolean = isPopout && !isMobile
 
+  const body: React.ReactElement = call.joined
+    ? (
+      <CallActive
+        call={call}
+        myName={myName}
+        connectionStatus={connectionStatus}
+        isReconnecting={isReconnecting}
+        manualFocusId={manualFocusId}
+        onFocusToggle={handleFocusToggle}
+        onUnfocus={handleUnfocus}
+        speakingLevels={speakingLevels}
+        volume={volume}
+        onVolumeChange={handleVolumeChange}
+        onToggleSpeakerMute={toggleSpeakerMute}
+        mutedForMe={mutedForMe}
+        onTogglePeerMute={togglePeerMute}
+        softCapDismissed={softCapDismissed}
+        onDismissSoftCap={handleDismissSoftCap}
+        echoWarningDismissed={echoWarningDismissed}
+        onDismissEchoWarning={handleDismissEchoWarning}
+        showSettings={showSettings}
+        onToggleSettings={handleToggleSettings}
+        screenShareSupported={screenShareSupported}
+        audioRemotes={audioRemotes}
+        remotePeersCount={remotePeers.length}
+      />
+    )
+    : (
+      <CallPreJoin
+        call={call}
+        disabled={disabled}
+        isConnectionDead={isConnectionDead}
+        isReconnecting={isReconnecting}
+        remotePeersCount={remotePeers.length}
+      />
+    )
+
   return (
     <div
       ref={popout.elementRef}
@@ -847,133 +378,17 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
 
       {popoutActive ? (
         <div className="flex-1 min-h-0 flex flex-col">
-          {call.joined ? renderActive() : renderPreJoin()}
+          {body}
         </div>
       ) : (
         <div className={`grid transition-all duration-300 ease-in-out ${open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
           <div className="overflow-hidden min-h-0">
             <div className="flex flex-col">
-              {call.joined ? renderActive() : renderPreJoin()}
+              {body}
             </div>
           </div>
         </div>
       )}
     </div>
-  )
-}
-
-function endReasonLabel(reason: NonNullable<UseCallReturn['endReason']>): string {
-  switch (reason) {
-    case 'user-left': return 'You left the call.'
-    case 'host-ended': return 'The host ended the call.'
-    case 'connection-lost': return 'Call ended — connection lost.'
-    case 'rejected': return 'Call join was rejected.'
-    case 'error': return 'Call ended due to an error.'
-    default: return 'Call ended.'
-  }
-}
-
-function joinDisabledTooltip(disabled: boolean, joining: boolean, connectionDead: boolean, reconnecting: boolean): string | undefined {
-  if (joining) return 'Joining — check your browser permission prompt'
-  if (reconnecting) return 'Reconnecting to the session…'
-  if (connectionDead) return 'Connection closed — refresh the page to rejoin'
-  if (disabled) return 'Not available right now'
-  return undefined
-}
-
-interface ControlButtonProps {
-  icon: React.ComponentType<{ className?: string }>
-  onClick: () => void
-  title: string
-  danger?: boolean
-  disabled?: boolean
-  spinning?: boolean
-  // Renders the blue/info variant — used by toggles whose ON state is
-  // informational rather than destructive (e.g., noise suppression).
-  // Mutually exclusive with `danger`; if both are set, danger wins. When set
-  // (true or false), the button is announced as a two-state toggle via
-  // aria-pressed. Leave undefined for one-shot actions (e.g. Leave, Refresh).
-  info?: boolean
-}
-function ControlButton({ icon: Icon, onClick, title, danger = false, disabled = false, spinning = false, info }: ControlButtonProps) {
-  const tone =
-    danger
-      ? 'bg-danger/15 hover:bg-danger/25 text-danger ring-1 ring-danger/30'
-      : info
-        ? 'bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 ring-1 ring-blue-500/50'
-        : 'bg-accent/10 hover:bg-accent/20 text-accent ring-1 ring-accent/20'
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      aria-label={title}
-      aria-pressed={info === undefined ? undefined : info}
-      className={`flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 rounded-lg transition-all active:scale-[0.95] disabled:opacity-50 disabled:cursor-not-allowed ${tone}`}
-    >
-      <Icon className={`w-5 h-5 sm:w-4 sm:h-4 ${spinning ? 'animate-spin' : ''}`} />
-    </button>
-  )
-}
-
-interface VolumeRowProps {
-  volume: number
-  onChange: (v: number) => void
-  onToggleMute: () => void
-}
-function VolumeRow({ volume, onChange, onToggleMute }: VolumeRowProps) {
-  const Icon = volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2
-  const percent = Math.round(volume * 100)
-  return (
-    <div className="flex items-center gap-2">
-      <span className="font-mono text-[10px] text-muted w-[70px] shrink-0">Volume</span>
-      <button
-        type="button"
-        onClick={onToggleMute}
-        className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-accent hover:bg-accent/10 transition-colors"
-        aria-label={volume === 0 ? 'Unmute speakers' : 'Mute speakers'}
-        title={volume === 0 ? 'Unmute speakers' : 'Mute speakers'}
-      >
-        <Icon className="w-3.5 h-3.5" />
-      </button>
-      <input
-        type="range"
-        min={0}
-        max={100}
-        step={1}
-        value={percent}
-        onChange={(e) => onChange(Number(e.target.value) / 100)}
-        className="flex-1 min-w-0 accent-accent cursor-pointer"
-        aria-label="Remote volume"
-      />
-      <span className="font-mono text-[10px] text-muted w-9 text-right tabular-nums">{percent}%</span>
-    </div>
-  )
-}
-
-interface DeviceRowProps {
-  label: string
-  devices: MediaDeviceInfo[]
-  selectedId: string | null
-  onSelect: (id: string) => void
-}
-function DeviceRow({ label, devices, selectedId, onSelect }: DeviceRowProps) {
-  return (
-    <label className="flex items-center gap-2">
-      <span className="font-mono text-[10px] text-muted w-[70px] shrink-0">{label}</span>
-      <select
-        value={selectedId || (devices[0]?.deviceId || '')}
-        onChange={(e) => onSelect(e.target.value)}
-        className="flex-1 min-w-0 bg-bg border border-border rounded-md font-mono text-[10px] text-text px-2 py-1 focus:outline-none focus:border-accent/50 cursor-pointer truncate"
-      >
-        {devices.length === 0 && <option value="">No devices</option>}
-        {devices.map(d => (
-          <option key={d.deviceId} value={d.deviceId}>
-            {d.label || `${label} ${d.deviceId.slice(0, 6)}`}
-          </option>
-        ))}
-      </select>
-    </label>
   )
 }
