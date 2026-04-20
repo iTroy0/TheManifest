@@ -235,7 +235,7 @@ export default function Portal() {
         )}
 
         {showManifest && (
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] items-start">
+          <div className={isChatOnly ? 'max-w-[720px] mx-auto space-y-6' : 'grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] items-start'}>
             <div className="space-y-6 min-w-0">
               <div className="glow-card overflow-hidden animate-fade-in-up">
             <div className="px-4 py-3 space-y-2">
@@ -373,7 +373,7 @@ export default function Portal() {
               </div>
             </div>
 
-            <aside className="space-y-6 lg:sticky lg:top-6">
+            <div className={isChatOnly ? 'space-y-6' : 'space-y-6 lg:sticky lg:top-6'}>
               {!isDead && (
                 <ComponentErrorBoundary name="Call">
                   <CallPanelLazy
@@ -396,7 +396,7 @@ export default function Portal() {
               <ComponentErrorBoundary name="Chat">
                 <ChatPanel messages={messages} onSend={sendMessage} onClearMessages={clearMessages} disabled={isDead} nickname={nickname} onNicknameChange={changeNickname} onlineCount={onlineCount} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
               </ComponentErrorBoundary>
-            </aside>
+            </div>
           </div>
         )}
 

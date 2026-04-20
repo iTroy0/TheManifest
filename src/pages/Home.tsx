@@ -229,7 +229,7 @@ export default function Home() {
         )}
 
         {isActive && !isFinished && (
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] items-start">
+          <div className={chatMode ? 'max-w-[720px] mx-auto space-y-6' : 'grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] items-start'}>
             <div className="space-y-6 min-w-0">
             <input
               ref={addInputRef}
@@ -387,8 +387,8 @@ export default function Home() {
             </div>
             </div>
 
-            {(recipientCount > 0 || chatMode) && !isFinished ? (
-              <aside className="space-y-6 lg:sticky lg:top-6">
+            {peerId && !isFinished ? (
+              <div className={chatMode ? 'space-y-6' : 'space-y-6 lg:sticky lg:top-6'}>
                 <ComponentErrorBoundary name="Call">
                   <CallPanelLazy
                     callOptions={{
@@ -410,7 +410,7 @@ export default function Home() {
                 <ComponentErrorBoundary name="Chat">
                   <ChatPanel messages={messages} onSend={sendMessage} onClearMessages={clearMessages} disabled={recipientCount === 0} onlineCount={recipientCount + 1} nickname={senderName} onNicknameChange={changeSenderName} typingUsers={typingUsers} onTyping={sendTyping} onReaction={sendReaction} />
                 </ComponentErrorBoundary>
-              </aside>
+              </div>
             ) : null}
           </div>
         )}
