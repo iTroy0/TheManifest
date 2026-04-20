@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { ArrowLeft, Shield, EyeOff, Server, Globe, Mail, Database, type LucideIcon } from 'lucide-react'
+import Logo from '../components/Logo'
 import { usePageTitle } from '../hooks/usePageTitle'
 import AppFooter from '../components/AppFooter'
 
@@ -198,7 +199,7 @@ export default function Privacy() {
           <div className="flex items-center justify-between">
             <Link to="/" className="group flex items-center gap-3">
               <span className="relative inline-flex w-9 h-9 rounded-xl items-center justify-center glass-accent shrink-0">
-                <Shield className="w-4 h-4 text-accent" strokeWidth={2} />
+                <Logo className="w-5 h-5" />
                 <span className="absolute inset-0 rounded-xl bg-accent/10 blur-md -z-10" />
               </span>
               <span>

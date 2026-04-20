@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef, type ChangeEvent } from 'reac
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, Shield, Zap, EyeOff, RotateCcw, Upload, Link as LinkIcon, Send, ChevronDown, Eye, Lock, Users, MessagesSquare, Phone, Mic, Plus, Share2, type LucideIcon } from 'lucide-react'
+import Logo from '../components/Logo'
 import { useSender } from '../hooks/useSender'
 import { formatSpeed, formatTime, formatBytes } from '../utils/formatBytes'
 import { usePageTitle } from '../hooks/usePageTitle'
@@ -134,7 +135,7 @@ export default function Home() {
         <div className="max-w-5xl mx-auto px-6 py-5 flex items-center justify-between">
           <Link to="/" className="group flex items-center gap-3" onClick={isActive ? (e) => { e.preventDefault(); handleNewSession() } : undefined} aria-label="The Manifest — go to home">
             <span className="relative inline-flex w-9 h-9 rounded-xl items-center justify-center glass-accent shrink-0">
-              <Shield className="w-4 h-4 text-accent" strokeWidth={2} />
+              <Logo className="w-5 h-5" />
               <span className="absolute inset-0 rounded-xl bg-accent/10 blur-md -z-10" />
             </span>
             <span>

@@ -12,6 +12,7 @@ import AppFooter from '../components/AppFooter'
 import { ComponentErrorBoundary } from '../components/ErrorBoundary'
 import { useState, useEffect, type ChangeEvent } from 'react'
 import { ArrowLeft, AlertCircle, Download, Shield, Info, Radio, Wifi, Archive, Lock, ChevronDown, MessagesSquare, Loader2, Eye, EyeOff } from 'lucide-react'
+import Logo from '../components/Logo'
 
 export default function Portal() {
   const { peerId } = useParams<{ peerId: string }>()
@@ -85,7 +86,7 @@ export default function Portal() {
           <div className="flex items-center justify-between">
             <Link to="/" className="group flex items-center gap-3">
               <span className="relative inline-flex w-9 h-9 rounded-xl items-center justify-center glass-accent shrink-0">
-                <Shield className="w-4 h-4 text-accent" strokeWidth={2} />
+                <Logo className="w-5 h-5" />
                 <span className="absolute inset-0 rounded-xl bg-accent/10 blur-md -z-10" />
               </span>
               <span>
