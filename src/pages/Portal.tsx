@@ -28,6 +28,15 @@ export default function Portal() {
   const [passwordInput, setPasswordInput] = useState<string>('')
   const [passwordLoading, setPasswordLoading] = useState<boolean>(false)
   const [showPassword, setShowPassword] = useState<boolean>(false)
+  const [manifestSlow, setManifestSlow] = useState(false)
+
+  // Surface an escape hatch if the sender's manifest hasn't arrived after 15s.
+  useEffect(() => {
+    setManifestSlow(false)
+    if (status !== 'connected' || manifest) return
+    const t = setTimeout(() => setManifestSlow(true), 15_000)
+    return () => clearTimeout(t)
+  }, [status, manifest])
   const [filesOpen, setFilesOpen] = useState<boolean>(true)
   usePageTitle(status, overallProgress)
 
@@ -232,6 +241,17 @@ export default function Portal() {
             <Loader2 className="w-6 h-6 animate-spin text-accent mx-auto mb-3" />
             <p className="font-mono text-sm text-text mb-2">Connected. Setting up...</p>
             <p className="text-xs text-muted">Waiting for the sender to share their manifest.</p>
+            {manifestSlow && (
+              <div className="mt-4 space-y-3">
+                <p className="text-xs text-warning">Taking longer than expected. Ask the sender to re-share the link.</p>
+                <button
+                  onClick={() => window.location.reload()}
+                  className="px-4 py-2 rounded-xl font-mono text-xs bg-surface-2 border border-border hover:border-accent/30 text-muted-light hover:text-accent transition-colors"
+                >
+                  Reload
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -278,6 +298,7 @@ export default function Portal() {
                 <button
                   onClick={() => setFilesOpen(o => !o)}
                   aria-expanded={filesOpen}
+                  aria-controls="portal-files-panel"
                   className="w-full flex items-center justify-between px-4 py-3 text-left group"
                 >
                   <div className="flex items-center gap-2">
@@ -292,7 +313,7 @@ export default function Portal() {
                 </button>
 
                 {/* Collapsible body */}
-                <div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                <div id="portal-files-panel" className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                   <div className="overflow-hidden">
                     <div className="px-4 pb-4 space-y-3">
                       {(() => {

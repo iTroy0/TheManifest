@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { useState, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent } from 'react'
+import { useState, useRef, useCallback, useMemo, useEffect, type ChangeEvent, type DragEvent } from 'react'
 import {
   ArrowLeft,
   AlertCircle,
@@ -17,6 +17,8 @@ import {
   ChevronDown,
   Pencil,
   QrCode,
+  Eye,
+  EyeOff,
 } from 'lucide-react'
 import LazyQRCode from '../../components/LazyQRCode'
 import Logo from '../../components/Logo'
@@ -41,6 +43,15 @@ export default function CollabHostView() {
   const [filesExpanded, setFilesExpanded] = useState(true)
   const [editingName, setEditingName] = useState(false)
   const [nameInput, setNameInput] = useState(host.myName)
+  const [pendingKickPeerId, setPendingKickPeerId] = useState<string | null>(null)
+  const [showHostPassword, setShowHostPassword] = useState(false)
+
+  // Auto-clear pending kick after 4s so a stale "Confirm?" doesn't sit forever.
+  useEffect(() => {
+    if (!pendingKickPeerId) return
+    const t = setTimeout(() => setPendingKickPeerId(null), 4000)
+    return () => clearTimeout(t)
+  }, [pendingKickPeerId])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const shareLink = host.roomId ? `${window.location.origin}/collab/${host.roomId}` : ''
@@ -193,6 +204,7 @@ export default function CollabHostView() {
             <button
               onClick={() => setRoomExpanded(o => !o)}
               aria-expanded={roomExpanded}
+              aria-controls="host-room-panel"
               className="w-full flex items-center justify-between px-5 py-4 text-left group"
             >
               <div className="flex items-center gap-3">
@@ -205,7 +217,7 @@ export default function CollabHostView() {
               <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${roomExpanded ? 'rotate-180' : ''}`} />
             </button>
 
-            <div className={`grid transition-all duration-400 ease-in-out ${roomExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+            <div id="host-room-panel" className={`grid transition-all duration-400 ease-in-out ${roomExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
               <div className="overflow-hidden">
                 <div className="px-5 pb-4 border-t border-border pt-4">
                   <div className="flex items-center gap-2">
@@ -249,14 +261,24 @@ export default function CollabHostView() {
                       <>
                         {!isSet && !hasGuests && (
                           <div className="mt-3 flex items-center gap-2">
-                            <input
-                              type="password"
-                              aria-label="Set room password"
-                              placeholder="Set password (optional)"
-                              value={passwordInput}
-                              onChange={e => setPasswordInput(e.target.value)}
-                              className="flex-1 bg-bg border border-border rounded-xl px-4 py-3 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all"
-                            />
+                            <div className="relative flex-1">
+                              <input
+                                type={showHostPassword ? 'text' : 'password'}
+                                aria-label="Set room password"
+                                placeholder="Set password (optional)"
+                                value={passwordInput}
+                                onChange={e => setPasswordInput(e.target.value)}
+                                className="w-full bg-bg border border-border rounded-xl px-4 py-3 pr-11 font-mono text-sm text-text placeholder:text-muted/40 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 transition-all"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowHostPassword(v => !v)}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-accent transition-colors"
+                                aria-label={showHostPassword ? 'Hide password' : 'Show password'}
+                              >
+                                {showHostPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                              </button>
+                            </div>
                             <button
                               onClick={handlePasswordSet}
                               disabled={!passwordInput.trim()}
@@ -373,14 +395,25 @@ export default function CollabHostView() {
                             <Wifi className="w-3 h-3" />
                             <span className="font-mono text-[10px]">P2P</span>
                           </div>
-                          <button
-                            onClick={() => host.kickUser(p.peerId)}
-                            data-testid={`collab-kick-${p.peerId}`}
-                            className="p-1 rounded hover:bg-danger/10 text-muted hover:text-danger transition-colors"
-                            title="Remove from room"
-                          >
-                            <UserMinus className="w-3.5 h-3.5" />
-                          </button>
+                          {pendingKickPeerId === p.peerId ? (
+                            <button
+                              onClick={() => { host.kickUser(p.peerId); setPendingKickPeerId(null) }}
+                              data-testid={`collab-kick-${p.peerId}`}
+                              className="px-2 py-0.5 rounded font-mono text-[10px] bg-danger text-white hover:bg-danger/80 transition-colors"
+                              title="Click to confirm removal"
+                            >
+                              Confirm?
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => setPendingKickPeerId(p.peerId)}
+                              data-testid={`collab-kick-${p.peerId}-init`}
+                              className="p-1 rounded hover:bg-danger/10 text-muted hover:text-danger transition-colors"
+                              title="Remove from room"
+                            >
+                              <UserMinus className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -412,6 +445,7 @@ export default function CollabHostView() {
             <button
               onClick={() => setFilesExpanded(o => !o)}
               aria-expanded={filesExpanded}
+              aria-controls="host-files-panel"
               className="w-full flex items-center justify-between px-5 py-4 text-left group"
             >
               <div className="flex items-center gap-2">
@@ -424,7 +458,7 @@ export default function CollabHostView() {
               <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesExpanded ? 'rotate-180' : ''}`} />
             </button>
 
-            <div className={`grid transition-all duration-400 ease-in-out ${filesExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+            <div id="host-files-panel" className={`grid transition-all duration-400 ease-in-out ${filesExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
               <div className="overflow-hidden">
                 <div
                   onDrop={handleDrop}
@@ -452,6 +486,12 @@ export default function CollabHostView() {
                 </div>
 
                 <UploadsSummary uploads={host.uploads} />
+
+                {host.sharedFiles.length === 0 && (
+                  <p className="px-5 py-4 text-center font-mono text-xs text-muted border-t border-border">
+                    No files shared yet — drop files above to share with the room.
+                  </p>
+                )}
 
                 {host.sharedFiles.length > 0 && (
                   <div className="px-4 pb-4 border-t border-border pt-4">

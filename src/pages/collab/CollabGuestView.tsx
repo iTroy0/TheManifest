@@ -294,6 +294,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
             <button
               onClick={() => setRoomExpanded(o => !o)}
               aria-expanded={roomExpanded}
+              aria-controls="guest-room-panel"
               className="w-full flex items-center justify-between px-5 py-4 text-left group"
             >
               <div className="flex items-center gap-3">
@@ -304,7 +305,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
               <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${roomExpanded ? 'rotate-180' : ''}`} />
             </button>
 
-            <div className={`grid transition-all duration-400 ease-in-out ${roomExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+            <div id="guest-room-panel" className={`grid transition-all duration-400 ease-in-out ${roomExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
               <div className="overflow-hidden">
                 <div className="px-5 py-4 border-t border-border">
                   <div className="flex items-center justify-between mb-3">
@@ -384,6 +385,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
             <button
               onClick={() => setFilesExpanded(o => !o)}
               aria-expanded={filesExpanded}
+              aria-controls="guest-files-panel"
               className="w-full flex items-center justify-between px-5 py-4 text-left group"
             >
               <div className="flex items-center gap-2">
@@ -396,7 +398,7 @@ export default function CollabGuestView({ roomId }: { roomId: string }) {
               <ChevronDown className={`w-4 h-4 text-muted group-hover:text-accent transition-all duration-300 ${filesExpanded ? 'rotate-180' : ''}`} />
             </button>
 
-            <div className={`grid transition-all duration-400 ease-in-out ${filesExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+            <div id="guest-files-panel" className={`grid transition-all duration-400 ease-in-out ${filesExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
               <div className="overflow-hidden">
                 <div
                   onDrop={handleDrop}

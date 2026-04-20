@@ -598,7 +598,14 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
               icon={SwitchCamera}
             />
           )}
-          {!isMobile && (
+          {isMobile ? (
+            <ControlButton
+              onClick={() => { /* not supported on mobile */ }}
+              title="Screen share is not supported on mobile"
+              icon={MonitorOff}
+              disabled
+            />
+          ) : (
             <ControlButton
               onClick={() => {
                 if (call.screenSharing) call.stopScreenShare()

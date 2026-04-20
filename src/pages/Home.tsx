@@ -293,6 +293,7 @@ export default function Home() {
                           type="button"
                           onClick={() => setFilesOpen(o => !o)}
                           aria-expanded={filesOpen}
+                          aria-controls="home-files-panel"
                           className="flex items-center gap-2 text-left flex-1 min-w-0"
                         >
                           <Upload className="w-3.5 h-3.5 text-accent shrink-0" />
@@ -323,7 +324,7 @@ export default function Home() {
                           </button>
                         </div>
                       </div>
-                      <div className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                      <div id="home-files-panel" className={`grid transition-all duration-400 ease-in-out ${filesOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                         <div className="overflow-hidden">
                           <div className="px-4 pb-3">
                             <ComponentErrorBoundary name="Files">
