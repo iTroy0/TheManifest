@@ -531,7 +531,7 @@ function HowItWorks() {
     },
     {
       num: '3', icon: Eye, title: 'Recipient chooses',
-      desc: 'Recipients see files upfront and download individually or as a streaming zip.',
+      desc: 'Recipients see files upfront and download individually or as a zip archive.',
       details: [
         'Nothing downloads until they decide.',
         'Relay fallback for strict NATs — still encrypted.',

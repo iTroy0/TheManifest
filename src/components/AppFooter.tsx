@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import { Coffee } from 'lucide-react'
 
 export default function AppFooter() {
   return (
@@ -16,7 +17,7 @@ export default function AppFooter() {
           {' · by '}
           <a href="https://github.com/iTroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">iTroy0</a>
           {' · '}
-          <a href="https://buymeacoffee.com/itroy0" target="_blank" rel="noopener noreferrer" className="text-muted-light hover:text-accent transition-colors">☕ buy me a coffee</a>
+          <a href="https://buymeacoffee.com/itroy0" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-muted-light hover:text-accent transition-colors"><Coffee className="w-3 h-3" /> buy me a coffee</a>
         </p>
       </div>
     </footer>

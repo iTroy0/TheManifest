@@ -54,8 +54,6 @@ export async function prepareImage(
     return { url, bytes, mime: file.type }
   }
   const dataUri = await compressImage(file)
-  const raw = atob(dataUri.split(',')[1])
-  const bytes = new Uint8Array(raw.length)
-  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
+  const bytes = Uint8Array.from(atob(dataUri.split(',')[1]), c => c.charCodeAt(0))
   return { url: dataUri, bytes, mime: 'image/jpeg' }
 }

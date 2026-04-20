@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ComponentProps } from 'react'
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera, AlertTriangle, Loader2, RefreshCw, X, WifiOff, MonitorUp, MonitorOff, Sparkles } from 'lucide-react'
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Phone, Minimize2, ExternalLink, Settings2, ChevronDown, Volume2, Volume1, VolumeX, SwitchCamera, AlertTriangle, Loader2, RefreshCw, X, WifiOff, MonitorUp, MonitorOff, AudioLines } from 'lucide-react'
 import { UseCallReturn } from '../hooks/useCall'
 import { useViewport } from '../hooks/useViewport'
 import { usePopout } from '../hooks/usePopout'
@@ -572,7 +572,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
                   ? 'Noise suppression: ON (click to turn off)'
                   : 'Noise suppression: OFF (click to turn on)'
             }
-            icon={call.aiNoiseStarting ? Loader2 : Sparkles}
+            icon={call.aiNoiseStarting ? Loader2 : AudioLines}
             disabled={call.aiNoiseStarting}
             spinning={call.aiNoiseStarting}
             info={call.aiNoiseSuppression}
@@ -817,10 +817,12 @@ interface ControlButtonProps {
   spinning?: boolean
   // Renders the blue/info variant — used by toggles whose ON state is
   // informational rather than destructive (e.g., noise suppression).
-  // Mutually exclusive with `danger`; if both are set, danger wins.
+  // Mutually exclusive with `danger`; if both are set, danger wins. When set
+  // (true or false), the button is announced as a two-state toggle via
+  // aria-pressed. Leave undefined for one-shot actions (e.g. Leave, Refresh).
   info?: boolean
 }
-function ControlButton({ icon: Icon, onClick, title, danger = false, disabled = false, spinning = false, info = false }: ControlButtonProps) {
+function ControlButton({ icon: Icon, onClick, title, danger = false, disabled = false, spinning = false, info }: ControlButtonProps) {
   const tone =
     danger
       ? 'bg-danger/15 hover:bg-danger/25 text-danger ring-1 ring-danger/30'
@@ -834,7 +836,7 @@ function ControlButton({ icon: Icon, onClick, title, danger = false, disabled = 
       disabled={disabled}
       title={title}
       aria-label={title}
-      aria-pressed={info}
+      aria-pressed={info === undefined ? undefined : info}
       className={`flex items-center justify-center w-11 h-11 sm:w-9 sm:h-9 rounded-lg transition-all active:scale-[0.95] disabled:opacity-50 disabled:cursor-not-allowed ${tone}`}
     >
       <Icon className={`w-5 h-5 sm:w-4 sm:h-4 ${spinning ? 'animate-spin' : ''}`} />

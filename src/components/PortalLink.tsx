@@ -45,7 +45,7 @@ export default function PortalLink({ peerId }: PortalLinkProps) {
   return (
     <>
       <div className="animate-fade-in-up" style={{ animationDelay: '100ms' }}>
-        <p className="font-mono text-[10px] text-muted px-1 mb-2">Share this link with your recipient</p>
+        <p className="font-mono text-[10px] text-muted px-1 mb-2">Share this link with recipients</p>
         <div className="flex items-center gap-2 bg-surface-2/50 border border-border rounded-xl p-2 hover:border-accent/30 transition-colors group">
           <code
             onClick={handleCopy}
