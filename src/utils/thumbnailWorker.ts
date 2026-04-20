@@ -172,42 +172,6 @@ export async function generateTextPreview(file: File, maxChars = 200): Promise<s
   }
 }
 
-export interface PreviewResult {
-  type: 'image' | 'video' | 'text'
-  data: string | null
-}
-
-// Auto-detect file type and generate appropriate preview
-export async function generatePreview(file: File, maxDim = 80): Promise<PreviewResult | null> {
-  const type = file.type || ''
-
-  if (type.startsWith('image/')) {
-    try {
-      return { type: 'image', data: await generateThumbnailAsync(file, maxDim) }
-    } catch {
-      return null
-    }
-  }
-
-  if (type.startsWith('video/')) {
-    try {
-      return { type: 'video', data: await generateVideoThumbnail(file, maxDim) }
-    } catch {
-      return null
-    }
-  }
-
-  if (type.startsWith('text/') || type === 'application/json' || type === 'application/javascript') {
-    try {
-      return { type: 'text', data: await generateTextPreview(file) }
-    } catch {
-      return null
-    }
-  }
-
-  return null
-}
-
 // Batch generate thumbnails with concurrency limit
 export async function generateThumbnailsBatch(files: File[], maxDim = 80, concurrency = 3): Promise<(string | null)[]> {
   const results: (string | null)[] = new Array(files.length).fill(null)
@@ -236,13 +200,4 @@ export async function generateThumbnailsBatch(files: File[], maxDim = 80, concur
 
   await Promise.all(workers)
   return results
-}
-
-// Cleanup
-export function terminateThumbnailWorker(): void {
-  if (worker) {
-    worker.terminate()
-    worker = null
-    pendingTasks.clear()
-  }
 }

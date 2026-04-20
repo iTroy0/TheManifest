@@ -2,9 +2,24 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { visualizer } from 'rollup-plugin-visualizer'
+
+// Bundle treemap. Emits dist/stats.html on every `npm run build`. Open it
+// in a browser to see what's in each chunk (raw + gzip + brotli sizes).
+// Cheap insurance against accidental fat imports — diff before/after a PR.
+const BUILD_STATS = process.env.BUILD_STATS !== '0'
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    ...(BUILD_STATS ? [visualizer({
+      filename: 'dist/stats.html',
+      template: 'treemap',
+      gzipSize: true,
+      brotliSize: true,
+    })] : []),
+  ],
   build: {
     rollupOptions: {
       output: {

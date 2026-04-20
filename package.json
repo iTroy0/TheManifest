@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
+    "knip": "knip",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:headed": "playwright test --headed"
@@ -43,7 +44,9 @@
     "@vitejs/plugin-react": "^4.5.2",
     "express": "^5.2.1",
     "happy-dom": "^20.9.0",
+    "knip": "^6.5.0",
     "peer": "^1.0.2",
+    "rollup-plugin-visualizer": "^7.0.1",
     "tailwindcss": "^4.2.2",
     "typescript": "^6.0.2",
     "vite": "^6.3.5",

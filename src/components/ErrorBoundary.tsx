@@ -1,5 +1,5 @@
 import React, { Component } from 'react'
-import { RefreshCw, AlertTriangle, RotateCcw, X } from 'lucide-react'
+import { RefreshCw, AlertTriangle, RotateCcw } from 'lucide-react'
 
 // ── Main app-level error boundary ───────────────────────────────────────────
 
@@ -114,49 +114,3 @@ export class ComponentErrorBoundary extends Component<ComponentErrorBoundaryProp
   }
 }
 
-// ── Inline error boundary for critical but small components ──────────────────
-
-interface InlineErrorBoundaryProps {
-  children: React.ReactNode
-  showDismiss?: boolean
-}
-
-interface InlineErrorBoundaryState {
-  hasError: boolean
-}
-
-export class InlineErrorBoundary extends Component<InlineErrorBoundaryProps, InlineErrorBoundaryState> {
-  state: InlineErrorBoundaryState = { hasError: false }
-
-  static getDerivedStateFromError(): InlineErrorBoundaryState {
-    return { hasError: true }
-  }
-
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
-    console.error(`[InlineErrorBoundary]`, error, errorInfo)
-  }
-
-  handleDismiss = (): void => {
-    this.setState({ hasError: false })
-  }
-
-  render() {
-    const { children, showDismiss = true } = this.props
-
-    if (this.state.hasError) {
-      return (
-        <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-danger/10 text-danger font-mono text-xs">
-          <AlertTriangle className="w-3 h-3" />
-          Error
-          {showDismiss && (
-            <button onClick={this.handleDismiss} className="ml-1 hover:text-danger/70">
-              <X className="w-3 h-3" />
-            </button>
-          )}
-        </span>
-      )
-    }
-
-    return children
-  }
-}

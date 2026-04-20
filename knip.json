@@ -1,0 +1,19 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "src/main.tsx",
+    "api/**/*.ts",
+    "e2e/**/*.spec.ts"
+  ],
+  "project": [
+    "src/**/*.{ts,tsx}",
+    "api/**/*.ts",
+    "e2e/**/*.ts"
+  ],
+  "ignoreDependencies": [
+    "@types/express",
+    "@vercel/node",
+    "tailwindcss",
+    "happy-dom"
+  ]
+}
