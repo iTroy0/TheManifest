@@ -27,9 +27,14 @@ test.describe('Collab kick', () => {
     // Wait for the participant row to appear on the host side. The kick
     // button lives inside a row keyed by peerId; the data-testid carries
     // the peerId so we can target the right one even with multiple guests.
-    const kickButton = host.locator('[data-testid^="collab-kick-"]').first()
-    await expect(kickButton).toBeVisible({ timeout: 25_000 })
-    await kickButton.click()
+    // Removal is a two-tap: first tap (`-init` suffix) shows a 4s "Confirm?"
+    // pill, second tap (without the suffix) actually kicks.
+    const initButton = host.locator('[data-testid^="collab-kick-"][data-testid$="-init"]').first()
+    await expect(initButton).toBeVisible({ timeout: 25_000 })
+    await initButton.click()
+    const confirmButton = host.locator('[data-testid^="collab-kick-"]:not([data-testid$="-init"])').first()
+    await expect(confirmButton).toBeVisible()
+    await confirmButton.click()
 
     // Guest should see a terminal banner. The app dispatches status='kicked'
     // + appends "You were removed from the room" to chat, but the
