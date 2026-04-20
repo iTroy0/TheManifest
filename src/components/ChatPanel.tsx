@@ -1,19 +1,24 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { createPortal } from 'react-dom'
-import { MessageCircle, Send, ChevronDown, Users, Check, ImagePlus, X, Reply, ArrowDown, Smile, Volume2, VolumeX, Bell, BellOff, Trash2, Maximize2, Minimize2, MoreVertical, ExternalLink, Mic } from 'lucide-react'
-import { sounds, canNotify, requestNotificationPermission, alertNewMessage } from '../utils/notifications'
-import Linkify from './chat/Linkify'
-import VoicePlayer from './chat/VoicePlayer'
-import TypingDots from './chat/TypingDots'
+import { sounds, alertNewMessage } from '../utils/notifications'
 import ImagePreviewOverlay from './chat/ImagePreviewOverlay'
+import { ChatHeaderPopout, ChatHeaderFullscreen, ChatHeaderCollapsed } from './chat/ChatHeader'
+import ChatToolbar from './chat/ChatToolbar'
+import ChatMenu from './chat/ChatMenu'
+import ChatMessages from './chat/ChatMessages'
+import ChatComposer from './chat/ChatComposer'
+import ChatClearConfirm from './chat/ChatClearConfirm'
+import { groupMessages } from './chat/groupMessages'
+import { prepareImage, ImageTooLargeError } from '../utils/chatImage'
 import { useChatPanelState } from '../hooks/useChatPanelState'
 import { useChatInteraction, type ImagePreview, type ReplyTo } from '../hooks/useChatInteraction'
 import { usePopout } from '../hooks/usePopout'
+import { useVoiceRecorder } from '../hooks/useVoiceRecorder'
 import { ChatMessage } from '../types'
 
-const EMOJIS = ['👍', '❤️', '😂', '😮', '🔥', '👎', '🎉', '💯', '👀', '🙏', '💀', '✨']
 const POPOUT_DEFAULT = { w: 384, h: 600 }
 const POPOUT_MIN = { w: 280, h: 300 }
+const ERROR_HIDE_MS = 4000
+const DROP_ERROR_HIDE_MS = 3000
 
 interface ChatPanelProps {
   messages: ChatMessage[]
@@ -34,7 +39,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const popout = usePopout({
     defaultSize: POPOUT_DEFAULT,
     minSize: POPOUT_MIN,
-    onToggle: (isPopout) => dispatchPanel({ type: 'SET', payload: { open: isPopout } }),
+    onToggle: (isPopoutNow) => dispatchPanel({ type: 'SET', payload: { open: isPopoutNow } }),
   })
   const { isPopout, pos: popoutPos, size: popoutSize, popOut, dockBack, onDragStart: onPopoutDragStart, onResizeStart: onPopoutResizeStart, elementRef: popoutRef } = popout
   const [interact, dispatchInteract] = useChatInteraction()
@@ -43,22 +48,10 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const [editName, setEditName] = useState(nickname || '')
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [notifyEnabled, setNotifyEnabled] = useState(false)
-  const [isRecording, setIsRecording] = useState(false)
-  const [recordingTime, setRecordingTime] = useState(0)
   const [micError, setMicError] = useState<string | null>(null)
   const [nameSaved, setNameSaved] = useState(false)
-  const recordingTimeRef = useRef(0)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const recordingChunksRef = useRef<Blob[]>([])
-  const chatBlobUrlsRef = useRef<string[]>([])
-  // Mirrors so the long-lived MediaRecorder callbacks read current values
-  // rather than the closure snapshot captured at startRecording time.
-  const onSendRef = useRef(onSend)
-  const soundEnabledRef = useRef(soundEnabled)
-  useEffect(() => { onSendRef.current = onSend }, [onSend])
-  useEffect(() => { soundEnabledRef.current = soundEnabled }, [soundEnabled])
 
+  const chatBlobUrlsRef = useRef<string[]>([])
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const prevLen = useRef(messages.length)
   // Messages mirror so the alert effect can read latest items without
@@ -71,13 +64,12 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null)
-  const clearConfirmRef = useRef<HTMLDivElement | null>(null)
 
-  function createTrackedBlobUrl(blob: Blob): string {
+  const createTrackedBlobUrl = useCallback((blob: Blob): string => {
     const url = URL.createObjectURL(blob)
     chatBlobUrlsRef.current.push(url)
     return url
-  }
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -105,10 +97,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   }, [messages.length])
 
   // H16: mirror `isNearBottom` into a ref so the ResizeObserver effect can
-  // read the latest value without re-subscribing on every flip. Continually
-  // tearing down + recreating the observer while scrolling raced with
-  // React 19's concurrent commit phase on iOS Safari, producing scroll
-  // oscillation against the visualViewport effect.
+  // read the latest value without re-subscribing on every flip.
   const isNearBottomRef = useRef(isNearBottom)
   useEffect(() => { isNearBottomRef.current = isNearBottom }, [isNearBottom])
 
@@ -139,8 +128,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         dispatchPanel({ type: 'INCREMENT_UNREAD', count: cur - prev })
       }
       const newMsgs = messagesRef.current.slice(prev, cur)
-      // Only alert when the user is unlikely to already see the message:
-      // panel closed or tab backgrounded.
       const shouldAlert = !open || (typeof document !== 'undefined' && document.hidden)
       for (const msg of newMsgs) {
         if (!msg.self && msg.from !== 'system') {
@@ -239,115 +226,52 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     return () => { window.removeEventListener('dragend', reset); window.removeEventListener('drop', reset) }
   }, [isDragOver])
 
+  function showTransientMicError(msg: string) {
+    setMicError(msg)
+    setTimeout(() => setMicError(null), ERROR_HIDE_MS)
+  }
+
+  function showTransientDropError(msg: string) {
+    dispatchInteract({ type: 'SET', payload: { dropError: msg } })
+    setTimeout(() => dispatchInteract({ type: 'SET', payload: { dropError: null } }), DROP_ERROR_HIDE_MS)
+  }
+
+  const handleImageFile = useCallback(async (file: File) => {
+    try {
+      const img = await prepareImage(file, createTrackedBlobUrl)
+      dispatchInteract({ type: 'SET', payload: { imagePreview: img } })
+    } catch (err) {
+      if (err instanceof ImageTooLargeError) {
+        showTransientDropError(err.message)
+        return
+      }
+      console.warn('Image drop/paste failed:', err)
+      showTransientMicError('Could not process image.')
+    }
+  }, [createTrackedBlobUrl])
+
   function handleDrop(e: React.DragEvent<HTMLFormElement>) {
     e.preventDefault()
     dispatchInteract({ type: 'SET', payload: { isDragOver: false } })
     const files = Array.from(e.dataTransfer?.files || [])
     const file = files.find(f => f.type.startsWith('image/'))
     if (file) {
-      prepareImage(file)
-        .then(img => { if (img) dispatchInteract({ type: 'SET', payload: { imagePreview: img } }) })
-        .catch(err => {
-          console.warn('Image drop/paste failed:', err)
-          setMicError('Could not process image.')
-          setTimeout(() => setMicError(null), 4000)
-        })
+      void handleImageFile(file)
     } else if (files.length > 0) {
-      dispatchInteract({ type: 'SET', payload: { dropError: 'Only images are supported in chat' } })
-      setTimeout(() => dispatchInteract({ type: 'SET', payload: { dropError: null } }), 3000)
+      showTransientDropError('Only images are supported in chat')
     }
   }
 
-  const MAX_RECORDING_SECS = 180
-
-  function getRecordingMime(): string {
-    if (typeof MediaRecorder === 'undefined') return ''
-    if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) return 'audio/webm;codecs=opus'
-    if (MediaRecorder.isTypeSupported('audio/webm')) return 'audio/webm'
-    if (MediaRecorder.isTypeSupported('audio/mp4')) return 'audio/mp4'
-    return ''
-  }
-
-  async function startRecording() {
-    const mime = getRecordingMime()
-    if (!mime) return
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const recorder = new MediaRecorder(stream, { mimeType: mime })
-      recordingChunksRef.current = []
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) recordingChunksRef.current.push(e.data)
-      }
-
-      recorder.onstop = async () => {
-        stream.getTracks().forEach(t => t.stop())
-        if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null }
-        const blob = new Blob(recordingChunksRef.current, { type: mime })
-        recordingChunksRef.current = []
-        if (blob.size === 0) {
-          setIsRecording(false)
-          setRecordingTime(0)
-          return
-        }
-        const bytes = new Uint8Array(await blob.arrayBuffer())
-        const url = createTrackedBlobUrl(blob)
-        if (soundEnabledRef.current) sounds.messageSent()
-        onSendRef.current('', { url, bytes, mime: mime.split(';')[0], duration: recordingTimeRef.current }, undefined)
-        setIsRecording(false)
-        setRecordingTime(0)
-        recordingTimeRef.current = 0
-      }
-
-      recorder.start(250)
-      mediaRecorderRef.current = recorder
-      setIsRecording(true)
-      setRecordingTime(0)
-      recordingTimerRef.current = setInterval(() => {
-        setRecordingTime(t => {
-          const next = t + 1
-          recordingTimeRef.current = next
-          if (next >= MAX_RECORDING_SECS) { stopRecording(); return t }
-          return next
-        })
-      }, 1000)
-    } catch (err) {
-      console.warn('Microphone access failed:', err)
-      setMicError('Microphone access denied. Check browser permissions.')
-      setTimeout(() => setMicError(null), 4000)
-    }
-  }
-
-  function stopRecording() {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop()
-    }
-  }
-
-  function cancelRecording() {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.ondataavailable = null
-      mediaRecorderRef.current.onstop = () => {
-        mediaRecorderRef.current?.stream?.getTracks().forEach(t => t.stop())
-      }
-      mediaRecorderRef.current.stop()
-    }
-    if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null }
-    recordingChunksRef.current = []
-    setIsRecording(false)
-    setRecordingTime(0)
-    recordingTimeRef.current = 0
-  }
-
-  useEffect(() => {
-    return () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stream?.getTracks().forEach(t => t.stop())
-        mediaRecorderRef.current.stop()
-      }
-      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current)
-    }
-  }, [])
+  // Voice recorder hook owns the MediaRecorder lifecycle. We pass clips
+  // directly to the latest onSend via a ref-mirror inside the hook.
+  const recorder = useVoiceRecorder({
+    createTrackedBlobUrl,
+    onError: (msg) => msg ? setMicError(msg) : setMicError(null),
+    onSent: () => { if (soundEnabled) sounds.messageSent() },
+    onClip: (clip) => {
+      onSend('', clip, undefined)
+    },
+  })
 
   function handleSend(e: { preventDefault: () => void }) {
     e.preventDefault()
@@ -359,35 +283,20 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     textInputRef.current?.focus()
   }
 
-  async function prepareImage(file: File): Promise<ImagePreview | null> {
-    if (file.type === 'image/gif') {
-      if (file.size > 3 * 1024 * 1024) {
-        dispatchInteract({ type: 'SET', payload: { dropError: 'GIF is too large (max 3 MB)' } })
-        setTimeout(() => dispatchInteract({ type: 'SET', payload: { dropError: null } }), 3000)
-        return null
-      }
-      const bytes = new Uint8Array(await file.arrayBuffer())
-      const url = createTrackedBlobUrl(new Blob([bytes], { type: file.type }))
-      return { url, bytes, mime: file.type }
-    }
-    const dataUri = await compressImage(file)
-    const raw = atob(dataUri.split(',')[1])
-    const bytes = new Uint8Array(raw.length)
-    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
-    return { url: dataUri, bytes, mime: 'image/jpeg' }
-  }
-
   async function handleImagePick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file || !file.type.startsWith('image/')) return
     e.target.value = ''
     try {
-      const img = await prepareImage(file)
-      if (img) dispatchInteract({ type: 'SET', payload: { imagePreview: img } })
+      const img = await prepareImage(file, createTrackedBlobUrl)
+      dispatchInteract({ type: 'SET', payload: { imagePreview: img } })
     } catch (err) {
+      if (err instanceof ImageTooLargeError) {
+        showTransientDropError(err.message)
+        return
+      }
       console.warn('Image processing failed:', err)
-      setMicError('Could not process image. Try a different file.')
-      setTimeout(() => setMicError(null), 4000)
+      showTransientMicError('Could not process image. Try a different file.')
     }
   }
 
@@ -399,19 +308,13 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       e.preventDefault()
       const file = item.getAsFile()
       if (!file) return
-      prepareImage(file)
-        .then(img => { if (img) dispatchInteract({ type: 'SET', payload: { imagePreview: img } }) })
-        .catch(err => {
-          console.warn('Image drop/paste failed:', err)
-          setMicError('Could not process image.')
-          setTimeout(() => setMicError(null), 4000)
-        })
+      void handleImageFile(file)
     }
     window.addEventListener('paste', handlePaste)
     return () => window.removeEventListener('paste', handlePaste)
-  }, [open, disabled])
+  }, [open, disabled, handleImageFile])
 
-  const nameChanged = editName.trim() && editName.trim() !== nickname
+  const nameChanged = !!(editName.trim() && editName.trim() !== nickname)
 
   function handleSetName() {
     if (!nameChanged) return
@@ -443,12 +346,6 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     }
   }, [showMenu])
 
-  useEffect(() => {
-    if (showClearConfirm && clearConfirmRef.current) {
-      clearConfirmRef.current.focus()
-    }
-  }, [showClearConfirm])
-
   function handleMsgClick(i: number) {
     dispatchInteract({ type: 'TOGGLE_MSG', index: i })
   }
@@ -459,45 +356,16 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       : `${typingUsers.slice(0, 2).join(', ')}${typingUsers.length > 2 ? ` +${typingUsers.length - 2}` : ''}`
     : null
 
-  interface GroupedMessage extends ChatMessage {
-    index: number
+  const groupedMessages = useMemo(() => groupMessages(messages), [messages])
+
+  const setReactingIdx = (i: number | null) => dispatchInteract({ type: 'SET', payload: { reactingIdx: i } })
+  const setActiveMsg = (i: number | null) => dispatchInteract({ type: 'SET', payload: { activeMsg: i } })
+  const setReplyTo = (r: ReplyTo) => dispatchInteract({ type: 'SET', payload: { replyTo: r } })
+  const clearReplyTo = () => dispatchInteract({ type: 'SET', payload: { replyTo: null } })
+  const clearImagePreview = () => {
+    if (imagePreview?.url?.startsWith('blob:')) URL.revokeObjectURL(imagePreview.url)
+    dispatchInteract({ type: 'SET', payload: { imagePreview: null } })
   }
-
-  interface MessageGroup {
-    from: string
-    self: boolean
-    isSystem: boolean
-    messages: GroupedMessage[]
-    lastTime: number
-  }
-
-  const groupedMessages = useMemo((): MessageGroup[] => {
-    const groups: MessageGroup[] = []
-    let currentGroup: MessageGroup | null = null
-
-    messages.forEach((msg, i) => {
-      const isSystemMsg = msg.from === 'system'
-      const timeDiff = currentGroup ? msg.time - currentGroup.lastTime : Infinity
-      const sameAuthor = currentGroup && currentGroup.from === msg.from
-      const shouldGroup = sameAuthor && timeDiff < 60000 && !isSystemMsg
-
-      if (shouldGroup) {
-        currentGroup!.messages.push({ ...msg, index: i })
-        currentGroup!.lastTime = msg.time
-      } else {
-        if (currentGroup) groups.push(currentGroup)
-        currentGroup = {
-          from: msg.from,
-          self: msg.self,
-          isSystem: isSystemMsg,
-          messages: [{ ...msg, index: i }],
-          lastTime: msg.time
-        }
-      }
-    })
-    if (currentGroup) groups.push(currentGroup)
-    return groups
-  }, [messages])
 
   return (
     <div
@@ -527,267 +395,66 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       }
     >
       {isPopout && !isFullscreen && (
-        <div
-          className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0 bg-surface/80 backdrop-blur-sm cursor-move select-none relative"
-          onMouseDown={onPopoutDragStart}
-          onTouchStart={onPopoutDragStart}
-        >
-          <div
-            className="absolute -top-1 -left-1 w-5 h-5 cursor-nw-resize z-10 flex items-center justify-center opacity-40 hover:opacity-100 transition-opacity"
-            onMouseDown={onPopoutResizeStart}
-            onTouchStart={onPopoutResizeStart}
-            title="Resize"
-          >
-            <svg width="10" height="10" viewBox="0 0 10 10" className="text-muted">
-              <line x1="0" y1="10" x2="10" y2="0" stroke="currentColor" strokeWidth="1.5" />
-              <line x1="0" y1="6" x2="6" y2="0" stroke="currentColor" strokeWidth="1.5" />
-              <line x1="0" y1="2" x2="2" y2="0" stroke="currentColor" strokeWidth="1.5" />
-            </svg>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl glass-accent flex items-center justify-center">
-              <MessageCircle className="w-4 h-4 text-accent" />
-            </div>
-            <div>
-              <span className="font-mono text-sm text-text font-medium">Chat</span>
-              {onlineCount != null && onlineCount > 0 && (
-                <div className="flex items-center gap-1 mt-0.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-accent" />
-                  <span className="font-mono text-[10px] text-muted">{onlineCount} online</span>
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-1">
-            {onClearMessages && messages.length > 0 && (
-              <button
-                onClick={() => dispatchPanel({ type: 'SET', payload: { showClearConfirm: true } })}
-                className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
-                title="Clear messages"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            )}
-            <button
-              onClick={() => { dispatchPanel({ type: 'SET', payload: { isFullscreen: true } }) }}
-              className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
-              title="Fullscreen"
-            >
-              <Maximize2 className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => { dockBack() }}
-              className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
-              title="Minimize"
-            >
-              <Minimize2 className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+        <ChatHeaderPopout
+          onlineCount={onlineCount}
+          hasMessages={messages.length > 0}
+          hasClear={!!onClearMessages}
+          onRequestClear={() => dispatchPanel({ type: 'SET', payload: { showClearConfirm: true } })}
+          onDragStart={onPopoutDragStart}
+          onResizeStart={onPopoutResizeStart}
+          onFullscreen={() => dispatchPanel({ type: 'SET', payload: { isFullscreen: true } })}
+          onDock={dockBack}
+        />
       )}
 
       {isFullscreen ? (
-        <div
-          className="flex items-center justify-between px-2 border-b border-border shrink-0 bg-surface/80 backdrop-blur-sm"
-          style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 8px)', paddingBottom: '8px' }}
-        >
-          <button
-            onClick={() => { dispatchPanel({ type: 'SET', payload: { isFullscreen: false, ...(!isPopout && { open: true }) } }) }}
-            className="flex items-center gap-0.5 px-2 py-2 rounded-xl text-accent active:bg-accent/10 transition-colors"
-          >
-            {isPopout ? <Minimize2 className="w-5 h-5" /> : <ChevronDown className="w-5 h-5 rotate-90" />}
-            <span className="font-mono text-sm font-medium">{isPopout ? 'Minimize' : 'Back'}</span>
-          </button>
-
-          <div className="absolute left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none">
-            <span className="font-mono text-base text-text font-semibold">Chat</span>
-            {onlineCount != null && onlineCount > 0 && (
-              <div className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-accent" />
-                <span className="font-mono text-[10px] text-muted">{onlineCount} online</span>
-              </div>
-            )}
-          </div>
-
-          <div className="relative">
-            <button
-              ref={menuTriggerRef}
-              data-menu-trigger
-              onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
-                e.stopPropagation()
-                const rect = e.currentTarget.getBoundingClientRect()
-                dispatchPanel({ type: 'SET', payload: { menuPos: { top: rect.bottom + 4, right: window.innerWidth - rect.right } } })
-                dispatchPanel({ type: 'TOGGLE_MENU' })
-              }}
-              className="p-2.5 rounded-xl text-muted active:bg-surface-2 transition-colors"
-              type="button"
-            >
-              <MoreVertical className="w-5 h-5" />
-            </button>
-
-            {showMenu && createPortal(
-              <div
-                ref={menuRef}
-                className="fixed w-56 bg-surface border border-border rounded-xl shadow-xl overflow-hidden animate-fade-in-up"
-                style={{ top: `${menuPos.top}px`, right: `${menuPos.right}px`, zIndex: 9999 }}
-                onClick={(e: React.MouseEvent) => e.stopPropagation()}
-              >
-                {onNicknameChange && (
-                  <div className="p-3 border-b border-border">
-                    <label className="font-mono text-[10px] text-muted uppercase tracking-wide mb-2 block">Nickname</label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={editName}
-                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditName(e.target.value)}
-                        onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && nameChanged && handleSetName()}
-                        maxLength={20}
-                        placeholder="Enter name"
-                        className="flex-1 min-w-0 bg-bg border border-border rounded-lg px-2.5 py-2 font-mono text-sm text-text placeholder:text-muted/50 focus:outline-none focus:border-accent/50"
-                      />
-                      {nameChanged && (
-                        <button
-                          onClick={() => { handleSetName(); dispatchPanel({ type: 'SET', payload: { showMenu: false } }) }}
-                          className="shrink-0 p-2 rounded-lg bg-accent text-bg active:scale-95 transition-transform"
-                        >
-                          <Check className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
-                    <div className="flex items-center justify-between mt-1">
-                      <span className="text-[10px] text-muted">{editName.length}/20</span>
-                      {nameSaved && <span className="text-xs text-accent">Saved</span>}
-                    </div>
-                  </div>
-                )}
-
-                <div className="py-1">
-                  <button
-                    onClick={() => setSoundEnabled(s => !s)}
-                    className="w-full flex items-center justify-between px-4 py-3 active:bg-surface-2 transition-colors"
-                    role="switch"
-                    aria-checked={soundEnabled}
-                  >
-                    <div className="flex items-center gap-3">
-                      {soundEnabled ? <Volume2 className="w-4 h-4 text-accent" /> : <VolumeX className="w-4 h-4 text-muted" />}
-                      <span className="font-mono text-sm text-text">Sound</span>
-                    </div>
-                    <div className={`w-10 h-6 rounded-full transition-colors ${soundEnabled ? 'bg-accent' : 'bg-border'}`}>
-                      <div className={`w-5 h-5 mt-0.5 rounded-full bg-white shadow transition-transform ${soundEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
-                    </div>
-                  </button>
-
-                  <button
-                    onClick={async () => {
-                      if (!notifyEnabled && !canNotify()) {
-                        // Permanent denial — the browser prompt cannot be
-                        // reopened from JS. Tell the user where to re-enable.
-                        if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
-                          setMicError('Notifications blocked — enable in your browser site settings.')
-                          setTimeout(() => setMicError(null), 4000)
-                          return
-                        }
-                        const granted = await requestNotificationPermission()
-                        if (granted) setNotifyEnabled(true)
-                      } else {
-                        setNotifyEnabled(n => !n)
-                      }
-                    }}
-                    className="w-full flex items-center justify-between px-4 py-3 active:bg-surface-2 transition-colors"
-                    role="switch"
-                    aria-checked={notifyEnabled}
-                  >
-                    <div className="flex items-center gap-3">
-                      {notifyEnabled ? <Bell className="w-4 h-4 text-accent" /> : <BellOff className="w-4 h-4 text-muted" />}
-                      <span className="font-mono text-sm text-text">Notifications</span>
-                    </div>
-                    <div className={`w-10 h-6 rounded-full transition-colors ${notifyEnabled ? 'bg-accent' : 'bg-border'}`}>
-                      <div className={`w-5 h-5 mt-0.5 rounded-full bg-white shadow transition-transform ${notifyEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
-                    </div>
-                  </button>
-                </div>
-
-                {onClearMessages && messages.length > 0 && (
-                  <>
-                    <div className="border-t border-border" />
-                    <button
-                      onClick={() => dispatchPanel({ type: 'SET', payload: { showClearConfirm: true, showMenu: false } })}
-                      className="w-full flex items-center gap-3 px-4 py-3 text-danger active:bg-danger/10 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      <span className="font-mono text-sm">Clear Messages</span>
-                    </button>
-                  </>
-                )}
-              </div>,
-              document.body
-            )}
-          </div>
+        <div className="relative">
+          <ChatHeaderFullscreen
+            onlineCount={onlineCount}
+            isPopout={isPopout}
+            onExitFullscreen={() => dispatchPanel({ type: 'SET', payload: { isFullscreen: false, ...(!isPopout && { open: true }) } })}
+            menuTriggerRef={menuTriggerRef}
+            onMenuTriggerClick={(e) => {
+              e.stopPropagation()
+              const rect = e.currentTarget.getBoundingClientRect()
+              dispatchPanel({ type: 'SET', payload: { menuPos: { top: rect.bottom + 4, right: window.innerWidth - rect.right } } })
+              dispatchPanel({ type: 'TOGGLE_MENU' })
+            }}
+          />
+          {showMenu && (
+            <ChatMenu
+              menuPos={menuPos}
+              menuRef={menuRef}
+              onNicknameChange={onNicknameChange}
+              editName={editName}
+              setEditName={setEditName}
+              nameChanged={nameChanged}
+              nameSaved={nameSaved}
+              handleSetName={handleSetName}
+              closeMenu={() => dispatchPanel({ type: 'SET', payload: { showMenu: false } })}
+              soundEnabled={soundEnabled}
+              setSoundEnabled={setSoundEnabled}
+              notifyEnabled={notifyEnabled}
+              setNotifyEnabled={setNotifyEnabled}
+              onMicError={showTransientMicError}
+              hasMessages={messages.length > 0}
+              onClearMessages={onClearMessages}
+              onRequestClear={() => dispatchPanel({ type: 'SET', payload: { showClearConfirm: true, showMenu: false } })}
+            />
+          )}
         </div>
       ) : !isPopout ? (
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() => dispatchPanel({ type: 'TOGGLE_OPEN' })}
-          onKeyDown={(e: React.KeyboardEvent<HTMLDivElement>) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault()
-              dispatchPanel({ type: 'TOGGLE_OPEN' })
-            }
-          }}
-          className="w-full flex items-center justify-between p-4 text-left group hover:bg-surface-2/30 transition-colors cursor-pointer"
-        >
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <div className="w-8 h-8 rounded-xl glass-accent flex items-center justify-center">
-                <MessageCircle className="w-4 h-4 text-accent" />
-              </div>
-              {unread > 0 && (
-                <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[18px] h-[18px] rounded-full bg-accent text-bg font-mono text-[10px] font-bold px-1 shadow-lg shadow-accent/30 animate-pulse">
-                  {unread > 99 ? '99+' : unread}
-                </span>
-              )}
-            </div>
-            <div>
-              <span className="font-mono text-sm text-text font-medium">Chat</span>
-              {onlineCount != null && onlineCount > 0 && (
-                <div className="flex items-center gap-1 mt-0.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-                  <span className="font-mono text-[10px] text-muted">{onlineCount} online</span>
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-1">
-            {onClearMessages && messages.length > 0 && (
-              <button
-                onClick={(e: React.MouseEvent) => { e.stopPropagation(); dispatchPanel({ type: 'SET', payload: { showClearConfirm: true } }) }}
-                className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
-                title="Clear messages"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            )}
-            <button
-              onClick={(e: React.MouseEvent) => {
-                e.stopPropagation()
-                popOut()
-              }}
-              className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors hidden sm:flex"
-              title="Pop out chat"
-            >
-              <ExternalLink className="w-4 h-4" />
-            </button>
-            <button
-              onClick={(e: React.MouseEvent) => { e.stopPropagation(); dispatchPanel({ type: 'SET', payload: { isFullscreen: true } }) }}
-              className="p-1.5 rounded-lg text-muted hover:text-accent hover:bg-accent/10 transition-colors"
-              title="Fullscreen chat"
-            >
-              <Maximize2 className="w-4 h-4" />
-            </button>
-            <ChevronDown className={`w-5 h-5 text-muted group-hover:text-accent transition-all duration-300 ${open ? 'rotate-180' : ''}`} />
-          </div>
-        </div>
+        <ChatHeaderCollapsed
+          open={open}
+          unread={unread}
+          onlineCount={onlineCount}
+          hasMessages={messages.length > 0}
+          hasClear={!!onClearMessages}
+          onRequestClear={() => dispatchPanel({ type: 'SET', payload: { showClearConfirm: true } })}
+          onToggleOpen={() => dispatchPanel({ type: 'TOGGLE_OPEN' })}
+          onPopOut={popOut}
+          onFullscreen={() => dispatchPanel({ type: 'SET', payload: { isFullscreen: true } })}
+        />
       ) : null}
 
       <div className={`transition-all duration-400 ease-in-out ${
@@ -798,494 +465,85 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
         <div className={isFullscreen || isPopout ? 'flex-1 flex flex-col overflow-hidden' : 'overflow-hidden'}>
           <div className={`${isFullscreen || isPopout ? 'flex-1 flex flex-col overflow-hidden' : 'px-3 sm:px-4 pb-4 space-y-3'}`}>
             {!isFullscreen && (
-            <div className="flex items-center justify-between gap-2">
-              {onNicknameChange && (
-                <div className="flex items-center gap-2">
-                  <div className="flex items-center gap-2 p-2 bg-surface-2 rounded-lg border border-border">
-                    <Users className="w-3.5 h-3.5 text-accent shrink-0" />
-                    <input
-                      type="text"
-                      value={editName}
-                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditName(e.target.value)}
-                      onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && nameChanged && handleSetName()}
-                      maxLength={20}
-                      placeholder="Nickname"
-                      className="w-24 sm:w-28 bg-transparent font-mono text-sm text-text
-                        placeholder:text-muted/50 focus:outline-none"
-                    />
-                  </div>
-                  <span className="text-[10px] text-muted">{editName.length}/20</span>
-                  {nameChanged && (
-                    <button
-                      onClick={handleSetName}
-                      className="shrink-0 flex items-center gap-1 px-2.5 py-2 rounded-lg font-mono text-xs
-                        bg-accent text-bg font-medium hover:bg-accent-dim active:scale-95 transition-all"
-                    >
-                      <Check className="w-3 h-3" />
-                      Save
-                    </button>
-                  )}
-                  {nameSaved && <span className="text-xs text-accent">Saved</span>}
-                </div>
-              )}
-              <div className="flex items-center gap-1 ml-auto">
-                <button
-                  onClick={() => setSoundEnabled(s => !s)}
-                  className={`p-2 rounded-lg transition-colors ${soundEnabled ? 'text-accent bg-accent/10' : 'text-muted hover:text-accent hover:bg-accent/10'}`}
-                  title={soundEnabled ? 'Sound on' : 'Sound off'}
-                  role="switch"
-                  aria-checked={soundEnabled}
-                >
-                  {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-                </button>
-                <button
-                  onClick={async () => {
-                    if (!notifyEnabled && !canNotify()) {
-                      const granted = await requestNotificationPermission()
-                      if (granted) setNotifyEnabled(true)
-                    } else {
-                      setNotifyEnabled(n => !n)
-                    }
-                  }}
-                  className={`p-2 rounded-lg transition-colors ${notifyEnabled ? 'text-accent bg-accent/10' : 'text-muted hover:text-accent hover:bg-accent/10'}`}
-                  title={notifyEnabled ? 'Notifications on' : 'Notifications off'}
-                  role="switch"
-                  aria-checked={notifyEnabled}
-                >
-                  {notifyEnabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
+              <ChatToolbar
+                onNicknameChange={onNicknameChange}
+                editName={editName}
+                setEditName={setEditName}
+                nameChanged={nameChanged}
+                nameSaved={nameSaved}
+                handleSetName={handleSetName}
+                soundEnabled={soundEnabled}
+                setSoundEnabled={setSoundEnabled}
+                notifyEnabled={notifyEnabled}
+                setNotifyEnabled={setNotifyEnabled}
+              />
             )}
 
-            <div
-              ref={scrollRef}
+            <ChatMessages
+              scrollRef={scrollRef}
               onScroll={handleScroll}
-              className={`relative overflow-y-auto space-y-3 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent overscroll-contain ${
-                isFullscreen || isPopout
-                  ? 'flex-1 min-h-0 px-4 py-3 bg-bg'
-                  : 'h-[320px] pr-1'
-              }`}
-              onClick={() => { dispatchInteract({ type: 'SET', payload: { reactingIdx: null, activeMsg: null } }); if (showMenu) dispatchPanel({ type: 'SET', payload: { showMenu: false } }) }}
-            >
-              {messages.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-12 text-center">
-                  <div className="w-12 h-12 rounded-xl glass-accent flex items-center justify-center mb-3">
-                    <MessageCircle className="w-5 h-5 text-accent/40" />
-                  </div>
-                  <p className="font-mono text-xs text-muted">No messages yet</p>
-                  <p className="text-[10px] text-muted/60 mt-1">Start the conversation</p>
-                </div>
-              )}
+              onContainerClick={() => {
+                dispatchInteract({ type: 'SET', payload: { reactingIdx: null, activeMsg: null } })
+                if (showMenu) dispatchPanel({ type: 'SET', payload: { showMenu: false } })
+              }}
+              groupedMessages={groupedMessages}
+              hasMessages={messages.length > 0}
+              isFullscreen={isFullscreen}
+              isPopout={isPopout}
+              showScrollBtn={showScrollBtn}
+              scrollToBottom={scrollToBottom}
+              activeMsg={activeMsg}
+              reactingIdx={reactingIdx}
+              onMsgClick={handleMsgClick}
+              onTouchStart={handleTouchStart}
+              onTouchEnd={handleTouchEnd}
+              onReact={onReaction}
+              setReactingIdx={setReactingIdx}
+              setActiveMsg={setActiveMsg}
+              setReplyTo={setReplyTo}
+              onViewImage={(v) => dispatchInteract({ type: 'SET', payload: { viewImage: v } })}
+            />
 
-              {groupedMessages.map((group, groupIdx) => {
-                if (group.isSystem) {
-                  return group.messages.map(msg => (
-                    <div key={`${msg.time}-system`} className="flex justify-center animate-fade-in-up">
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface-2/50 border border-border/50 font-mono text-[10px] text-muted">
-                        {msg.text}
-                      </span>
-                    </div>
-                  ))
-                }
-
-                return (
-                  <div
-                    key={`group-${groupIdx}-${group.messages[0].time}`}
-                    className={`flex ${group.self ? 'justify-end' : 'justify-start'} animate-fade-in-up`}
-                  >
-                    <div className={`flex flex-col gap-0.5 max-w-[90%] sm:max-w-[80%] ${group.self ? 'items-end' : 'items-start'}`}>
-                      {!group.self && (
-                        <p className="font-mono text-[10px] text-accent/70 mb-0.5 px-1">{group.from}</p>
-                      )}
-
-                      {group.messages.map((msg, msgIdx) => {
-                        const i = msg.index
-                        const msgId = msg.id ?? `${msg.time}`
-                        const showActions = activeMsg === i
-                        const isFirst = msgIdx === 0
-                        const isLast = msgIdx === group.messages.length - 1
-
-                        return (
-                          <div key={`${msg.time}-${i}`} className="relative group/msg">
-                            <div
-                              className={`
-                                px-3 py-2 sm:px-3.5 sm:py-2.5 space-y-1 transition-colors cursor-pointer
-                                ${group.self
-                                  ? `bg-accent/10 border border-accent/20 active:bg-accent/20 sm:hover:bg-accent/15
-                                     ${isFirst && isLast ? 'rounded-2xl rounded-tr-md' : isFirst ? 'rounded-t-2xl rounded-tr-md rounded-b-md' : isLast ? 'rounded-b-2xl rounded-t-md' : 'rounded-md'}`
-                                  : `bg-surface-2 border border-border active:bg-surface-2/70 sm:hover:bg-surface-2/80
-                                     ${isFirst && isLast ? 'rounded-2xl rounded-tl-md' : isFirst ? 'rounded-t-2xl rounded-tl-md rounded-b-md' : isLast ? 'rounded-b-2xl rounded-t-md' : 'rounded-md'}`
-                                }
-                              `}
-                              onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleMsgClick(i) }}
-                              onTouchStart={() => handleTouchStart(i)}
-                              onTouchEnd={handleTouchEnd}
-                            >
-                              {msg.replyTo && (
-                                <div className={`border-l-2 pl-2 mb-1.5 ${group.self ? 'border-accent/40' : 'border-muted/30'}`}>
-                                  <p className="font-mono text-[9px] text-accent/60">{msg.replyTo.from}</p>
-                                  <p className="text-[11px] text-muted truncate">{msg.replyTo.text || 'Image'}</p>
-                                </div>
-                              )}
-
-                              {msg.image && msg.mime?.startsWith('audio/') ? (
-                                <VoicePlayer src={msg.image} knownDuration={msg.duration} />
-                              ) : msg.image ? (
-                                <img
-                                  src={msg.image}
-                                  alt={`Image from ${msg.from}`}
-                                  className="rounded-lg max-w-full max-h-[200px] object-contain cursor-pointer hover:opacity-90 transition-opacity shadow-sm"
-                                  onClick={(e: React.MouseEvent) => { e.stopPropagation(); dispatchInteract({ type: 'SET', payload: { viewImage: { url: msg.image, mime: msg.mime } } }) }}
-                                />
-                              ) : null}
-
-                              {msg.text && (
-                                <p className="text-[13px] text-text break-words leading-relaxed">
-                                  <Linkify text={msg.text} />
-                                </p>
-                              )}
-
-                              <p className="text-[9px] text-muted/50 font-mono mt-0.5">
-                                {new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                              </p>
-                            </div>
-
-                            {/* Reactions display */}
-                            {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                              <div className={`flex gap-1 mt-1 flex-wrap ${group.self ? 'justify-end' : 'justify-start'}`}>
-                                {Object.entries(msg.reactions).map(([emoji, users]) => (
-                                  <span
-                                    key={emoji}
-                                    className="inline-flex items-center gap-0.5 bg-surface border border-border/80 rounded-full px-1.5 py-0.5 text-[11px] cursor-default hover:bg-surface-2 transition-colors shadow-sm"
-                                    title={users.join(', ')}
-                                  >
-                                    {emoji} <span className="font-mono text-muted-light text-[10px]">{users.length}</span>
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-
-                            {/* Action buttons */}
-                            {onReaction && (
-                              <div className={`
-                                flex items-center gap-1 mt-1 transition-all duration-150
-                                ${showActions || reactingIdx === i ? 'opacity-100 max-h-20' : 'opacity-0 max-h-0 overflow-hidden sm:group-hover/msg:opacity-100 sm:group-hover/msg:max-h-20'}
-                              `}>
-                                {reactingIdx === i ? (
-                                  <div className="flex flex-wrap gap-0.5 p-1 bg-surface border border-border rounded-lg">
-                                    {EMOJIS.slice(0, 6).map(emoji => (
-                                      <button
-                                        key={emoji}
-                                        onClick={(e: React.MouseEvent) => { e.stopPropagation(); onReaction(msgId, emoji); dispatchInteract({ type: 'SET', payload: { reactingIdx: null, activeMsg: null } }) }}
-                                        className="w-8 h-8 sm:w-7 sm:h-7 flex items-center justify-center rounded hover:bg-accent/15 active:scale-90 transition-all text-sm sm:text-base"
-                                      >
-                                        {emoji}
-                                      </button>
-                                    ))}
-                                    <button
-                                      onClick={(e: React.MouseEvent) => { e.stopPropagation(); dispatchInteract({ type: 'SET', payload: { reactingIdx: null } }) }}
-                                      className="w-8 h-8 sm:w-7 sm:h-7 flex items-center justify-center rounded hover:bg-danger/15 text-muted hover:text-danger active:scale-90 transition-all text-xs"
-                                    >
-                                      <X className="w-3 h-3" />
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <>
-                                    <button
-                                      onClick={(e: React.MouseEvent) => { e.stopPropagation(); dispatchInteract({ type: 'SET', payload: { reactingIdx: i, activeMsg: i } }) }}
-                                      className="flex items-center gap-1 px-2 py-1 rounded-md bg-surface border border-border text-muted hover:text-accent hover:border-accent/30 transition-colors text-[11px] font-mono"
-                                    >
-                                      <Smile className="w-3 h-3" />
-                                      <span className="hidden sm:inline">React</span>
-                                    </button>
-                                    <button
-                                      onClick={(e: React.MouseEvent) => { e.stopPropagation(); dispatchInteract({ type: 'SET', payload: { replyTo: { text: msg.text, from: msg.from, time: msg.time }, activeMsg: null } }) }}
-                                      className="flex items-center gap-1 px-2 py-1 rounded-md bg-surface border border-border text-muted hover:text-accent hover:border-accent/30 transition-colors text-[11px] font-mono"
-                                    >
-                                      <Reply className="w-3 h-3" />
-                                      <span className="hidden sm:inline">Reply</span>
-                                    </button>
-                                  </>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )
-              })}
-
-              {showScrollBtn && (
-                <button
-                  onClick={scrollToBottom}
-                  className="sticky bottom-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface border border-border shadow-lg shadow-black/30 text-muted hover:text-accent hover:border-accent/30 transition-colors animate-fade-in-up"
-                >
-                  <ArrowDown className="w-3 h-3" />
-                  <span className="font-mono text-[10px]">New messages</span>
-                </button>
-              )}
-            </div>
-
-            <div className={`shrink-0 ${isFullscreen || isPopout ? 'bg-surface/80 backdrop-blur-sm border-t border-border' : 'space-y-2'}`}>
-              {typingText && (
-                <div className={`flex items-center gap-2 ${isFullscreen || isPopout ? 'px-4 py-1.5' : 'px-1'}`}>
-                  <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface-2/50 border border-border/50">
-                    <span className="font-mono text-[10px] text-muted-light">{typingText}</span>
-                    <TypingDots />
-                  </div>
-                </div>
-              )}
-
-              {dropError && (
-                <div className={`flex items-center gap-2 bg-danger/10 border border-danger/20 animate-fade-in-up ${isFullscreen || isPopout ? 'mx-4 my-2 px-3 py-2 rounded-xl' : 'px-3 py-2 rounded-xl'}`}>
-                  <X className="w-3.5 h-3.5 text-danger shrink-0" />
-                  <span className="font-mono text-xs text-danger">{dropError}</span>
-                </div>
-              )}
-
-              {micError && (
-                <div className={`flex items-center gap-2 bg-danger/10 border border-danger/20 animate-fade-in-up ${isFullscreen || isPopout ? 'mx-4 my-2 px-3 py-2 rounded-xl' : 'px-3 py-2 rounded-xl'}`}>
-                  <X className="w-3.5 h-3.5 text-danger shrink-0" />
-                  <span className="font-mono text-xs text-danger">{micError}</span>
-                </div>
-              )}
-
-              {replyTo && (
-                <div className={`flex items-center gap-2 bg-accent/5 animate-fade-in-up ${isFullscreen || isPopout ? 'px-4 py-2 border-b border-accent/20' : 'px-3 py-2 border border-accent/20 rounded-xl'}`}>
-                  <div className="w-1 h-8 bg-accent/60 rounded-full shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-mono text-[10px] text-accent font-medium">Replying to {replyTo.from}</p>
-                    <p className="text-xs text-muted truncate mt-0.5">{replyTo.text || 'Image'}</p>
-                  </div>
-                  <button
-                    onClick={() => dispatchInteract({ type: 'SET', payload: { replyTo: null } })}
-                    className="p-1.5 rounded-lg text-muted hover:text-danger hover:bg-danger/10 transition-colors"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-
-              {imagePreview && (
-                <div className={`relative inline-block animate-fade-in-up ${isFullscreen || isPopout ? 'mx-4 my-2' : ''}`}>
-                  <img src={imagePreview.url} alt="Upload preview" className="h-20 rounded-xl border border-border shadow-sm object-cover" />
-                  <button
-                    onClick={() => {
-                      if (imagePreview?.url?.startsWith('blob:')) URL.revokeObjectURL(imagePreview.url)
-                      dispatchInteract({ type: 'SET', payload: { imagePreview: null } })
-                    }}
-                    className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-danger text-white flex items-center justify-center shadow-md hover:bg-danger/90 transition-colors"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              )}
-
-              <form
-                onSubmit={handleSend}
-                onDragOver={(e: React.DragEvent<HTMLFormElement>) => { e.preventDefault(); dispatchInteract({ type: 'SET', payload: { isDragOver: true } }) }}
-                onDragLeave={() => dispatchInteract({ type: 'SET', payload: { isDragOver: false } })}
-                onDrop={handleDrop}
-                className={`flex gap-1.5 sm:gap-2 items-end ${isFullscreen || isPopout ? 'px-3 py-2' : ''} ${isDragOver ? 'ring-2 ring-accent/40 rounded-xl' : ''}`}
-                style={{ paddingBottom: isFullscreen ? 'env(safe-area-inset-bottom, 0px)' : undefined }}
-              >
-              <input ref={imageInputRef} type="file" accept="image/*" onChange={handleImagePick} className="hidden" />
-
-              {isRecording ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={cancelRecording}
-                    aria-label="Cancel recording"
-                    className="shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-surface border border-border text-danger
-                      hover:bg-danger/10 active:scale-95 transition-all flex items-center justify-center self-end"
-                  >
-                    <X className="w-4 h-4 sm:w-5 sm:h-5" />
-                  </button>
-                  <div className="flex-1 flex items-center gap-3 px-3 py-2.5 bg-bg border border-danger/30 rounded-xl min-h-[40px] sm:min-h-[44px]">
-                    <span className="w-2.5 h-2.5 rounded-full bg-danger animate-pulse shrink-0" />
-                    <span className="font-mono text-sm text-danger">{Math.floor(recordingTime / 60)}:{(recordingTime % 60).toString().padStart(2, '0')}</span>
-                    <div className="flex-1 flex items-center gap-0.5">
-                      {Array.from({ length: 20 }).map((_, i) => (
-                        <div key={i} className={`w-1 rounded-full bg-danger/60 transition-all ${i < (recordingTime % 5) + 1 ? 'h-3' : 'h-1'}`} />
-                      ))}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={stopRecording}
-                    aria-label="Send voice note"
-                    className="shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-accent text-bg
-                      hover:bg-accent-dim active:scale-90 shadow-lg shadow-accent/25 transition-all flex items-center justify-center self-end"
-                  >
-                    <Send className="w-4 h-4" />
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => imageInputRef.current?.click()}
-                    disabled={disabled}
-                    aria-label="Attach image"
-                    className="shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-surface border border-border text-muted
-                      hover:text-accent hover:border-accent/30 active:scale-95 transition-all flex items-center justify-center
-                      disabled:opacity-30 disabled:cursor-not-allowed self-end"
-                  >
-                    <ImagePlus className="w-4 h-4 sm:w-5 sm:h-5" />
-                  </button>
-                  <textarea
-                    ref={textInputRef}
-                    dir="auto"
-                    rows={1}
-                    autoComplete="off"
-                    autoCorrect="on"
-                    autoCapitalize="sentences"
-                    spellCheck={true}
-                    enterKeyHint="send"
-                    data-form-type="other"
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    value={text}
-                    onChange={handleTyping}
-                    onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        handleSend(e)
-                      }
-                    }}
-                    placeholder={disabled ? 'Connect to chat' : 'Message...'}
-                    maxLength={2000}
-                    disabled={disabled}
-                    className="flex-1 min-w-0 bg-bg border border-border rounded-xl px-3 py-2.5 sm:px-4 sm:py-3 font-mono text-[16px] sm:text-sm text-text
-                      placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-all
-                      disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] sm:min-h-[44px] max-h-[120px]
-                      resize-none overflow-y-auto scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent"
-                  />
-                  {!text.trim() && !imagePreview ? (
-                    <button
-                      type="button"
-                      onClick={startRecording}
-                      disabled={disabled || !getRecordingMime()}
-                      aria-label="Record voice note"
-                      className="shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-surface border border-border text-muted
-                        hover:text-accent hover:border-accent/30 active:scale-95 transition-all flex items-center justify-center
-                        disabled:opacity-30 disabled:cursor-not-allowed self-end"
-                    >
-                      <Mic className="w-4 h-4 sm:w-5 sm:h-5" />
-                    </button>
-                  ) : (
-                    <button
-                      type="submit"
-                      disabled={disabled || (!text.trim() && !imagePreview)}
-                      aria-label="Send message"
-                      className={`shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center transition-all self-end
-                        ${!disabled && (text.trim() || imagePreview)
-                          ? 'bg-accent text-bg hover:bg-accent-dim active:scale-90 shadow-lg shadow-accent/25'
-                          : 'bg-surface border border-border text-muted/40 cursor-not-allowed'
-                        }`}
-                    >
-                      <Send className="w-4 h-4" />
-                    </button>
-                  )}
-                </>
-              )}
-            </form>
-            </div>
+            <ChatComposer
+              isFullscreen={isFullscreen}
+              isPopout={isPopout}
+              disabled={disabled}
+              text={text}
+              setText={setText}
+              textInputRef={textInputRef}
+              imageInputRef={imageInputRef}
+              onTextChange={handleTyping}
+              onImagePick={handleImagePick}
+              onSubmit={handleSend}
+              isDragOver={isDragOver}
+              setIsDragOver={(v) => dispatchInteract({ type: 'SET', payload: { isDragOver: v } })}
+              onDrop={handleDrop}
+              imagePreview={imagePreview}
+              clearImagePreview={clearImagePreview}
+              replyTo={replyTo}
+              clearReplyTo={clearReplyTo}
+              typingText={typingText}
+              dropError={dropError}
+              micError={micError}
+              isRecording={recorder.isRecording}
+              recordingTime={recorder.recordingTime}
+              hasRecordingSupport={recorder.hasRecordingSupport}
+              startRecording={recorder.startRecording}
+              stopRecording={recorder.stopRecording}
+              cancelRecording={recorder.cancelRecording}
+            />
           </div>
         </div>
       </div>
-      {showClearConfirm && createPortal(
-        <div
-          ref={clearConfirmRef}
-          className="fixed inset-0 z-[10000] bg-black/70 flex items-center justify-center p-4 animate-fade-in-up"
-          onClick={() => dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } })}
-          onKeyDown={(e: React.KeyboardEvent) => {
-            if (e.key === 'Escape') dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } })
-            if (e.key === 'Tab') {
-              const root = clearConfirmRef.current
-              if (!root) return
-              const focusables = root.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])')
-              if (focusables.length === 0) return
-              const first = focusables[0]
-              const last = focusables[focusables.length - 1]
-              if (e.shiftKey && document.activeElement === first) {
-                e.preventDefault()
-                last.focus()
-              } else if (!e.shiftKey && document.activeElement === last) {
-                e.preventDefault()
-                first.focus()
-              }
-            }
-          }}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="clear-confirm-title"
-          tabIndex={-1}
-        >
-          <div className="glass-strong rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-danger/10 flex items-center justify-center shrink-0">
-                <Trash2 className="w-5 h-5 text-danger" />
-              </div>
-              <div>
-                <p id="clear-confirm-title" className="font-mono text-sm font-medium text-text">Clear messages?</p>
-                <p className="text-xs text-muted mt-0.5">This will only clear messages on your side. Other participants will still see their messages.</p>
-              </div>
-            </div>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } })}
-                className="px-4 py-2 rounded-xl font-mono text-sm bg-surface border border-border text-muted hover:text-text hover:border-border-hover transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => { onClearMessages!(); dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } }) }}
-                className="px-4 py-2 rounded-xl font-mono text-sm bg-danger text-white hover:bg-danger/90 active:scale-95 transition-all"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body
+      {showClearConfirm && (
+        <ChatClearConfirm
+          onCancel={() => dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } })}
+          onConfirm={() => { onClearMessages!(); dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } }) }}
+        />
       )}
-      {viewImage && createPortal(
-        <ImagePreviewOverlay viewImage={viewImage} onClose={() => dispatchInteract({ type: 'SET', payload: { viewImage: null } })} />,
-        document.body
+      {viewImage && (
+        <ImagePreviewOverlay viewImage={viewImage} onClose={() => dispatchInteract({ type: 'SET', payload: { viewImage: null } })} />
       )}
     </div>
   )
-}
-
-async function compressImage(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    const reader = new FileReader()
-    reader.onerror = () => reject(new Error('Failed to read file'))
-    reader.onload = () => {
-      img.onerror = () => reject(new Error('Failed to load image'))
-      img.onload = () => {
-        const canvas = document.createElement('canvas')
-        let { width, height } = img
-        const maxDim = 2000
-        if (width > maxDim || height > maxDim) {
-          const ratio = Math.min(maxDim / width, maxDim / height)
-          width = Math.round(width * ratio)
-          height = Math.round(height * ratio)
-        }
-        canvas.width = width
-        canvas.height = height
-        const ctx = canvas.getContext('2d')!
-        ctx.drawImage(img, 0, 0, width, height)
-        resolve(canvas.toDataURL('image/jpeg', 0.92))
-      }
-      img.src = reader.result as string
-    }
-    reader.readAsDataURL(file)
-  })
 }

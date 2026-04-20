@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 export interface ViewImage {
   url?: string
@@ -65,7 +66,7 @@ export default function ImagePreviewOverlay({ viewImage, onClose }: ImagePreview
 
   const imgUrl = viewImage.url ?? ''
 
-  return (
+  return createPortal(
     <div
       ref={overlayRef}
       className="fixed inset-0 z-[9999] bg-black/90 flex flex-col items-center justify-center p-4"
@@ -95,6 +96,7 @@ export default function ImagePreviewOverlay({ viewImage, onClose }: ImagePreview
         </button>
       </div>
       <img src={imgUrl} alt="Preview" className="max-w-full max-h-[85vh] object-contain rounded-lg" />
-    </div>
+    </div>,
+    document.body,
   )
 }
