@@ -8,6 +8,7 @@ import {
 } from '../utils/callTabClaim'
 import type { RnnoisePipeline } from '../utils/rnnoise'
 import { getSharedAudioContext, ensureAudioContextRunning } from '../utils/audioContext'
+import { getPeerConnection, getEmitterOff } from '../net/peerjsInternal'
 
 export type CallMode = 'audio' | 'video'
 
@@ -488,14 +489,14 @@ export function useCall(options: UseCallOptions) {
       mediaConnsRef.current.set(peerId, mc)
       // Prefer VP9 before the offer is serialised. peerjs queues its
       // createOffer on the microtask queue, so this sync call lands first.
-      preferVp9OnPc((mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection)
+      preferVp9OnPc(getPeerConnection(mc))
       mc.on('stream', (remoteStream: MediaStream) => {
         clearRetryState(peerId)
         upsertRoster(peerId, {
           stream: remoteStream,
           mode: streamHasLiveVideo(remoteStream) ? 'video' : 'audio',
         })
-        const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+        const pc = getPeerConnection(mc)
         if (pc) {
           if (screenSharingRef.current) {
             tuneScreenSendersRef.current?.(pc)
@@ -514,7 +515,7 @@ export function useCall(options: UseCallOptions) {
         // remote closes first (glare). Close it explicitly so camera /
         // ICE candidates release promptly instead of lingering.
         try {
-          const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+          const pc = getPeerConnection(mc)
           pc?.close()
         } catch { /* noop */ }
       })
@@ -522,7 +523,7 @@ export function useCall(options: UseCallOptions) {
         mediaConnsRef.current.delete(peerId)
         upsertRoster(peerId, { stream: null })
         try {
-          const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+          const pc = getPeerConnection(mc)
           pc?.close()
         } catch { /* noop */ }
 
@@ -633,7 +634,7 @@ export function useCall(options: UseCallOptions) {
       try { mc.answer(answerStream) } catch { return }
       mediaConnsRef.current.set(mc.peer, mc)
       // Prefer VP9 before peerjs's createAnswer runs on the microtask queue.
-      preferVp9OnPc((mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection)
+      preferVp9OnPc(getPeerConnection(mc))
 
       // Existing roster name (from the host's snapshot or call-peer-joined
       // broadcast) ALWAYS wins over the metadata name a peer claims for
@@ -653,7 +654,7 @@ export function useCall(options: UseCallOptions) {
           stream: remoteStream,
           mode: streamHasLiveVideo(remoteStream) ? 'video' : 'audio',
         })
-        const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+        const pc = getPeerConnection(mc)
         if (pc) {
           if (screenSharingRef.current) {
             tuneScreenSendersRef.current?.(pc)
@@ -667,7 +668,7 @@ export function useCall(options: UseCallOptions) {
         mediaConnsRef.current.delete(mc.peer)
         upsertRoster(mc.peer, { stream: null })
         try {
-          const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+          const pc = getPeerConnection(mc)
           pc?.close()
         } catch { /* noop */ }
       })
@@ -678,7 +679,7 @@ export function useCall(options: UseCallOptions) {
         // the peer as not-streaming instead of a stale "connected" state.
         upsertRoster(mc.peer, { stream: null })
         try {
-          const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+          const pc = getPeerConnection(mc)
           pc?.close()
         } catch { /* noop */ }
       })
@@ -748,12 +749,8 @@ export function useCall(options: UseCallOptions) {
       // 'call' is owned by us — no other consumer subscribes to it.
       try { peer.removeAllListeners('call') } catch {}
       // 'error' is shared with useReceiver/useSender — only remove our own
-      // handler. eventemitter3 exposes both `off` (modern alias) and
-      // `removeListener`; prefer `off` and fall back to `removeListener`
-      // so we don't break if the underlying emitter ever drops one alias.
-      type OffFn = (event: string, handler: (...args: unknown[]) => void) => void
-      const emitter = peer as unknown as { off?: OffFn; removeListener?: OffFn }
-      const off = emitter.off ?? emitter.removeListener
+      // handler via the peerjsInternal off accessor.
+      const off = getEmitterOff(peer)
       if (off) { try { off.call(peer, 'error', errHandler) } catch {} }
     }
   }, [peer, upsertRoster, closeMediaConn, removeFromRoster])
@@ -784,7 +781,7 @@ export function useCall(options: UseCallOptions) {
       : null
     const videoTrack = screenVideoTrack ?? (stream.getVideoTracks()[0] || null)
     mediaConnsRef.current.forEach(mc => {
-      const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+      const pc = getPeerConnection(mc)
       if (!pc) return
       pc.getSenders().forEach(sender => {
         if (sender.track?.kind === 'audio' && audioTrack) {
@@ -1165,7 +1162,7 @@ export function useCall(options: UseCallOptions) {
 
   const swapVideoTrack = useCallback((track: MediaStreamTrack | null): void => {
     mediaConnsRef.current.forEach(mc => {
-      const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+      const pc = getPeerConnection(mc)
       if (!pc) return
       pc.getSenders().forEach(sender => {
         if (sender.track?.kind === 'video') {
@@ -1177,7 +1174,7 @@ export function useCall(options: UseCallOptions) {
 
   const swapAudioTrack = useCallback((track: MediaStreamTrack | null): void => {
     mediaConnsRef.current.forEach(mc => {
-      const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+      const pc = getPeerConnection(mc)
       if (!pc) return
       pc.getSenders().forEach(sender => {
         if (sender.track?.kind === 'audio') {
@@ -1347,7 +1344,7 @@ export function useCall(options: UseCallOptions) {
   // joiners/leavers shift the encoding into the right bandwidth tier.
   const tuneAllCameraSenders = useCallback((): void => {
     mediaConnsRef.current.forEach(mc => {
-      const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+      const pc = getPeerConnection(mc)
       if (pc) tuneCameraSenders(pc)
     })
   }, [tuneCameraSenders])
@@ -1366,7 +1363,7 @@ export function useCall(options: UseCallOptions) {
 
   const tuneAllScreenSenders = useCallback((): void => {
     mediaConnsRef.current.forEach(mc => {
-      const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+      const pc = getPeerConnection(mc)
       if (pc) tuneScreenSenders(pc)
     })
   }, [tuneScreenSenders])
@@ -1388,7 +1385,7 @@ export function useCall(options: UseCallOptions) {
       if (!joinedRef.current) return
       if (!screenSharingRef.current && modeRef.current !== 'video') return
       mediaConnsRef.current.forEach(mc => {
-        const pc = (mc as unknown as { peerConnection?: RTCPeerConnection }).peerConnection
+        const pc = getPeerConnection(mc)
         if (!pc) return
         pc.getSenders().forEach(sender => {
           const track = sender.track

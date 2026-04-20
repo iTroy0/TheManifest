@@ -7,6 +7,7 @@ import { STUN_ONLY, getWithTurn } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { parseChunkPacket, buildChunkPacket, waitForBufferDrain, CHAT_IMAGE_FILE_INDEX } from '../utils/fileChunker'
 import { createFileStream, type FileStreamHandle } from '../utils/streamWriter'
+import { asBlobPart, asBlobParts } from '../net/peerjsInternal'
 import { sendFile, createFileReceiver, createCollabWire, IntegrityError, type CollabWire, type FileReceiver } from '../net/transferEngine'
 import { generateThumbnailAsync, generateVideoThumbnail, generateTextPreview } from '../utils/thumbnailWorker'
 import { ChatMessage } from '../types'
@@ -1330,7 +1331,7 @@ export function useCollabGuest(roomId: string) {
             const inFlight = hostSess.inProgressImage
             hostSess.inProgressImage = null
             if (!inFlight) return
-            const blob = new Blob(inFlight.chunks as unknown as BlobPart[], { type: inFlight.mime })
+            const blob = new Blob(asBlobParts(inFlight.chunks), { type: inFlight.mime })
             const url = URL.createObjectURL(blob)
             imageBlobUrlsRef.current.push(url)
             setMessages(prev => [...prev, {
@@ -1502,7 +1503,7 @@ export function useCollabGuest(roomId: string) {
       const mime = imgObj.mime || 'application/octet-stream'
       const duration = imgObj.duration
       const id = crypto.randomUUID()
-      const localBlob = new Blob([bytes as unknown as BlobPart], { type: mime })
+      const localBlob = new Blob([asBlobPart(bytes)], { type: mime })
       const localUrl = URL.createObjectURL(localBlob)
       imageBlobUrlsRef.current.push(localUrl)
       setMessages(prev => [...prev, { id, text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }].slice(-500))

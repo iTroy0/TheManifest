@@ -7,6 +7,7 @@ import { STUN_ONLY } from '../utils/iceServers'
 import { setupHeartbeat, setupRTTPolling, handleTypingMessage } from '../utils/connectionHelpers'
 import { buildChunkPacket, parseChunkPacket, waitForBufferDrain, CHAT_IMAGE_FILE_INDEX, AdaptiveChunker, ProgressThrottler } from '../utils/fileChunker'
 import { createFileStream } from '../utils/streamWriter'
+import { asBlobPart } from '../net/peerjsInternal'
 import { generateThumbnailAsync, generateVideoThumbnail, generateTextPreview } from '../utils/thumbnailWorker'
 import { generateNickname } from '../utils/nickname'
 import { ChatMessage } from '../types'
@@ -1442,7 +1443,7 @@ export function useCollabHost() {
       const mime = imgObj.mime || 'application/octet-stream'
       const duration = imgObj.duration
       const id = crypto.randomUUID()
-      const localBlob = new Blob([bytes as unknown as BlobPart], { type: mime })
+      const localBlob = new Blob([asBlobPart(bytes)], { type: mime })
       const localUrl = URL.createObjectURL(localBlob)
       imageBlobUrlsRef.current.push(localUrl)
       setMessages(prev => [...prev, { id, text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }].slice(-500))

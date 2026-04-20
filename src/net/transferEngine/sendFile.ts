@@ -14,6 +14,7 @@ import {
 } from '../../utils/crypto'
 import type { Session, TransferHandle } from '../session'
 import type { SendFileOpts, SendResult, WireAdapter } from './types'
+import { asDataChannelLike } from '../peerjsInternal'
 
 function isTerminal(s: Session['state']): boolean {
   return s === 'closed' || s === 'error' || s === 'kicked'
@@ -121,10 +122,7 @@ export async function sendFile(
           ct,
         )
         session.sendBinary(packet)
-        await waitForBufferDrain(
-          session.conn as unknown as { _dc?: RTCDataChannel },
-          abortCtrl.signal,
-        )
+        await waitForBufferDrain(asDataChannelLike(session.conn), abortCtrl.signal)
       } catch (err) {
         // AbortError from drain means the cancellation channel fired; route
         // to 'cancelled'. Any other error (drain timeout, send throw) stays

@@ -17,6 +17,7 @@ import {
 import { ChatMessage } from '../types'
 import { MAX_CONNECTIONS, MAX_CHAT_IMAGE_SIZE, TIMEOUT_MS } from '../net/config'
 import type { PortalMsg } from '../net/protocol'
+import { asBlobPart } from '../net/peerjsInternal'
 import { log } from '../utils/logger'
 
 interface InProgressImage {
@@ -896,7 +897,7 @@ export function useSender() {
       const bytes = imgObj.bytes instanceof Uint8Array ? imgObj.bytes : new Uint8Array(imgObj.bytes)
       const mime = imgObj.mime || 'application/octet-stream'
       const duration = imgObj.duration
-      const localBlob = new Blob([bytes as unknown as BlobPart], { type: mime })
+      const localBlob = new Blob([asBlobPart(bytes)], { type: mime })
       const localUrl = URL.createObjectURL(localBlob)
       imageBlobUrlsRef.current.push(localUrl)
       setMessages(prev => [...prev, { text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }].slice(-500))

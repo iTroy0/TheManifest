@@ -15,6 +15,7 @@ import { sanitizeFileName } from '../utils/filename'
 import { generateNickname } from '../utils/nickname'
 import { log } from '../utils/logger'
 import type { PortalMsg } from '../net/protocol'
+import { asBlobPart, asBlobParts } from '../net/peerjsInternal'
 import {
   transferReducer,
   connectionReducer,
@@ -421,7 +422,7 @@ export function useReceiver(peerId: string) {
             const inFlight = sess.inProgressImage
             sess.inProgressImage = null
             if (!inFlight) return
-            const blob = new Blob(inFlight.chunks as unknown as BlobPart[], { type: inFlight.mime })
+            const blob = new Blob(asBlobParts(inFlight.chunks), { type: inFlight.mime })
             const url = URL.createObjectURL(blob)
             imageBlobUrlsRef.current.push(url)
             setMessages(prev => [...prev, {
@@ -572,7 +573,7 @@ export function useReceiver(peerId: string) {
               }
             } else if (chunksRef.current[idx]) {
               const mimeType = manifestRef.current?.files?.[idx]?.type || 'application/octet-stream'
-              const blob = new Blob(chunksRef.current[idx] as unknown as BlobPart[], { type: mimeType })
+              const blob = new Blob(asBlobParts(chunksRef.current[idx]!), { type: mimeType })
               const url = URL.createObjectURL(blob)
               const a = document.createElement('a')
               a.href = url
@@ -884,7 +885,7 @@ export function useReceiver(peerId: string) {
       const bytes = imgObj.bytes instanceof Uint8Array ? imgObj.bytes : new Uint8Array(imgObj.bytes)
       const mime = imgObj.mime || 'application/octet-stream'
       const duration = imgObj.duration
-      const localBlob = new Blob([bytes as unknown as BlobPart], { type: mime })
+      const localBlob = new Blob([asBlobPart(bytes)], { type: mime })
       const localUrl = URL.createObjectURL(localBlob)
       imageBlobUrlsRef.current.push(localUrl)
       setMessages(prev => [...prev, { text: text || '', image: localUrl, mime, duration, replyTo, from: 'You', time, self: true }])
