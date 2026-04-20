@@ -1267,7 +1267,10 @@ export function useCall(options: UseCallOptions) {
         // tightens — smoother perceived motion for screen content.
         type ParamsWithDegradation = RTCRtpSendParameters & { degradationPreference?: string }
         ;(params as ParamsWithDegradation).degradationPreference = 'maintain-framerate'
-        void sender.setParameters(params)
+        // setParameters() returns a Promise; swallow async rejections
+        // (InvalidStateError on a freshly-renegotiated sender, etc.) so
+        // they don't bubble as unhandledrejection.
+        sender.setParameters(params).catch(() => {})
       } catch {}
     })
   }, [])
@@ -1335,7 +1338,7 @@ export function useCall(options: UseCallOptions) {
         params.encodings = [enc]
         type ParamsWithDegradation = RTCRtpSendParameters & { degradationPreference?: string }
         ;(params as ParamsWithDegradation).degradationPreference = 'maintain-framerate'
-        void sender.setParameters(params)
+        sender.setParameters(params).catch(() => {})
       } catch { /* noop */ }
     })
   }, [])

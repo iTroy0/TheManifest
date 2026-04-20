@@ -60,6 +60,11 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
   const [open, setOpen] = useState<boolean>(false)
   const [showSettings, setShowSettings] = useState<boolean>(false)
   const { isMobile } = useViewport()
+  // Screen-share affordance gates on capability, not viewport width. A
+  // narrow desktop window or a popout call panel dips below the mobile
+  // breakpoint but still has getDisplayMedia — the old isMobile check
+  // disabled the button for those users.
+  const screenShareSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getDisplayMedia
   const popout = usePopout({ defaultSize: POPOUT_DEFAULT, minSize: POPOUT_MIN })
   const { isPopout, pos: popoutPos, size: popoutSize, popOut, dockBack } = popout
   // Master remote-volume (0–1). Ephemeral on purpose — we don't persist it.
@@ -600,14 +605,7 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
               icon={SwitchCamera}
             />
           )}
-          {isMobile ? (
-            <ControlButton
-              onClick={() => { /* not supported on mobile */ }}
-              title="Screen share is not supported on mobile"
-              icon={MonitorOff}
-              disabled
-            />
-          ) : (
+          {screenShareSupported ? (
             <ControlButton
               onClick={() => {
                 if (call.screenSharing) call.stopScreenShare()
@@ -624,6 +622,13 @@ export default function CallPanel({ call, myName, disabled = false, connectionSt
               danger={call.screenSharing}
               disabled={call.screenShareStarting}
               spinning={call.screenShareStarting}
+            />
+          ) : (
+            <ControlButton
+              onClick={() => { /* not supported */ }}
+              title="Screen share is not supported in this browser"
+              icon={MonitorOff}
+              disabled
             />
           )}
           <ControlButton
