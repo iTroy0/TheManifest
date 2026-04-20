@@ -15,7 +15,7 @@ import {
   initialConnection,
 } from './state/senderState'
 import { ChatMessage } from '../types'
-import { MAX_CONNECTIONS, MAX_CHAT_IMAGE_SIZE, TIMEOUT_MS } from '../net/config'
+import { MAX_CONNECTIONS, MAX_CHAT_IMAGE_SIZE, TIMEOUT_MS, CALL_MSG_BUFFER_CAP } from '../net/config'
 import type { PortalMsg } from '../net/protocol'
 import { asBlobPart } from '../net/peerjsInternal'
 import { log } from '../utils/logger'
@@ -94,6 +94,9 @@ export function useSender() {
   const [peerInstance, setPeerInstance] = useState<InstanceType<typeof Peer> | null>(null)
   const [participants, setParticipants] = useState<Array<{ peerId: string; name: string }>>([])
   const callMessageHandlerRef = useRef<((fromPeerId: string, msg: Record<string, unknown>) => void) | null>(null)
+  // Buffered `call-*` messages received before useCall registers its
+  // handler (React.lazy CallPanel chunk still loading). Drained on register.
+  const callMessageBufferRef = useRef<Array<{ from: string; msg: Record<string, unknown> }>>([])
 
   const refreshParticipants = useCallback((): void => {
     const list: Array<{ peerId: string; name: string }> = []
@@ -105,6 +108,12 @@ export function useSender() {
 
   const setCallMessageHandler = useCallback((h: ((fromPeerId: string, msg: Record<string, unknown>) => void) | null): void => {
     callMessageHandlerRef.current = h
+    if (h && callMessageBufferRef.current.length) {
+      const buffered = callMessageBufferRef.current.splice(0)
+      for (const { from, msg } of buffered) {
+        try { h(from, msg) } catch (e) { log.warn('useSender.callMessageHandler.replay', e) }
+      }
+    }
   }, [])
 
   const sendCallMessage = useCallback((peerId: string, msg: Record<string, unknown>): void => {
@@ -341,9 +350,13 @@ export function useSender() {
 
         const raw = data as { type?: unknown }
         if (typeof raw.type === 'string' && raw.type.startsWith('call-')) {
-          if (callMessageHandlerRef.current) {
-            try { callMessageHandlerRef.current(conn.peer, raw as Record<string, unknown>) }
-            catch (e) { log.warn('useSender.callMessageHandler', e) }
+          const h = callMessageHandlerRef.current
+          const rec = raw as Record<string, unknown>
+          if (h) {
+            try { h(conn.peer, rec) } catch (e) { log.warn('useSender.callMessageHandler', e) }
+          } else {
+            callMessageBufferRef.current.push({ from: conn.peer, msg: rec })
+            if (callMessageBufferRef.current.length > CALL_MSG_BUFFER_CAP) callMessageBufferRef.current.shift()
           }
           return
         }

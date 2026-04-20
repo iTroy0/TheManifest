@@ -68,3 +68,12 @@ export const FILE_SHARE_WINDOW_MS = 1_000
 // link to recover before dispatching `direct-failed` and surfacing the
 // relay-fallback prompt.
 export const DIRECT_FAIL_WINDOW_MS = 10_000
+
+// Max `call-*` messages buffered on a hook while CallPanel's useCall has
+// not yet registered its handler (React.lazy chunk still loading). Drops
+// oldest when exceeded so a compromised peer can't grow memory without
+// bound. Without this buffer, dev-server + StrictMode races silently drop
+// the guest's `call-join` and the host never answers. 50 covers realistic
+// handshake bursts with headroom; a pathological peer won't exceed this
+// before the legitimate handler registers.
+export const CALL_MSG_BUFFER_CAP = 50

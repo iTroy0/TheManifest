@@ -421,7 +421,13 @@ export function useLocalMedia() {
   // start() awaiting getUserMedia will abort when acquire() resolves
   // (it checks mountedRef + startTokenRef and stops the orphan stream
   // instead of binding it to a dead component).
+  //
+  // Re-set mountedRef in the effect body so StrictMode's mount → cleanup →
+  // mount sequence doesn't strand mountedRef at false. Without this, dev
+  // mode permanently aborts every start() because the first cleanup already
+  // flipped the ref and the second mount never restored it.
   useEffect(() => {
+    mountedRef.current = true
     return () => {
       mountedRef.current = false
       startTokenRef.current = Symbol('unmount')

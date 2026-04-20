@@ -29,6 +29,7 @@ import {
   RECONNECT_DELAY,
   MAX_RECONNECTS,
   MAX_CHAT_IMAGE_SIZE,
+  CALL_MSG_BUFFER_CAP,
 } from '../net/config'
 
 interface InProgressImage {
@@ -98,9 +99,18 @@ export function useReceiver(peerId: string) {
 
   const [peerInstance, setPeerInstance] = useState<InstanceType<typeof Peer> | null>(null)
   const callMessageHandlerRef = useRef<((fromPeerId: string, msg: Record<string, unknown>) => void) | null>(null)
+  // Buffered `call-*` messages received before useCall registers its
+  // handler (React.lazy CallPanel chunk still loading). Drained on register.
+  const callMessageBufferRef = useRef<Array<{ from: string; msg: Record<string, unknown> }>>([])
 
   const setCallMessageHandler = useCallback((h: ((fromPeerId: string, msg: Record<string, unknown>) => void) | null): void => {
     callMessageHandlerRef.current = h
+    if (h && callMessageBufferRef.current.length) {
+      const buffered = callMessageBufferRef.current.splice(0)
+      for (const { from, msg } of buffered) {
+        try { h(from, msg) } catch (e) { log.warn('useReceiver.callMessageHandler.replay', e) }
+      }
+    }
   }, [])
 
   const sendCallMessage = useCallback((msg: Record<string, unknown>): void => {
@@ -255,10 +265,14 @@ export function useReceiver(peerId: string) {
 
           const raw = data as { type?: unknown; from?: unknown }
           if (typeof raw.type === 'string' && raw.type.startsWith('call-')) {
-            if (callMessageHandlerRef.current) {
-              const from = (typeof raw.from === 'string' && raw.from) || conn.peer
-              try { callMessageHandlerRef.current(from, raw as Record<string, unknown>) }
-              catch (e) { log.warn('useReceiver.callMessageHandler', e) }
+            const from = (typeof raw.from === 'string' && raw.from) || conn.peer
+            const rec = raw as Record<string, unknown>
+            const h = callMessageHandlerRef.current
+            if (h) {
+              try { h(from, rec) } catch (e) { log.warn('useReceiver.callMessageHandler', e) }
+            } else {
+              callMessageBufferRef.current.push({ from, msg: rec })
+              if (callMessageBufferRef.current.length > CALL_MSG_BUFFER_CAP) callMessageBufferRef.current.shift()
             }
             return
           }

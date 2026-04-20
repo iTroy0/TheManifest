@@ -35,6 +35,7 @@ import {
   TIMEOUT_MS,
   CONTROL_WINDOW_MS,
   FILE_SHARE_WINDOW_MS,
+  CALL_MSG_BUFFER_CAP,
 } from '../net/config'
 import type { CollabInnerMsg, CollabUnencryptedMsg } from '../net/protocol'
 import { log } from '../utils/logger'
@@ -109,6 +110,9 @@ export function useCollabHost() {
   const [peerInstance, setPeerInstance] = useState<InstanceType<typeof Peer> | null>(null)
   const [participantsList, setParticipantsList] = useState<Array<{ peerId: string; name: string }>>([])
   const callMessageHandlerRef = useRef<((fromPeerId: string, msg: Record<string, unknown>) => void) | null>(null)
+  // Buffered `call-*` messages received before useCall registers its
+  // handler (React.lazy CallPanel chunk still loading). Drained on register.
+  const callMessageBufferRef = useRef<Array<{ from: string; msg: Record<string, unknown> }>>([])
 
   // Returns true if the password was applied, false if rejected because
   // guests are already connected (see CollabPortal UX: changing the
@@ -177,6 +181,12 @@ export function useCollabHost() {
 
   const setCallMessageHandler = useCallback((h: ((fromPeerId: string, msg: Record<string, unknown>) => void) | null): void => {
     callMessageHandlerRef.current = h
+    if (h && callMessageBufferRef.current.length) {
+      const buffered = callMessageBufferRef.current.splice(0)
+      for (const { from, msg } of buffered) {
+        try { h(from, msg) } catch (e) { log.warn('useCollabHost.callMessageHandler.replay', e) }
+      }
+    }
   }, [])
 
   const sendCallMessage = useCallback((peerId: string, msg: Record<string, unknown>): void => {
@@ -676,9 +686,13 @@ export function useCollabHost() {
         // discriminated switch below stays clean.
         const raw = data as { type?: unknown }
         if (typeof raw.type === 'string' && raw.type.startsWith('call-')) {
-          if (callMessageHandlerRef.current) {
-            try { callMessageHandlerRef.current(conn.peer, raw as Record<string, unknown>) }
-            catch (e) { log.warn('useCollabHost.callMessageHandler', e) }
+          const h = callMessageHandlerRef.current
+          const rec = raw as Record<string, unknown>
+          if (h) {
+            try { h(conn.peer, rec) } catch (e) { log.warn('useCollabHost.callMessageHandler', e) }
+          } else {
+            callMessageBufferRef.current.push({ from: conn.peer, msg: rec })
+            if (callMessageBufferRef.current.length > CALL_MSG_BUFFER_CAP) callMessageBufferRef.current.shift()
           }
           return
         }
