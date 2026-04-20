@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 export interface VoiceClip {
   url: string
@@ -52,6 +52,11 @@ export function useVoiceRecorder({ onClip, onError, createTrackedBlobUrl, onSent
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recordingChunksRef = useRef<Blob[]>([])
 
+  // UA capabilities don't change across renders, but module-scope caching
+  // would freeze the value at import time (which breaks tests that install
+  // MediaRecorder per-case). Memoize per hook instance instead.
+  const recordingMime = useMemo(() => getRecordingMime(), [])
+
   const onClipRef = useRef(onClip)
   const onSentRef = useRef(onSent)
   const onErrorRef = useRef(onError)
@@ -81,11 +86,14 @@ export function useVoiceRecorder({ onClip, onError, createTrackedBlobUrl, onSent
   }
 
   const startRecording = async (): Promise<void> => {
-    const mime = getRecordingMime()
-    if (!mime) return
+    if (!recordingMime) {
+      onErrorRef.current('Voice recording is not supported in this browser.')
+      setTimeout(() => onErrorRef.current(null), ERROR_HIDE_MS)
+      return
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const recorder = new MediaRecorder(stream, { mimeType: mime })
+      const recorder = new MediaRecorder(stream, { mimeType: recordingMime })
       recordingChunksRef.current = []
 
       recorder.ondataavailable = (e) => {
@@ -95,7 +103,7 @@ export function useVoiceRecorder({ onClip, onError, createTrackedBlobUrl, onSent
       recorder.onstop = async () => {
         stream.getTracks().forEach(t => t.stop())
         if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null }
-        const blob = new Blob(recordingChunksRef.current, { type: mime })
+        const blob = new Blob(recordingChunksRef.current, { type: recordingMime })
         recordingChunksRef.current = []
         if (blob.size === 0) {
           setIsRecording(false)
@@ -105,7 +113,7 @@ export function useVoiceRecorder({ onClip, onError, createTrackedBlobUrl, onSent
         const bytes = new Uint8Array(await blob.arrayBuffer())
         const url = createTrackedBlobUrl(blob)
         onSentRef.current?.()
-        onClipRef.current({ url, bytes, mime: mime.split(';')[0], duration: recordingTimeRef.current })
+        onClipRef.current({ url, bytes, mime: recordingMime.split(';')[0], duration: recordingTimeRef.current })
         setIsRecording(false)
         setRecordingTime(0)
         recordingTimeRef.current = 0
@@ -143,7 +151,7 @@ export function useVoiceRecorder({ onClip, onError, createTrackedBlobUrl, onSent
   return {
     isRecording,
     recordingTime,
-    hasRecordingSupport: getRecordingMime() !== '',
+    hasRecordingSupport: recordingMime !== '',
     startRecording,
     stopRecording,
     cancelRecording,

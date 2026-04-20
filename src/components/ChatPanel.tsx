@@ -113,9 +113,11 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
     return () => observer.disconnect()
   }, [open])
 
-  // Sync the messages mirror every render. Must be declared before the
-  // alert effect so its slice() reads the latest items.
-  useEffect(() => { messagesRef.current = messages })
+  // Sync the messages mirror every render. The alert effect below reads
+  // it via .slice() to figure out which entries are newly arrived; doing
+  // the assignment in the render body (instead of an empty-deps effect)
+  // ensures the ref is current before any other effect reads it.
+  messagesRef.current = messages
 
   useEffect(() => {
     const prev = prevLen.current
@@ -317,8 +319,8 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
   const nameChanged = !!(editName.trim() && editName.trim() !== nickname)
 
   function handleSetName() {
-    if (!nameChanged) return
-    onNicknameChange!(editName.trim())
+    if (!nameChanged || !onNicknameChange) return
+    onNicknameChange(editName.trim())
     setNameSaved(true)
     setTimeout(() => setNameSaved(false), 2000)
   }
@@ -538,7 +540,7 @@ export default function ChatPanel({ messages, onSend, onClearMessages, disabled,
       {showClearConfirm && (
         <ChatClearConfirm
           onCancel={() => dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } })}
-          onConfirm={() => { onClearMessages!(); dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } }) }}
+          onConfirm={() => { onClearMessages?.(); dispatchPanel({ type: 'SET', payload: { showClearConfirm: false } }) }}
         />
       )}
       {viewImage && (

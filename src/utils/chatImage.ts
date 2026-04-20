@@ -28,7 +28,8 @@ export async function compressImage(file: File): Promise<string> {
         }
         canvas.width = width
         canvas.height = height
-        const ctx = canvas.getContext('2d')!
+        const ctx = canvas.getContext('2d')
+        if (!ctx) { reject(new Error('Canvas 2D context unavailable')); return }
         ctx.drawImage(img, 0, 0, width, height)
         resolve(canvas.toDataURL('image/jpeg', COMPRESS_QUALITY))
       }
