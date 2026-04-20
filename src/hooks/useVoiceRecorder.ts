@@ -118,8 +118,8 @@ export function useVoiceRecorder({ onClip, onError, createTrackedBlobUrl, onSent
       recordingTimerRef.current = setInterval(() => {
         setRecordingTime(t => {
           const next = t + 1
-          recordingTimeRef.current = next
           if (next >= MAX_RECORDING_SECS) { stopRecording(); return t }
+          recordingTimeRef.current = next
           return next
         })
       }, 1000)

@@ -12,3 +12,7 @@ playwright-report
 test-results
 .playwright.vite/
 .vite/
+.playwright-mcp/
+/favicon-check.png
+/*-logo.png
+/logo-*.png

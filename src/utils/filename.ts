@@ -5,10 +5,16 @@
 // prefix so StreamSaver / `a[download]` writes don't fail with IO errors.
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
 
+// Unicode bidi override + isolate chars. Strip these or attackers can craft
+// filenames that visually swap their extension (e.g. RLO makes
+// `innocent\u202Egpj.exe` render as `innocentexe.jpg`).
+const BIDI_OVERRIDES = /[\u202A-\u202E\u2066-\u2069]/g
+
 export function sanitizeFileName(name: string): string {
   const stripped = name
     .replace(/^.*[\\/]/, '')              // drop path prefix
-    .replace(/[<>:"|?*\x00-\x1f]/g, '_')  // reserved/control chars → _
+    .replace(BIDI_OVERRIDES, '')          // strip bidi overrides (RLO etc.)
+    .replace(/[<>:"|?*\x00-\x1f\x7f-\x9f]/g, '_')  // reserved/control chars → _
     .replace(/^[\s.]+|[\s.]+$/g, '')      // trim whitespace & dots
   if (!stripped) return 'download'
   const dotIdx = stripped.indexOf('.')

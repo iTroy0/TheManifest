@@ -451,7 +451,7 @@ export function useCollabGuest(roomId: string) {
             console.warn('mesh key exchange timed out for', peerId)
             teardownMesh(peerId, 'mesh key exchange timed out')
           }
-        }, 10_000)
+        }, TIMEOUT_MS)
 
         // If we received the remote key before our keyPair was ready, finish
         // the handshake here. We also re-check at the end to cover the narrow
@@ -826,7 +826,7 @@ export function useCollabGuest(roomId: string) {
               console.warn('Key exchange timed out')
               conn.close()
             }
-          }, 10_000)
+          }, TIMEOUT_MS)
 
           const pc = conn.peerConnection
           if (pc) {

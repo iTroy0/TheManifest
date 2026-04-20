@@ -15,7 +15,7 @@ import {
   initialConnection,
 } from './state/senderState'
 import { ChatMessage } from '../types'
-import { MAX_CONNECTIONS, MAX_CHAT_IMAGE_SIZE } from '../net/config'
+import { MAX_CONNECTIONS, MAX_CHAT_IMAGE_SIZE, TIMEOUT_MS } from '../net/config'
 import type { PortalMsg } from '../net/protocol'
 import { log } from '../utils/logger'
 
@@ -303,7 +303,7 @@ export function useSender() {
             console.warn('Key exchange timed out for', connId)
             conn.close()
           }
-        }, 10_000)
+        }, TIMEOUT_MS)
 
         if (session.pendingRemoteKey) {
           try {
@@ -467,14 +467,19 @@ export function useSender() {
             try { payload = await decryptJSON(session.encryptKey, msg.data as string) }
             catch (e) { log.warn('useSender.chatEncrypted.decrypt', e); return }
           }
-          const chatMsg: ChatMessage = { text: payload.text as string || '', image: payload.image as string | undefined, mime: payload.mime as string | undefined, replyTo: payload.replyTo as ChatMessage['replyTo'], from: msg.nickname as string || 'Anon', time: msg.time as number, self: false }
+          // Pin author to the session's authoritative nickname (set via the
+          // dedicated `nickname` message + `session.setNickname`) rather than
+          // trusting the per-message `msg.nickname` field. Otherwise a peer
+          // could stamp another receiver's name on each chat frame.
+          const authorName = session.nickname || 'Anon'
+          const chatMsg: ChatMessage = { text: payload.text as string || '', image: payload.image as string | undefined, mime: payload.mime as string | undefined, replyTo: payload.replyTo as ChatMessage['replyTo'], from: authorName, time: msg.time as number, self: false }
           setMessages(prev => [...prev, chatMsg].slice(-500))
           const relayPayload = JSON.stringify(payload)
           for (const [id, other] of connectionsRef.current) {
             if (id !== connId && other.session.encryptKey) {
               try {
                 const encrypted = await encryptChunk(other.session.encryptKey, new TextEncoder().encode(relayPayload))
-                other.session.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: msg.nickname || 'Anon', time: msg.time } satisfies PortalMsg)
+                other.session.send({ type: 'chat-encrypted', data: uint8ToBase64(new Uint8Array(encrypted)), from: authorName, time: msg.time } satisfies PortalMsg)
               } catch (e) { log.warn('useSender.chatEncrypted.relay', e) }
             }
           }
@@ -499,7 +504,8 @@ export function useSender() {
             text: metaPayload.text as string || '',
             replyTo: metaPayload.replyTo as InProgressImage['replyTo'] || null,
             time: metaPayload.time as number || Date.now(),
-            from: msg.from as string || session.nickname || 'Anon',
+            // Pin to authoritative session nickname; do not trust msg.from.
+            from: session.nickname || 'Anon',
             duration: metaPayload.duration as number | undefined,
             chunks: [],
             receivedBytes: 0,

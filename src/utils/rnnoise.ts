@@ -97,9 +97,12 @@ export async function buildRnnoisePipeline(
 
     // RNNoise expects samples in the range [-32768, 32767] (Int16 PCM
     // semantics) packed in a Float32. WebAudio gives us [-1, 1] floats,
-    // so scale up before feeding RNNoise and back down after.
+    // so scale up before feeding RNNoise and back down after. Clamp because
+    // gain stages upstream can push samples outside [-1, 1] which would
+    // wrap when RNNoise interprets them as Int16.
     for (let i = 0; i < input.length; i++) {
-      accumulator[accLen + i] = input[i] * 32768
+      const scaled = input[i] * 32768
+      accumulator[accLen + i] = scaled < -32768 ? -32768 : scaled > 32767 ? 32767 : scaled
     }
     accLen += input.length
 

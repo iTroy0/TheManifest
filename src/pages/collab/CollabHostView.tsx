@@ -19,6 +19,7 @@ import {
   QrCode,
 } from 'lucide-react'
 import LazyQRCode from '../../components/LazyQRCode'
+import Logo from '../../components/Logo'
 import { useCollabHost } from '../../hooks/useCollabHost'
 import { formatBytes } from '../../utils/formatBytes'
 import CollabFileList from '../../components/CollabFileList'
@@ -136,7 +137,7 @@ export default function CollabHostView() {
           <div className="flex items-center justify-between">
             <Link to="/" className="group flex items-center gap-3">
               <span className="relative inline-flex w-9 h-9 rounded-xl items-center justify-center glass-accent shrink-0">
-                <Users className="w-4 h-4 text-accent" strokeWidth={2} />
+                <Logo className="w-5 h-5" />
                 <span className="absolute inset-0 rounded-xl bg-accent/10 blur-md -z-10" />
               </span>
               <span>

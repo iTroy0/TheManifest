@@ -4,6 +4,10 @@ interface LinkifyProps {
   text: string
 }
 
+// Strip bidi override + isolate chars from the visible label so an attacker
+// can't make the displayed URL differ from `safeUrl(part)` (the href).
+const BIDI_OVERRIDES = /[\u202A-\u202E\u2066-\u2069]/g
+
 // Renders text with http(s) URLs converted to safe anchor tags.
 // URL_REGEX has a single capturing group, so `split` yields alternating
 // [nonUrl, url, nonUrl, url, ...]. Odd indices are captures — no regex
@@ -15,7 +19,7 @@ export default function Linkify({ text }: LinkifyProps) {
     <>
       {parts.map((part, i) =>
         i % 2 === 1
-          ? <a key={i} href={safeUrl(part)} target="_blank" rel="noopener noreferrer" className="text-info underline hover:text-info/80 break-all">{part}</a>
+          ? <a key={i} href={safeUrl(part)} target="_blank" rel="noopener noreferrer" className="text-info underline hover:text-info/80 break-all">{part.replace(BIDI_OVERRIDES, '')}</a>
           : part
       )}
     </>

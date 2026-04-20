@@ -31,6 +31,7 @@ import {
   MAX_PASSWORD_ATTEMPTS,
   DOWNLOAD_REQUEST_TIMEOUT_MS,
   MAX_CONNECTIONS,
+  TIMEOUT_MS,
 } from '../net/config'
 import type { CollabInnerMsg, CollabUnencryptedMsg } from '../net/protocol'
 import { log } from '../utils/logger'
@@ -621,7 +622,7 @@ export function useCollabHost() {
             console.warn('Key exchange timed out for', session.peerId)
             conn.close()
           }
-        }, 10_000)
+        }, TIMEOUT_MS)
 
         // Handle deferred key
         if (session.pendingRemoteKey) {

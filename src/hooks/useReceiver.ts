@@ -208,7 +208,7 @@ export function useReceiver(peerId: string) {
               console.warn('Key exchange timed out')
               conn.close()
             }
-          }, 10_000)
+          }, TIMEOUT_MS)
 
           const pc = conn.peerConnection
           if (pc) {

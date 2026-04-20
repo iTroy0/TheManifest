@@ -54,7 +54,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!isActive) return
-    const handler = (e: BeforeUnloadEvent): void => { e.preventDefault(); e.returnValue = '' }
+    const handler = (e: BeforeUnloadEvent): void => { e.preventDefault() }
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
   }, [isActive])
@@ -474,11 +474,11 @@ export default function Home() {
             onKeyDown={(e) => { if (e.key === 'Escape') setShowResetConfirm(false) }}
             role="dialog"
             aria-modal="true"
-            aria-label="Confirm new session"
+            aria-labelledby="reset-dialog-title"
             tabIndex={-1}
           >
             <div ref={resetModalRef} className="bg-surface border border-border rounded-2xl p-6 max-w-sm mx-4 space-y-4 animate-fade-in-up" onClick={(e) => e.stopPropagation()}>
-              <h3 className="font-mono text-base font-semibold text-text-bright">Start New Session?</h3>
+              <h3 id="reset-dialog-title" className="font-mono text-base font-semibold text-text-bright">Start New Session?</h3>
               <p className="text-sm text-muted leading-relaxed">This will end the current session and disconnect all peers.</p>
               <div className="flex gap-3 justify-end">
                 <button onClick={() => setShowResetConfirm(false)} className="px-4 py-2 rounded-xl bg-surface-2 border border-border hover:border-accent/30 text-muted-light text-sm font-mono transition-colors">
